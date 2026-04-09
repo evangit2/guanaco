@@ -294,6 +294,11 @@
                 <label>Stream Fallback</label>
                 <label class="toggle"><input type="checkbox" id="fb-stream" checked><span class="slider"></span></label>
             </div>
+            <div class="config-row">
+                <label>Supports Vision</label>
+                <label class="toggle"><input type="checkbox" id="fb-vision"><span class="slider"></span></label>
+                <span style="font-size:11px;color:var(--text2);margin-left:8px;">Enable if your fallback provider handles image inputs</span>
+            </div>
             <div style="display:flex;gap:8px;margin-top:8px;align-items:center;">
                 <button class="btn" onclick="saveFallbackConfig()">Save Fallback Config</button>
                 <button class="btn btn-sm" onclick="testFallbackConfig()" id="fb-test-btn" style="background:var(--surface2);border:1px solid var(--border);">🧪 Test Connection</button>
@@ -1155,6 +1160,7 @@ function loadFallbackConfig() {
     document.getElementById('fb-chunk-timeout').value = FALLBACK.stream_chunk_timeout || 180;
     document.getElementById('fb-max-tokens').value = FALLBACK.max_tokens || 128000;
     document.getElementById('fb-stream').checked = FALLBACK.stream_fallback !== false;
+    document.getElementById('fb-vision').checked = FALLBACK.supports_vision || false;
     fallbackModelMap = FALLBACK.model_map || {};
     renderModelMap();
 }
@@ -1172,6 +1178,7 @@ function saveFallbackConfig() {
             stream_chunk_timeout: parseFloat(document.getElementById('fb-chunk-timeout').value) || 180,
             max_tokens: parseInt(document.getElementById('fb-max-tokens').value) || 128000,
             stream_fallback: document.getElementById('fb-stream').checked,
+            supports_vision: document.getElementById('fb-vision').checked,
             model_map: fallbackModelMap,
         }
     };

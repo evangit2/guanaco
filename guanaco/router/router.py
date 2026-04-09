@@ -381,9 +381,10 @@ def create_router(client: OllamaClient, analytics=None, config=None) -> APIRoute
         payload["model"] = resolved_model
 
         # ── Quota-full redirect: skip Ollama entirely, go straight to fallback ──
-        # Exception: vision requests (image content) should always try Ollama Cloud
-        # since the fallback provider likely doesn't support multimodal input.
-        if _is_quota_full(_config) and not _has_vision_content(body.messages):
+        # Exception: vision requests should skip fallback if the provider doesn't support them
+        vision_request = _has_vision_content(body.messages)
+        skip_fallback_for_vision = vision_request and _config.fallback.enabled and not _config.fallback.supports_vision
+        if _is_quota_full(_config) and not skip_fallback_for_vision:
             if _config.fallback.enabled and _config.fallback.base_url:
                 fallback_model = _map_model_to_fallback(resolved_model, _config.fallback)
                 log.info("Quota full (session=%.1f%%, weekly=%.1f%%), redirecting %s to fallback %s (model: %s)",

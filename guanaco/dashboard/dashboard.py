@@ -284,6 +284,8 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
                 fb.max_tokens = int(fb_updates["max_tokens"])
             if "stream_fallback" in fb_updates:
                 fb.stream_fallback = fb_updates["stream_fallback"]
+            if "supports_vision" in fb_updates:
+                fb.supports_vision = fb_updates["supports_vision"]
 
         save_config(config)
         return {"status": "ok", "config": {"llm": config.llm.model_dump(), "fallback": config.fallback.model_dump()}}

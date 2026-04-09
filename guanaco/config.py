@@ -74,6 +74,7 @@ class FallbackProviderConfig(BaseModel):
     stream_chunk_timeout: float = 180.0    # Max seconds between stream chunks (tolerates long reasoning pauses)
     max_tokens: int = 128000                 # Default max_tokens sent to fallback provider
     stream_fallback: bool = True              # Also fallback streaming requests
+    supports_vision: bool = False             # Whether the fallback provider handles image/vision requests
 
 
 class ProviderConfig(BaseModel):
