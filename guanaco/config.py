@@ -187,19 +187,39 @@ def get_base_url(config: Optional[AppConfig] = None) -> str:
         ts_ip = get_tailscale_ip()
         if ts_ip:
             return f"http://{ts_ip}"
-    return f"http://{config.router.host}"
+    return f"http://{get_local_ip()}"
+
+
+def get_local_ip() -> str:
+    """Get the LAN IP of this machine (not 127.0.0.1)."""
+    import socket
+    try:
+        # Create a UDP socket to determine the default route interface IP
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("100.100.100.100", 1))  # Tailscale DERP; won't actually send
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        # Fallback: check if Tailscale IP is available
+        ts_ip = get_tailscale_ip()
+        if ts_ip:
+            return ts_ip
+        return "127.0.0.1"
 
 
 def get_tailscale_ip() -> Optional[str]:
-    """Get the Tailscale IP address of this machine."""
+    """Get the Tailscale IP address of this machine, or None if not installed."""
     import subprocess
     try:
         result = subprocess.run(
             ["tailscale", "ip", "-4"],
             capture_output=True, text=True, timeout=5
         )
-        if result.returncode == 0:
+        if result.returncode == 0 and result.stdout.strip():
             return result.stdout.strip()
-    except (FileNotFoundError, subprocess.TimeoutExpired):
+    except FileNotFoundError:
+        return None  # Tailscale not installed
+    except subprocess.TimeoutExpired:
         pass
     return None

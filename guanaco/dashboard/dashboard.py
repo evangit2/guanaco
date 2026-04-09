@@ -19,6 +19,17 @@ from guanaco.client import OllamaClient
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 
+def get_local_ip():
+    import socket
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
+
 
 def _generate_systemd_service() -> str:
     """Generate systemd unit file content for Guanaco."""
@@ -67,6 +78,8 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
             "router_port": port,
             "tailscale": config.router.use_tailscale,
             "tailscale_ip": get_tailscale_ip(),
+            "local_ip": get_local_ip(),
+            "tailscale_installed": get_tailscale_ip() is not None,
             "llm": config.llm.model_dump(),
             "available_models": config.llm.available_models,
         })

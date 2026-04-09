@@ -224,10 +224,20 @@ prompt_yesno BIND_LOCAL "Bind to localhost only (127.0.0.1)?" "y"
 if [ "$BIND_LOCAL" = "y" ]; then
     BIND_HOST="127.0.0.1"
 else
+    # Check for Tailscale — if found, suggest binding to 0.0.0.0 (Tailscale provides auth)
+    TS_IP=$(tailscale ip -4 2>/dev/null || true)
+    if [ -n "$TS_IP" ]; then
+        echo ""
+        echo -e "  ${CYAN}🌐 Tailscale detected at ${TS_IP}${RESET}"
+        echo -e "  ${CYAN}   Binding to 0.0.0.0 — Tailscale provides authentication.${RESET}"
+        echo ""
+    else
+        echo ""
+        echo -e "  ${RED}⚠ Binding to 0.0.0.0 — Guanaco will be accessible from ALL network interfaces.${RESET}"
+        echo -e "  ${RED}  Make sure you have a firewall or authentication layer in place.${RESET}"
+        echo ""
+    fi
     BIND_HOST="0.0.0.0"
-    echo ""
-    echo -e "  ${RED}⚠ Binding to 0.0.0.0 — Guanaco will be accessible from ALL network interfaces.${RESET}"
-    echo -e "  ${RED}  Make sure you have a firewall or authentication layer in place.${RESET}"
 fi
 
 echo ""

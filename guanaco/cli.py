@@ -119,9 +119,25 @@ def _run_setup():
         if use_env == "n":
             api_key = input("Enter your Ollama API key: ").strip()
 
-    host = input("Bind host [127.0.0.1]: ").strip() or "127.0.0.1"
+    # Auto-detect Tailscale for smarter default
+    ts_ip = ""
+    try:
+        import subprocess
+        r = subprocess.run(["tailscale", "ip", "-4"], capture_output=True, text=True, timeout=3)
+        if r.returncode == 0:
+            ts_ip = r.stdout.strip()
+    except Exception:
+        pass
+
+    default_host = "0.0.0.0" if ts_ip else "127.0.0.1"
+    host = input(f"Bind host [{default_host}]: ").strip() or default_host
     port = int(input("Port [8080]: ").strip() or "8080")
-    use_tailscale = input("Use Tailscale IP? [y/N]: ").strip().lower() == "y"
+    use_tailscale = False
+    if ts_ip and host != "127.0.0.1":
+        print(f"   🌐 Tailscale detected at {ts_ip} — dashboard will be at http://{ts_ip}:{port}/dashboard/")
+        use_tailscale = True
+    elif host == "0.0.0.0":
+        use_tailscale = input("Use Tailscale IP for base URL? [y/N]: ").strip().lower() == "y"
 
     # LLM config
     print("\n📡 LLM Configuration")

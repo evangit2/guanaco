@@ -187,7 +187,7 @@
             <h2><span class="emoji">🌐</span> Network</h2>
             <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;">
                 <label class="toggle"><input type="checkbox" id="tailscale-toggle" onchange="toggleTailscale()"><span class="slider"></span></label>
-                <div><div style="font-size:14px;font-weight:600;">Tailscale</div><div style="font-size:12px;color:var(--text2);" id="tailscale-status">Disabled</div></div>
+                <div><div style="font-size:14px;font-weight:600;">Tailscale</div><div style="font-size:12px;color:var(--text2);" id="tailscale-status">Not installed</div></div>
             </div>
             <div id="network-info" style="font-size:13px;color:var(--text2);"></div>
         </div>
@@ -622,7 +622,26 @@ function copyUrl(id) {
 
 function toggleTailscale() {
     const on = document.getElementById('tailscale-toggle').checked;
-    document.getElementById('tailscale-status').textContent = on ? 'Enabled — ' + (CONFIG.tailscale_ip || 'fetching...') : 'Disabled';
+    if (on && CONFIG.tailscale_installed) {
+        document.getElementById('tailscale-status').textContent = 'Enabled — ' + (CONFIG.tailscale_ip || 'fetching...');
+    } else if (!CONFIG.tailscale_installed) {
+        document.getElementById('tailscale-status').textContent = 'Not installed';
+        document.getElementById('tailscale-toggle').checked = false;
+    } else {
+        document.getElementById('tailscale-status').textContent = 'Disabled';
+    }
+    updateNetworkInfo();
+}
+
+function updateNetworkInfo() {
+    const on = document.getElementById('tailscale-toggle').checked;
+    const ip = on && CONFIG.tailscale_ip ? CONFIG.tailscale_ip : CONFIG.local_ip;
+    const port = location.port || CONFIG.port || 8080;
+    document.getElementById('network-info').innerHTML =
+        `<div>Local: <a href="http://${ip}:${port}/dashboard" target="_blank" style="color:var(--accent);">http://${ip}:${port}</a></div>` +
+        (CONFIG.tailscale_installed
+            ? `<div>Tailscale: ${CONFIG.tailscale_ip ? CONFIG.tailscale_ip : 'Not available'}</div>`
+            : `<div style="color:var(--text2);font-size:11px;">Tailscale not installed — <a href="https://tailscale.com" target="_blank" style="color:var(--accent);">install it</a> for remote access</div>`);
 }
 
 function generateKey() {
@@ -1321,9 +1340,17 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('cfg-emulate-anthropic').checked = cfg.emulate_anthropic !== false;
 
     // Tailscale
-    document.getElementById('tailscale-toggle').checked = CONFIG.tailscale;
-    document.getElementById('tailscale-status').textContent = CONFIG.tailscale ? `Enabled — ${CONFIG.tailscale_ip || 'unknown'}` : 'Disabled';
-    document.getElementById('network-info').innerHTML = `<div>Local: ${base}</div><div>Tailscale IP: ${CONFIG.tailscale_ip || 'Not available'}</div>`;
+    document.getElementById('tailscale-toggle').checked = CONFIG.tailscale && CONFIG.tailscale_installed;
+    if (!CONFIG.tailscale_installed) {
+        document.getElementById('tailscale-status').textContent = 'Not installed';
+        document.getElementById('tailscale-toggle').disabled = true;
+        document.getElementById('tailscale-toggle').style.opacity = '0.4';
+    } else if (CONFIG.tailscale) {
+        document.getElementById('tailscale-status').textContent = `Enabled — ${CONFIG.tailscale_ip || 'unknown'}`;
+    } else {
+        document.getElementById('tailscale-status').textContent = 'Disabled';
+    }
+    updateNetworkInfo();
 
     // Keys
     loadKeys();
