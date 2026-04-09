@@ -12,14 +12,18 @@ VENV_DIR="$INSTALL_DIR/venv"
 BIN_DIR="$HOME/.local/bin"
 DEFAULT_PORT=8080
 
-# ── Colors ──
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-BOLD='\033[1m'
-DIM='\033[2m'
-RESET='\033[0m'
+# ── Colors (only if terminal) ──
+if [ -t 1 ]; then
+    RED='\033[0;31m'
+    GREEN='\033[0;32m'
+    YELLOW='\033[1;33m'
+    CYAN='\033[0;36m'
+    BOLD='\033[1m'
+    DIM='\033[2m'
+    RESET='\033[0m'
+else
+    RED='' GREEN='' YELLOW='' CYAN='' BOLD='' DIM='' RESET=''
+fi
 
 # ── Prompt helpers ──
 prompt() {
@@ -121,22 +125,26 @@ if ! command -v python3 &>/dev/null; then
     esac
 fi
 
-# python3-venv
-if command -v python3 &>/dev/null && ! python3 -c "import venv" &>/dev/null; then
-    echo "  ${YELLOW}⚠ python3-venv not found — installing...${RESET}"
-    case "$PLATFORM" in
-        linux|wsl)
-            sudo apt install -y -qq python3-venv 2>/dev/null || \
-            sudo dnf install -y -q python3-venv 2>/dev/null || {
-                echo "${RED}  ❌ Could not install python3-venv. Please install it and re-run.${RESET}"
-                exit 1
-            }
-            ;;
-        macos)
-            # macOS Python from brew includes venv
-            echo "  ${YELLOW}⚠ venv missing — try: brew reinstall python@3.12${RESET}"
-            ;;
-    esac
+# python3-venv (test actual creation, not just import)
+if command -v python3 &>/dev/null; then
+    VENV_TEST_DIR=$(mktemp -d)
+    if ! python3 -m venv "$VENV_TEST_DIR/test_venv" &>/dev/null; then
+        echo "  ${YELLOW}⚠ python3-venv not working — installing...${RESET}"
+        case "$PLATFORM" in
+            linux|wsl)
+                sudo apt install -y -qq python3-venv 2>/dev/null || \
+                sudo apt install -y -qq python3."${PYTHON_VERSION}"-venv 2>/dev/null || \
+                sudo dnf install -y -q python3-venv 2>/dev/null || {
+                    echo "${RED}  ❌ Could not install python3-venv. Please install it and re-run.${RESET}"
+                    exit 1
+                }
+                ;;
+            macos)
+                echo "  ${YELLOW}⚠ venv broken — try: brew reinstall python@3.12${RESET}"
+                ;;
+        esac
+    fi
+    rm -rf "$VENV_TEST_DIR"
 fi
 
 echo "  ✅ git       $(git --version 2>/dev/null | awk '{print $3}')"
@@ -147,10 +155,12 @@ else
     echo "${RED}  ❌ Python 3.10+ required, found $PYTHON_VERSION${RESET}"
     exit 1
 fi
-if python3 -c "import venv" &>/dev/null; then
+if python3 -m venv /tmp/guanaco_venv_test &>/dev/null; then
+    rm -rf /tmp/guanaco_venv_test
     echo "  ✅ venv      ok"
 else
-    echo "  ${YELLOW}⚠ venv      missing (may cause issues)${RESET}"
+    rm -rf /tmp/guanaco_venv_test
+    echo "  ${YELLOW}⚠ venv      missing (will attempt install)${RESET}"
 fi
 echo ""
 
@@ -172,6 +182,17 @@ echo ""
 # ── Step 2: Configuration ──
 echo "${BOLD}━━━ Step 2: Configuration ━━━${RESET}"
 echo ""
+
+# Check if we have a TTY for interactive prompts
+if [ ! -t 0 ]; then
+    echo "  ${YELLOW}⚠ Not running in a terminal — skipping interactive setup.${RESET}"
+    echo "  ${DIM}Run 'guanaco setup' after installation to configure.${RESET}"
+    echo ""
+    OLLAMA_API_KEY=""
+    PORT="$DEFAULT_PORT"
+    BIND_LOCAL="y"
+    BIND_HOST="127.0.0.1"
+else
 echo "  You'll need an Ollama Cloud API key."
 echo "  Get one at: ${CYAN}https://ollama.com${RESET}"
 echo ""
@@ -218,6 +239,7 @@ else
     echo -e "  ${RED}⚠ Binding to 0.0.0.0 — Guanaco will be accessible from ALL network interfaces.${RESET}"
     echo -e "  ${RED}  Make sure you have a firewall or authentication layer in place.${RESET}"
 fi
+fi # end TTY check
 
 echo ""
 
