@@ -10,7 +10,7 @@
 Guanaco is a self-hosted FastAPI proxy that sits between your applications and Ollama Cloud. It provides an OpenAI-compatible `/v1/chat/completions` endpoint, emulates 8 major search and scrape APIs, tracks token usage, supports transparent fallback to external providers, and ships with a real-time management dashboard — all on a single port.
 
 ```bash
-pip install guanaco
+curl -sSL https://raw.githubusercontent.com/evangit2/guanaco/main/install.sh | bash
 ```
 
 ---
@@ -33,16 +33,10 @@ pip install guanaco
 ### 1. Install
 
 ```bash
-pip install guanaco
+curl -sSL https://raw.githubusercontent.com/evangit2/guanaco/main/install.sh | bash
 ```
 
-### 2. Configure
-
-```bash
-guanaco setup
-```
-
-Or set your API key directly:
+The installer will check for prerequisites (git, Python 3.10+, venv) and auto-install them if missing, then prompt you for your Ollama API key and preferred port.
 
 ```bash
 export OLLAMA_API_KEY=your_ollama_api_key
