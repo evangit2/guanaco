@@ -51,9 +51,9 @@ guanaco = "guanaco.cli:main"
 oct = "guanaco.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/evanrice/guanaco"
-Repository = "https://github.com/evanrice/guanaco"
-Issues = "https://github.com/evanrice/guanaco/issues"
+Homepage = "https://github.com/evangit2/guanaco"
+Repository = "https://github.com/evangit2/guanaco"
+Issues = "https://github.com/evangit2/guanaco/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]

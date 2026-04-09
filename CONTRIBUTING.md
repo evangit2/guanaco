@@ -63,7 +63,7 @@ PRs should:
 
 ```bash
 # Clone the repository
-git clone https://github.com/evanrice/guanaco.git
+git clone https://github.com/evangit2/guanaco.git
 cd guanaco
 
 # Create and activate a virtual environment

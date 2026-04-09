@@ -344,7 +344,7 @@ Config at `~/.oct/config.yaml` is automatically read if `~/.guanaco/config.yaml`
 
 ## Contributing
 
-Contributions are welcome! Please open an issue or submit a pull request on the [GitHub repository](https://github.com/evanrice/ollama-cloud-tools).
+Contributions are welcome! Please open an issue or submit a pull request on the [GitHub repository](https://github.com/evangit2/guanaco).
 
 ---
 

@@ -1,6 +1,6 @@
 [Unit]
 Description=Guanaco - OpenAI-compatible LLM proxy for Ollama Cloud
-Documentation=https://github.com/evanrice/ollama-cloud-tools
+Documentation=https://github.com/evangit2/guanaco
 After=network-online.target
 Wants=network-online.target
 

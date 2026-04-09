@@ -1,22 +1,53 @@
 #!/usr/bin/env bash
-# ollama-cloud-tools installer
-# Usage: curl -sSL https://raw.githubusercontent.com/evanrice/ollama-cloud-tools/main/install.sh | bash
+# Guanaco installer
+# Usage: curl -sSL https://raw.githubusercontent.com/evangit2/guanaco/main/install.sh | bash
 #
-# Supports: Linux, macOS, WSL (Windows Subsystem for Linux)
+# Supports: Linux, macOS, WSL
 
 set -euo pipefail
 
-REPO="evanrice/ollama-cloud-tools"
-INSTALL_DIR="$HOME/.oct"
+REPO="evangit2/guanaco"
+INSTALL_DIR="$HOME/.guanaco"
 VENV_DIR="$INSTALL_DIR/venv"
 BIN_DIR="$HOME/.local/bin"
+DEFAULT_PORT=8080
+
+# ── Colors ──
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+DIM='\033[2m'
+RESET='\033[0m'
+
+# ── Prompt helpers ──
+prompt() {
+    local var="$1" question="$2" default="$3"
+    if [ -n "$default" ]; then
+        printf "${CYAN}${question}${RESET} [${DIM}${default}${RESET}]: "
+    else
+        printf "${CYAN}${question}${RESET}: "
+    fi
+    read -r value
+    declare -g "$var"="${value:-$default}"
+}
+
+prompt_yesno() {
+    local var="$1" question="$2" default="${3:-n}"
+    local indicator="y/N"
+    [ "$default" = "y" ] && indicator="Y/n"
+    printf "${CYAN}${question}${RESET} [${indicator}]: "
+    read -r value
+    value="${value:-$default}"
+    [[ "$value" =~ ^[Yy] ]] && declare -g "$var"="y" || declare -g "$var"="n"
+}
 
 # ── Detect platform ──
 detect_platform() {
     local os_name="$(uname -s)"
     case "$os_name" in
         Linux)
-            # Check if WSL
             if grep -qi microsoft /proc/version 2>/dev/null; then
                 echo "wsl"
             else
@@ -33,151 +64,257 @@ detect_platform() {
 }
 
 PLATFORM=$(detect_platform)
-echo "🦙 Ollama Cloud Tools Installer"
-echo "================================"
+
+echo ""
+echo "${BOLD}🦙 Guanaco Installer${RESET}"
+echo "${DIM}   OpenAI-compatible LLM proxy for Ollama Cloud${RESET}"
+echo ""
 echo "Platform: $PLATFORM"
 echo ""
 
-# ── Check Python ──
-if ! command -v python3 &>/dev/null; then
-    echo "❌ Python 3.10+ is required but not found."
+# ── Auto-install prereqs ──
+echo "${BOLD}━━━ Checking prerequisites ━━━${RESET}"
+
+# git
+if ! command -v git &>/dev/null; then
+    echo "  ${YELLOW}⚠ git not found — installing...${RESET}"
     case "$PLATFORM" in
-        macos)
-            echo "   Install with: brew install python@3.11"
-            echo "   Or download from: https://python.org"
-            ;;
         linux|wsl)
-            echo "   Install with:"
-            echo "     Ubuntu/Debian: sudo apt install python3 python3-venv python3-pip"
-            echo "     Fedora/RHEL:   sudo dnf install python3 python3-pip"
-            echo "     Arch:           sudo pacman -S python python-pip"
-            ;;
-        *)
-            echo "   Install from: https://python.org"
-            ;;
-    esac
-    exit 1
-fi
-
-PYTHON_VERSION=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
-if python3 -c "import sys; exit(0 if sys.version_info >= (3, 10) else 1)"; then
-    echo "✅ Python $PYTHON_VERSION found"
-else
-    echo "❌ Python 3.10+ required, found $PYTHON_VERSION"
-    exit 1
-fi
-
-# ── Platform-specific setup ──
-case "$PLATFORM" in
-    macos)
-        # Check for Homebrew
-        if ! command -v brew &>/dev/null; then
-            echo "⚠️  Homebrew not found. Some dependencies may need manual install."
-            echo "   Install Homebrew: /bin/bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\""
-        fi
-
-        # macOS needs certifi for SSL
-        echo "🍎 Setting up macOS SSL certificates..."
-        export SSL_CERT_FILE=$(python3 -c "import certifi; print(certifi.where())" 2>/dev/null || echo "")
-        if [ -n "$SSL_CERT_FILE" ]; then
-            echo "   SSL certs: $SSL_CERT_FILE"
-            # Write to env file for persistence
-            mkdir -p "$INSTALL_DIR"
-            echo "export SSL_CERT_FILE=$SSL_CERT_FILE" > "$INSTALL_DIR/env"
-        fi
-
-        # Check for Xcode CLI tools (needed for some pip builds)
-        if ! xcode-select -p &>/dev/null; then
-            echo "⚠️  Xcode CLI tools not found. Installing..."
-            xcode-select --install 2>/dev/null || true
-            echo "   You may need to restart the installer after Xcode tools install."
-        fi
-        ;;
-
-    wsl)
-        echo "🐧 Windows Subsystem for Linux detected"
-        # WSL should work like Linux but check for common issues
-        if ! command -v git &>/dev/null; then
-            echo "⚠️  git not found. Installing..."
-            sudo apt update -qq && sudo apt install -y -qq git 2>/dev/null || {
-                echo "   Could not install git. Please install manually:"
-                echo "     sudo apt install git"
-            }
-        fi
-
-        # WSL2 may need resolv.conf fix for DNS
-        if ! ping -c1 -W2 ollama.com &>/dev/null; then
-            echo "⚠️  Cannot reach ollama.com — DNS may need fixing for WSL2"
-            echo "   Try: echo 'nameserver 8.8.8.8' | sudo tee /etc/resolv.conf"
-        fi
-
-        # Set up Windows browser access
-        WIN_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
-        echo "   Access dashboard from Windows: http://$WIN_IP:8080/dashboard"
-        ;;
-
-    linux)
-        # Standard Linux — check for venv support
-        if ! python3 -c "import venv" &>/dev/null; then
-            echo "⚠️  Python venv module not found. Installing..."
-            sudo apt install -y python3-venv 2>/dev/null || \
-            sudo dnf install -y python3-venv 2>/dev/null || {
-                echo "   Could not install python3-venv automatically."
-                echo "   Please install it manually and re-run."
+            sudo apt update -qq 2>/dev/null && sudo apt install -y -qq git 2>/dev/null || \
+            sudo dnf install -y -q git 2>/dev/null || \
+            sudo pacman -S --noconfirm git 2>/dev/null || {
+                echo "${RED}  ❌ Could not install git automatically. Please install it and re-run.${RESET}"
                 exit 1
             }
-        fi
-        ;;
-esac
+            ;;
+        macos)
+            xcode-select --install 2>/dev/null || true
+            ;;
+    esac
+    command -v git &>/dev/null && echo "  ✅ git installed" || { echo "${RED}  ❌ git still not found${RESET}"; exit 1; }
+fi
 
-# ── Clone or update repo ──
-if [ -d "$INSTALL_DIR/repo" ]; then
-    echo "📦 Updating existing installation..."
-    cd "$INSTALL_DIR/repo"
-    git pull --ff-only || { echo "⚠️  Could not pull updates. Continuing with existing version."; }
+# python3
+if ! command -v python3 &>/dev/null; then
+    echo "  ${YELLOW}⚠ Python 3.10+ not found — installing...${RESET}"
+    case "$PLATFORM" in
+        macos)
+            if command -v brew &>/dev/null; then
+                brew install python@3.12
+            else
+                echo "${RED}  ❌ No Homebrew found. Install Python from https://python.org or install Homebrew first.${RESET}"
+                exit 1
+            fi
+            ;;
+        linux|wsl)
+            sudo apt update -qq 2>/dev/null && sudo apt install -y -qq python3 python3-venv python3-pip 2>/dev/null || \
+            sudo dnf install -y -q python3 python3-pip 2>/dev/null || \
+            sudo pacman -S --noconfirm python python-pip 2>/dev/null || {
+                echo "${RED}  ❌ Could not install Python automatically. Please install it and re-run.${RESET}"
+                exit 1
+            }
+            ;;
+        *)
+            echo "${RED}  ❌ Please install Python 3.10+ from https://python.org and re-run.${RESET}"
+            exit 1
+            ;;
+    esac
+fi
+
+# python3-venv
+if command -v python3 &>/dev/null && ! python3 -c "import venv" &>/dev/null; then
+    echo "  ${YELLOW}⚠ python3-venv not found — installing...${RESET}"
+    case "$PLATFORM" in
+        linux|wsl)
+            sudo apt install -y -qq python3-venv 2>/dev/null || \
+            sudo dnf install -y -q python3-venv 2>/dev/null || {
+                echo "${RED}  ❌ Could not install python3-venv. Please install it and re-run.${RESET}"
+                exit 1
+            }
+            ;;
+        macos)
+            # macOS Python from brew includes venv
+            echo "  ${YELLOW}⚠ venv missing — try: brew reinstall python@3.12${RESET}"
+            ;;
+    esac
+fi
+
+echo "  ✅ git       $(git --version 2>/dev/null | awk '{print $3}')"
+PYTHON_VERSION=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "?")
+if python3 -c "import sys; exit(0 if sys.version_info >= (3, 10) else 1)"; then
+    echo "  ✅ python    $PYTHON_VERSION"
 else
-    echo "📦 Cloning repository..."
+    echo "${RED}  ❌ Python 3.10+ required, found $PYTHON_VERSION${RESET}"
+    exit 1
+fi
+if python3 -c "import venv" &>/dev/null; then
+    echo "  ✅ venv      ok"
+else
+    echo "  ${YELLOW}⚠ venv      missing (may cause issues)${RESET}"
+fi
+echo ""
+
+# ── macOS SSL cert fix ──
+if [ "$PLATFORM" = "macos" ]; then
+    SSL_CERT_FILE=$(python3 -c "import certifi; print(certifi.where())" 2>/dev/null || echo "")
+    if [ -n "$SSL_CERT_FILE" ]; then
+        export SSL_CERT_FILE
+        mkdir -p "$INSTALL_DIR"
+        # Append to env file (don't overwrite — it may have OLLAMA_API_KEY later)
+        grep -q "^export SSL_CERT_FILE=" "$INSTALL_DIR/env" 2>/dev/null && \
+            sed -i '' "s|^export SSL_CERT_FILE=.*|export SSL_CERT_FILE=$SSL_CERT_FILE|" "$INSTALL_DIR/env" 2>/dev/null || \
+            echo "export SSL_CERT_FILE=$SSL_CERT_FILE" >> "$INSTALL_DIR/env"
+        echo "  ✅ ssl_certs  $SSL_CERT_FILE"
+    fi
+fi
+echo ""
+
+# ── Step 2: Configuration ──
+echo "${BOLD}━━━ Step 2: Configuration ━━━${RESET}"
+echo ""
+echo "  You'll need an Ollama Cloud API key."
+echo "  Get one at: ${CYAN}https://ollama.com${RESET}"
+echo ""
+
+prompt OLLAMA_API_KEY "Enter your Ollama API key" ""
+
+if [ -z "$OLLAMA_API_KEY" ]; then
+    echo ""
+    echo "${YELLOW}⚠ No API key provided. You can set it later with:${RESET}"
+    echo "  guanaco setup"
+    echo ""
+fi
+
+# ── Step 3: Port configuration with security warning ──
+echo ""
+echo "${BOLD}━━━ Step 3: Network configuration ━━━${RESET}"
+echo ""
+echo -e "  ${YELLOW}⚠ Guanaco will start a server on port ${DEFAULT_PORT}.${RESET}"
+echo ""
+echo -e "  ${RED}╔══════════════════════════════════════════════════════════════╗${RESET}"
+echo -e "  ${RED}║  ⚠  SECURITY WARNING                                       ║${RESET}"
+echo -e "  ${RED}║                                                             ║${RESET}"
+echo -e "  ${RED}║  If your machine has automatic port forwarding (some VPS   ║${RESET}"
+echo -e "  ${RED}║  providers, routers with UPnP, Cloudflare tunnels, etc.),   ║${RESET}"
+echo -e "  ${RED}║  this will EXPOSE your Ollama API proxy to the public      ║${RESET}"
+echo -e "  ${RED}║  internet. Anyone who finds it can use your API key and    ║${RESET}"
+echo -e "  ${RED}║  consume your Ollama Cloud quota.                          ║${RESET}"
+echo -e "  ${RED}║                                                             ║${RESET}"
+echo -e "  ${RED}║  • Bind to 127.0.0.1 unless you need remote access         ║${RESET}"
+echo -e "  ${RED}║  • Use a firewall or auth proxy if you must expose it      ║${RESET}"
+echo -e "  ${RED}║  • Never run this on a public-facing VPS without auth      ║${RESET}"
+echo -e "  ${RED}╚══════════════════════════════════════════════════════════════╝${RESET}"
+echo ""
+
+prompt PORT "Which port should Guanaco use" "$DEFAULT_PORT"
+
+prompt_yesno BIND_LOCAL "Bind to localhost only (127.0.0.1)?" "y"
+
+if [ "$BIND_LOCAL" = "y" ]; then
+    BIND_HOST="127.0.0.1"
+else
+    BIND_HOST="0.0.0.0"
+    echo ""
+    echo -e "  ${RED}⚠ Binding to 0.0.0.0 — Guanaco will be accessible from ALL network interfaces.${RESET}"
+    echo -e "  ${RED}  Make sure you have a firewall or authentication layer in place.${RESET}"
+fi
+
+echo ""
+
+# ── Step 4: Install ──
+echo "${BOLD}━━━ Step 4: Installing ━━━${RESET}"
+echo ""
+
+# Clone or update
+if [ -d "$INSTALL_DIR/repo" ]; then
+    echo "  📦 Updating existing installation..."
+    cd "$INSTALL_DIR/repo"
+    git pull --ff-only || { echo "  ${YELLOW}⚠ Could not pull updates. Using existing version.${RESET}"; }
+else
+    echo "  📦 Downloading Guanaco..."
     git clone "https://github.com/$REPO.git" "$INSTALL_DIR/repo"
     cd "$INSTALL_DIR/repo"
 fi
 
-# ── Create venv ──
-echo "🐍 Creating virtual environment..."
+# Create venv
+echo "  🐍 Setting up virtual environment..."
 python3 -m venv "$VENV_DIR"
 
-# ── Source platform env if exists ──
+# Source platform env if exists
 if [ -f "$INSTALL_DIR/env" ]; then
     source "$INSTALL_DIR/env"
 fi
 
-# ── Install ──
-echo "📥 Installing dependencies..."
-"$VENV_DIR/bin/pip" install -e . --quiet
+# Install
+echo "  📥 Installing dependencies..."
+"$VENV_DIR/bin/pip" install -e . --quiet 2>&1 | tail -1
 
-# ── Create oct binary ──
+# ── Write config ──
+echo "  ⚙️  Writing configuration..."
+
+mkdir -p "$INSTALL_DIR"
+
+cat > "$INSTALL_DIR/config.yaml" << EOF
+# Guanaco configuration
+# Generated by install.sh on $(date -I)
+
+router:
+  host: "${BIND_HOST}"
+  port: ${PORT}
+
+llm:
+  provider: ollama_cloud
+  base_url: "https://api.ollama.com/v1"
+  api_key_env: OLLAMA_API_KEY
+
+fallback:
+  enabled: false
+  provider: ""
+  api_key: ""
+  model: ""
+  primary_timeout: 30.0
+  stream_chunk_timeout: 180.0
+  max_tokens: 128000
+
+cache:
+  enabled: false
+EOF
+
+# Write API key env file
+if [ -n "$OLLAMA_API_KEY" ]; then
+    cat > "$INSTALL_DIR/env" << EOF
+$(grep -v "^export OLLAMA_API_KEY=" "$INSTALL_DIR/env" 2>/dev/null || true)
+export OLLAMA_API_KEY="${OLLAMA_API_KEY}"
+EOF
+fi
+
+# ── Create guanaco binary ──
 mkdir -p "$BIN_DIR"
+
 case "$PLATFORM" in
     macos)
-        # macOS wrapper that sets SSL certs
-        cat > "$BIN_DIR/oct" << SCRIPT
+        cat > "$BIN_DIR/guanaco" << SCRIPT
 #!/usr/bin/env bash
 if [ -f "$INSTALL_DIR/env" ]; then
     source "$INSTALL_DIR/env"
 fi
-exec "$VENV_DIR/bin/python" -m oct.cli "\$@"
+exec "$VENV_DIR/bin/python" -m guanaco.cli "\$@"
 SCRIPT
         ;;
     *)
-        # Standard wrapper
-        cat > "$BIN_DIR/oct" << 'SCRIPT'
+        cat > "$BIN_DIR/guanaco" << SCRIPT
 #!/usr/bin/env bash
-exec "$HOME/.oct/venv/bin/python" -m oct.cli "$@"
+source "$INSTALL_DIR/env" 2>/dev/null || true
+exec "$VENV_DIR/bin/python" -m guanaco.cli "\$@"
 SCRIPT
         ;;
 esac
-chmod +x "$BIN_DIR/oct"
+chmod +x "$BIN_DIR/guanaco"
 
-# ── Shell profile detection ──
+# Also create an oct alias for backward compat
+ln -sf "$BIN_DIR/guanaco" "$BIN_DIR/oct" 2>/dev/null || true
+
+# ── Add to PATH if needed ──
 DETECT_SHELL="${SHELL##*/}"
 case "$DETECT_SHELL" in
     zsh) PROFILE_FILE="$HOME/.zshrc" ;;
@@ -185,63 +322,51 @@ case "$DETECT_SHELL" in
     *) PROFILE_FILE="$HOME/.profile" ;;
 esac
 
-# ── Add to PATH if needed ──
 if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
     echo ""
-    echo "⚠️  $BIN_DIR is not in your PATH."
-    echo "   Adding to $PROFILE_FILE..."
+    echo "  ${YELLOW}⚠ $BIN_DIR is not in your PATH.${RESET}"
+    echo "  Adding to $PROFILE_FILE..."
     echo "" >> "$PROFILE_FILE"
-    echo "# Added by ollama-cloud-tools" >> "$PROFILE_FILE"
+    echo "# Added by Guanaco" >> "$PROFILE_FILE"
     echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$PROFILE_FILE"
-
-    # If macOS with Homebrew, add to /etc/paths.d too
-    if [ "$PLATFORM" = "macos" ] && [ -w /usr/local/bin ]; then
-        ln -sf "$BIN_DIR/oct" /usr/local/bin/oct 2>/dev/null || true
-    fi
-
-    echo ""
-    echo "   Reload your shell: source $PROFILE_FILE"
+    export PATH="$BIN_DIR:$PATH"
+    echo "  ${GREEN}✅ Added. Reload your shell: source $PROFILE_FILE${RESET}"
 fi
 
-# ── macOS-specific: create LaunchAgent for auto-start ──
+# ── Platform-specific tips ──
+echo ""
+echo "${BOLD}━━━ Installation complete! ━━━${RESET}"
+echo ""
+echo "  ${GREEN}✅ Guanaco installed successfully${RESET}"
+echo ""
+echo "  ${BOLD}Start the server:${RESET}"
+echo "    guanaco start"
+echo ""
+echo "  ${BOLD}Dashboard:${RESET}"
+echo "    http://${BIND_HOST}:${PORT}/dashboard"
+echo ""
+echo "  ${BOLD}CLI commands:${RESET}"
+echo "    guanaco status         Show service & connection status"
+echo "    guanaco models         List available cloud models"
+echo "    guanaco usage          Check your Ollama Cloud usage/quota"
+echo "    guanaco analytics      View request analytics & stats"
+echo "    guanaco key generate   Generate an API key"
+echo "    guanaco config --show  Show current configuration"
+echo "    guanaco setup          Reconfigure (API key, ports, etc.)"
+echo ""
+
+# ── macOS auto-start tip ──
 if [ "$PLATFORM" = "macos" ]; then
+    echo "  ${DIM}🍎 macOS: To auto-start on login, see contrib/com.guanaco.start.plist${RESET}"
     echo ""
-    echo "🍎 macOS Tip: To auto-start oct on login, create a LaunchAgent:"
-    echo "   cp $INSTALL_DIR/repo/contrib/com.oct.start.plist ~/Library/LaunchAgents/"
-    echo "   launchctl load ~/Library/LaunchAgents/com.oct.start.plist"
 fi
 
-# ── WSL-specific: create startup script ──
+# ── WSL tip ──
 if [ "$PLATFORM" = "wsl" ]; then
-    cat > "$INSTALL_DIR/start.sh" << 'WSLSCRIPT'
-#!/usr/bin/env bash
-# WSL startup script for oct
-source "$HOME/.oct/env" 2>/dev/null || true
-export PATH="$HOME/.local/bin:$PATH"
-exec oct start "$@"
-WSLSCRIPT
-    chmod +x "$INSTALL_DIR/start.sh"
-    echo "🪟 WSL Tip: Run oct via: $INSTALL_DIR/start.sh"
+    WIN_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
+    echo "  ${DIM}🪟 WSL: Access dashboard from Windows at http://${WIN_IP}:${PORT}/dashboard${RESET}"
+    echo ""
 fi
 
-# ── Done ──
+echo "  ${DIM}Docs: https://github.com/$REPO${RESET}"
 echo ""
-echo "✅ Installation complete! (Platform: $PLATFORM)"
-echo ""
-echo "Next steps:"
-echo "   1. Run 'oct setup' to configure your Ollama API key"
-echo "   2. Run 'oct start' to launch the services"
-echo "   3. Visit http://localhost:8080/dashboard for the web UI"
-echo ""
-echo "CLI commands:"
-echo "   oct models           List available cloud models"
-echo "   oct models --caps    Show model capabilities"
-echo "   oct usage            Check your Ollama Cloud usage/quota"
-echo "   oct status           Show service & connection status"
-echo "   oct status -v        Verbose status with endpoint info"
-echo "   oct analytics        View request analytics & stats"
-echo "   oct analytics -m MODEL  History for a specific model"
-echo "   oct key generate     Generate an API key"
-echo "   oct config --show    Show current configuration"
-echo ""
-echo "Docs: https://github.com/$REPO"
