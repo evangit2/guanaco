@@ -98,6 +98,75 @@ class ChatMessage(BaseModel):
     tool_call_id: Optional[str] = None
 
 
+def _has_vision_content(messages: list[ChatMessage]) -> bool:
+    """Check if any message contains image/multimodal content that requires a vision-capable model."""
+    for msg in messages:
+        if isinstance(msg.content, list):
+            for part in msg.content:
+                if isinstance(part, dict) and part.get("type") in ("image_url", "image"):
+                    return True
+    return False
+
+
+async def _convert_image_urls_to_base64(messages: list) -> list:
+    """Download image URLs and convert to base64 data URIs for Ollama Cloud compatibility.
+    
+    Ollama Cloud doesn't support image URLs — it requires base64-encoded data URIs.
+    This transforms {"type": "image_url", "image_url": {"url": "https://..."}} 
+    into {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}
+    """
+    import base64
+    import mimetypes
+    
+    converted = []
+    async with httpx.AsyncClient(timeout=15, follow_redirects=True, headers={"User-Agent": "Guanaco/0.3"}) as img_client:
+        for msg in messages:
+            if not isinstance(msg.content, list):
+                converted.append(msg)
+                continue
+            
+            new_parts = []
+            changed = False
+            for part in msg.content:
+                if isinstance(part, dict) and part.get("type") == "image_url":
+                    url = part.get("image_url", {}).get("url", "")
+                    if url and url.startswith("http"):
+                        # Download and convert to base64
+                        try:
+                            resp = await img_client.get(url)
+                            if resp.status_code == 200:
+                                content_type = resp.headers.get("content-type", "")
+                                if not content_type or "image" not in content_type:
+                                    # Guess from URL extension
+                                    ext = url.rsplit(".", 1)[-1].split("?")[0].lower()
+                                    content_type = mimetypes.guess_type(f"img.{ext}")[0] or "image/png"
+                                b64 = base64.b64encode(resp.content).decode("ascii")
+                                data_uri = f"data:{content_type};base64,{b64}"
+                                new_parts.append({
+                                    "type": "image_url",
+                                    "image_url": {"url": data_uri}
+                                })
+                                changed = True
+                            else:
+                                log.warning("Failed to download image URL for base64 conversion: HTTP %d for %s", resp.status_code, url[:80])
+                                new_parts.append(part)
+                        except Exception as e:
+                            log.warning("Error downloading image URL for base64 conversion: %s", _describe_error(e))
+                            new_parts.append(part)
+                    else:
+                        new_parts.append(part)
+                else:
+                    new_parts.append(part)
+            
+            if changed:
+                new_msg = msg.model_copy(update={"content": new_parts})
+                converted.append(new_msg)
+            else:
+                converted.append(msg)
+    
+    return converted
+
+
 class ChatCompletionRequest(BaseModel):
     model: str
     messages: list[ChatMessage]
@@ -302,11 +371,19 @@ def create_router(client: OllamaClient, analytics=None, config=None) -> APIRoute
         """OpenAI-compatible chat completions endpoint with fallback and smart caching (beta)."""
         start = time.time()
         resolved_model = _resolve_model(body.model, _config) if _config else body.model
+        
+        # Convert image URLs to base64 for Ollama Cloud compatibility
+        if _has_vision_content(body.messages):
+            body.messages = await _convert_image_urls_to_base64(body.messages)
+            log.info("Converted image URLs to base64 for vision request on model %s", resolved_model)
+        
         payload = body.model_dump(exclude_none=True)
         payload["model"] = resolved_model
 
         # ── Quota-full redirect: skip Ollama entirely, go straight to fallback ──
-        if _is_quota_full(_config):
+        # Exception: vision requests (image content) should always try Ollama Cloud
+        # since the fallback provider likely doesn't support multimodal input.
+        if _is_quota_full(_config) and not _has_vision_content(body.messages):
             if _config.fallback.enabled and _config.fallback.base_url:
                 fallback_model = _map_model_to_fallback(resolved_model, _config.fallback)
                 log.info("Quota full (session=%.1f%%, weekly=%.1f%%), redirecting %s to fallback %s (model: %s)",
