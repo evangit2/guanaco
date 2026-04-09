@@ -411,23 +411,77 @@ echo "    guanaco config --show  Show current configuration"
 echo "    guanaco setup          Reconfigure (API key, ports, etc.)"
 echo ""
 
-# ── Offer to start ──
-echo "  ${BOLD}Start Guanaco now?${RESET}"
-echo "  ${DIM}  1) Foreground (Ctrl+C to stop)${RESET}"
-echo "  ${DIM}  2) Install as systemd service (auto-starts on boot, runs in background)${RESET}"
+# ── Start ──
 echo ""
-echo "  ${BOLD}Choose [1/2]:${RESET} "
-read -r START_CHOICE < /dev/tty || true
-START_CHOICE="${START_CHOICE:-1}"
+echo "  ${BOLD}How should Guanaco run?${RESET}"
+echo "  ${DIM}  1) Foreground — press Ctrl+C to stop${RESET}"
+echo "  ${DIM}  2) systemd service — auto-starts on boot, runs in background${RESET}"
+echo ""
+prompt_yesno USE_SYSTEMD "Install as systemd service?" "y"
 
-if [[ "$START_CHOICE" == "2" ]]; then
+SERVICE_NAME="guanaco"
+SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
+
+if [ "$USE_SYSTEMD" = "y" ]; then
     echo ""
     echo "  ${CYAN}Installing Guanaco as a systemd service...${RESET}"
-    "$BIN_DIR/guanaco" install
+
+    CONFIG_DIR="$INSTALL_DIR"
+    if [ ! -d "$CONFIG_DIR" ]; then
+        CONFIG_DIR="$HOME/.guanaco"
+    fi
+
+    cat << SERVICEEOF | sudo tee "$SERVICE_FILE" > /dev/null
+[Unit]
+Description=Guanaco - LLM Proxy & Dashboard
+Documentation=https://github.com/evangit2/guanaco
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=$(whoami)
+Group=$(whoami)
+Environment=PATH=${VENV_DIR}/bin:/usr/bin:/usr/local/bin
+Environment=GUANACO_CONFIG_DIR=${CONFIG_DIR}
+WorkingDirectory=${INSTALL_DIR}
+ExecStart=${VENV_DIR}/bin/python -m uvicorn guanaco.app:create_app --factory --host ${BIND_HOST} --port ${PORT} --log-level info
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+SERVICEEOF
+
+    sudo systemctl daemon-reload
+    sudo systemctl enable "$SERVICE_NAME" 2>/dev/null
+    sudo systemctl restart "$SERVICE_NAME"
+    sleep 2
+
+    STATUS=$(sudo systemctl is-active "$SERVICE_NAME" 2>/dev/null)
+    if [ "$STATUS" = "active" ]; then
+        echo ""
+        echo "  ${GREEN}✅ Guanaco service is running!${RESET}"
+        if [ -n "$TS_IP" ]; then
+            echo "  ${BOLD}Dashboard:${RESET}  http://${TS_IP}:${PORT}/dashboard/"
+        else
+            echo "  ${BOLD}Dashboard:${RESET}  http://${BIND_HOST}:${PORT}/dashboard/"
+        fi
+        echo ""
+        echo "  Manage with:"
+        echo "    sudo systemctl status guanaco"
+        echo "    sudo systemctl stop guanaco"
+        echo "    sudo systemctl restart guanaco"
+        echo "    sudo journalctl -u guanaco -f"
+    else
+        echo ""
+        echo "  ${YELLOW}⚠ Service may not have started. Check logs:${RESET}"
+        echo "    sudo journalctl -u guanaco -n 50"
+    fi
 else
     echo ""
     echo "  ${CYAN}Starting Guanaco in foreground...${RESET}"
-    echo "  ${DIM}Press Ctrl+C to stop. Run 'guanaco install' for background service.${RESET}"
+    echo "  ${DIM}Press Ctrl+C to stop. Run 'guanaco install' later for background service.${RESET}"
     echo ""
     "$BIN_DIR/guanaco" start
 fi
