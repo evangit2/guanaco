@@ -220,10 +220,21 @@ echo ""
 prompt PORT "Which port should Guanaco use" "$DEFAULT_PORT"
 
 # Detect Tailscale before bind prompt
-TS_IP=$(tailscale ip -4 2>/dev/null || true)
+TS_IP=""
+if command -v tailscale >/dev/null 2>&1; then
+    TS_IP=$(tailscale ip -4 2>/dev/null || true)
+fi
+# Fallback: check if Tailscale socket exists
+if [ -z "$TS_IP" ] && [ -S /run/tailscale/tailscaled.sock ]; then
+    TS_IP=$(tailscale ip -4 2>/dev/null || true)
+fi
+# Fallback: check if 100.x.x.x address is on any interface (Tailscale range)
+if [ -z "$TS_IP" ]; then
+    TS_IP=$(ip -4 addr show | grep -oP 'inet 100\.\d+\.\d+\.\d+' | head -1 | awk '{print $2}' 2>/dev/null || true)
+fi
 if [ -n "$TS_IP" ]; then
     echo -e "  ${CYAN}🌐 Tailscale detected at ${TS_IP}${RESET}"
-    BIND_DEFAULT="n"
+    BIND_DEFAULT="y"
     BIND_MSG="Bind to 0.0.0.0 (accessible via Tailscale)? [Y/n]"
 else
     BIND_DEFAULT="y"
