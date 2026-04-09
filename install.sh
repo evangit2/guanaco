@@ -374,7 +374,7 @@ if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
     echo "# Added by Guanaco" >> "$PROFILE_FILE"
     echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$PROFILE_FILE"
     export PATH="$BIN_DIR:$PATH"
-    echo "  ${GREEN}✅ Added. Reload your shell: source $PROFILE_FILE${RESET}"
+    echo "  ${GREEN}✅ Added to $PROFILE_FILE${RESET}"
 fi
 
 # ── Platform-specific tips ──
@@ -384,7 +384,14 @@ echo ""
 echo "  ${GREEN}✅ Guanaco installed successfully${RESET}"
 echo ""
 echo "  ${BOLD}Start the server:${RESET}"
-echo "    guanaco start"
+if [[ ":$PATH:" == *":$BIN_DIR:"* ]] || [ -x "$BIN_DIR/guanaco" ]; then
+    echo "    $BIN_DIR/guanaco start"
+else
+    echo "    $BIN_DIR/guanaco start"
+fi
+echo ""
+echo "  ${DIM}Or reload your shell and use 'guanaco' directly:${RESET}"
+echo "    ${DIM}source $PROFILE_FILE${RESET}"
 echo ""
 echo "  ${BOLD}Dashboard:${RESET}"
 if [ -n "$TS_IP" ]; then
@@ -403,6 +410,20 @@ echo "    guanaco key generate   Generate an API key"
 echo "    guanaco config --show  Show current configuration"
 echo "    guanaco setup          Reconfigure (API key, ports, etc.)"
 echo ""
+
+# ── Offer to start ──
+echo "  ${BOLD}Start Guanaco now? [Y/n]${RESET}"
+read -r START_NOW < /dev/tty || true
+START_NOW="${START_NOW:-y}"
+if [[ "$START_NOW" =~ ^[Yy]$ ]]; then
+    echo ""
+    echo "  ${CYAN}Starting Guanaco...${RESET}"
+    "$BIN_DIR/guanaco" start
+else
+    echo ""
+    echo "  ${DIM}Run $BIN_DIR/guanaco start when ready.${RESET}"
+    echo ""
+fi
 
 # ── macOS auto-start tip ──
 if [ "$PLATFORM" = "macos" ]; then
