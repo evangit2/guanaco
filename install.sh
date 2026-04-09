@@ -219,25 +219,37 @@ echo ""
 
 prompt PORT "Which port should Guanaco use" "$DEFAULT_PORT"
 
-prompt_yesno BIND_LOCAL "Bind to localhost only (127.0.0.1)?" "y"
+# Detect Tailscale before bind prompt
+TS_IP=$(tailscale ip -4 2>/dev/null || true)
+if [ -n "$TS_IP" ]; then
+    echo -e "  ${CYAN}🌐 Tailscale detected at ${TS_IP}${RESET}"
+    BIND_DEFAULT="n"
+    BIND_MSG="Bind to 0.0.0.0 (accessible via Tailscale)? [Y/n]"
+else
+    BIND_DEFAULT="y"
+    BIND_MSG="Bind to localhost only (127.0.0.1)? [Y/n]"
+fi
+
+prompt_yesno BIND_LOCAL "$BIND_MSG" "$BIND_DEFAULT"
 
 if [ "$BIND_LOCAL" = "y" ]; then
-    BIND_HOST="127.0.0.1"
-else
-    # Check for Tailscale — if found, suggest binding to 0.0.0.0 (Tailscale provides auth)
-    TS_IP=$(tailscale ip -4 2>/dev/null || true)
     if [ -n "$TS_IP" ]; then
-        echo ""
-        echo -e "  ${CYAN}🌐 Tailscale detected at ${TS_IP}${RESET}"
-        echo -e "  ${CYAN}   Binding to 0.0.0.0 — Tailscale provides authentication.${RESET}"
-        echo ""
+        # Tailscale detected, Y means bind to 0.0.0.0
+        BIND_HOST="0.0.0.0"
+        echo -e "  ${CYAN}   Bound to 0.0.0.0 — accessible at http://${TS_IP}:${PORT}/dashboard/${RESET}"
     else
-        echo ""
-        echo -e "  ${RED}⚠ Binding to 0.0.0.0 — Guanaco will be accessible from ALL network interfaces.${RESET}"
-        echo -e "  ${RED}  Make sure you have a firewall or authentication layer in place.${RESET}"
-        echo ""
+        # No Tailscale, Y means bind to localhost
+        BIND_HOST="127.0.0.1"
     fi
-    BIND_HOST="0.0.0.0"
+else
+    if [ -n "$TS_IP" ]; then
+        # Tailscale detected, N means bind to localhost
+        BIND_HOST="127.0.0.1"
+    else
+        # No Tailscale, N means bind to 0.0.0.0
+        BIND_HOST="0.0.0.0"
+        echo -e "  ${RED}⚠ Binding to 0.0.0.0 — accessible from ALL network interfaces. Ensure you have auth/firewall.${RESET}"
+    fi
 fi
 
 echo ""
@@ -364,7 +376,12 @@ echo "  ${BOLD}Start the server:${RESET}"
 echo "    guanaco start"
 echo ""
 echo "  ${BOLD}Dashboard:${RESET}"
-echo "    http://${BIND_HOST}:${PORT}/dashboard"
+if [ -n "$TS_IP" ]; then
+    echo "    http://${TS_IP}:${PORT}/dashboard/"
+    echo "    http://127.0.0.1:${PORT}/dashboard/  (local)"
+else
+    echo "    http://${BIND_HOST}:${PORT}/dashboard/"
+fi
 echo ""
 echo "  ${BOLD}CLI commands:${RESET}"
 echo "    guanaco status         Show service & connection status"
