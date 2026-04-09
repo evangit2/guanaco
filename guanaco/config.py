@@ -37,6 +37,7 @@ class RouterConfig(BaseModel):
     port: int = 8080
     use_tailscale: bool = False
     autostart: bool = False
+    auto_update: bool = False
 
 
 class LLMConfig(BaseModel):

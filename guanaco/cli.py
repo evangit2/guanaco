@@ -65,6 +65,9 @@ def main():
     # ── install ──
     subparsers.add_parser("install", help="Install as systemd service (auto-starts on boot)")
 
+    # ── uninstall ──
+    subparsers.add_parser("uninstall", help="Remove systemd service and clean up")
+
     args = parser.parse_args()
 
     if args.command is None:
@@ -110,6 +113,10 @@ def main():
 
     if args.command == "install":
         _run_install()
+        return
+
+    if args.command == "uninstall":
+        _run_uninstall()
         return
 
 
@@ -278,6 +285,92 @@ WantedBy=multi-user.target
     else:
         print(f"⚠ Service may not have started. Check logs:")
         print(f"   sudo journalctl -u guanaco -n 50")
+
+
+def _run_uninstall():
+    """Remove Guanaco systemd service and clean up."""
+    from guanaco.config import get_default_config_dir
+
+    config_dir = str(get_default_config_dir())
+    service_name = "guanaco"
+    service_path = f"/etc/systemd/system/{service_name}.service"
+    removed = []
+
+    # 1. Stop the service
+    print(f"🛑 Stopping {service_name} service...")
+    result = subprocess.run(["sudo", "systemctl", "stop", service_name],
+                            capture_output=True, text=True)
+    if result.returncode == 0:
+        print(f"   ✅ Service stopped")
+    else:
+        print(f"   ⚠ Service not running or already stopped")
+
+    # 2. Disable the service
+    print(f"🔓 Disabling {service_name} service...")
+    subprocess.run(["sudo", "systemctl", "disable", service_name],
+                   capture_output=True, text=True)
+
+    # 3. Remove service file
+    if os.path.exists(service_path):
+        print(f"🗑 Removing {service_path}...")
+        result = subprocess.run(["sudo", "rm", service_path], capture_output=True, text=True)
+        if result.returncode == 0:
+            print(f"   ✅ Service file removed")
+            removed.append(service_path)
+        else:
+            print(f"   ❌ Failed to remove service file: {result.stderr}")
+    else:
+        print(f"   ℹ No service file found at {service_path}")
+
+    # 4. Reload systemd
+    subprocess.run(["sudo", "systemctl", "daemon-reload"], capture_output=True, text=True)
+    print(f"   ✅ Systemd daemon reloaded")
+
+    # 5. Also remove legacy oct service if it exists
+    oct_service_path = "/etc/systemd/system/oct.service"
+    if os.path.exists(oct_service_path):
+        print(f"🗑 Removing legacy oct service...")
+        subprocess.run(["sudo", "systemctl", "stop", "oct"], capture_output=True, text=True)
+        subprocess.run(["sudo", "systemctl", "disable", "oct"], capture_output=True, text=True)
+        subprocess.run(["sudo", "rm", oct_service_path], capture_output=True, text=True)
+        subprocess.run(["sudo", "systemctl", "daemon-reload"], capture_output=True, text=True)
+        print(f"   ✅ Legacy oct service removed")
+        removed.append(oct_service_path)
+
+    # 6. Ask about config and data
+    print()
+    print(f"📁 Config directory: {config_dir}")
+    print(f"   (Contains config.yaml, analytics.db, cache, API keys)")
+    remove_config = input("Remove config and data? [y/N]: ").strip().lower()
+    if remove_config == "y":
+        import shutil
+        if os.path.exists(config_dir):
+            shutil.rmtree(config_dir)
+            print(f"   ✅ Removed {config_dir}")
+            removed.append(config_dir)
+        else:
+            print(f"   ℹ Config directory not found")
+
+    # 7. Ask about symlink (~/.oct → ~/.guanaco)
+    oct_symlink = os.path.expanduser("~/.oct")
+    if os.path.islink(oct_symlink):
+        print(f"🔗 Legacy symlink: {oct_symlink} → {os.path.realpath(oct_symlink)}")
+        remove_link = input("Remove legacy ~/.oct symlink? [y/N]: ").strip().lower()
+        if remove_link == "y":
+            os.unlink(oct_symlink)
+            print(f"   ✅ Removed {oct_symlink}")
+            removed.append(oct_symlink)
+
+    print()
+    print("=" * 50)
+    print("🦙 Guanaco uninstalled!")
+    if removed:
+        print("Removed:")
+        for r in removed:
+            print(f"   • {r}")
+    print()
+    print("To fully remove, delete the project directory:")
+    print("   rm -rf ~/projects/guanaco")
 
 
 def _run_start(args):

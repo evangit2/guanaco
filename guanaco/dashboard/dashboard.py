@@ -500,4 +500,127 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
         except Exception as e:
             return {"source": "error", "error": str(e)}
 
+    # ── Update ──
+
+    @router.get("/api/update/check")
+    async def check_for_update(request: Request):
+        """Check GitHub for the latest release and compare with current version."""
+        import subprocess
+        try:
+            from importlib.metadata import version as pkg_version
+            current_version = pkg_version("guanaco")
+        except Exception:
+            current_version = "0.3.0"
+
+        result = {"current_version": current_version, "latest_version": None, "update_available": False, "error": None}
+
+        try:
+            # Get latest release tag from GitHub API
+            import httpx
+            async with httpx.AsyncClient(timeout=10) as hc:
+                resp = await hc.get(
+                    "https://api.github.com/repos/evangit2/guanaco/releases/latest",
+                    headers={"Accept": "application/vnd.github+json"}
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    tag = data.get("tag_name", "")
+                    # Strip leading 'v' if present
+                    result["latest_version"] = tag.lstrip("v")
+                    result["release_notes"] = data.get("body", "")[:500]
+                    result["release_url"] = data.get("html_url", "")
+                else:
+                    result["error"] = f"GitHub API returned {resp.status_code}"
+        except Exception as e:
+            result["error"] = str(e)
+
+        if result["latest_version"]:
+            # Compare versions (simple semver comparison)
+            try:
+                current_parts = [int(x) for x in current_version.split(".")]
+                latest_parts = [int(x) for x in result["latest_version"].split(".")]
+                # Pad to same length
+                while len(current_parts) < len(latest_parts):
+                    current_parts.append(0)
+                while len(latest_parts) < len(current_parts):
+                    latest_parts.append(0)
+                result["update_available"] = latest_parts > current_parts
+            except (ValueError, TypeError):
+                # Fall back to string comparison
+                result["update_available"] = result["latest_version"] != current_version
+
+        # Include auto_update setting
+        config = get_config()
+        result["auto_update"] = config.router.auto_update
+
+        return result
+
+    @router.post("/api/update/apply")
+    async def apply_update(request: Request):
+        """Pull latest from git, reinstall, and restart the service."""
+        import subprocess
+        try:
+            from importlib.metadata import version as pkg_version
+            old_version = pkg_version("guanaco")
+        except Exception:
+            old_version = "0.3.0"
+
+        project_dir = Path(__file__).resolve().parent.parent.parent
+
+        try:
+            # Step 1: Git fetch + pull
+            fetch_result = subprocess.run(
+                ["git", "fetch", "origin", "main"],
+                cwd=project_dir, capture_output=True, text=True, timeout=30
+            )
+            if fetch_result.returncode != 0:
+                return {"status": "error", "step": "fetch", "message": fetch_result.stderr[:200]}
+
+            pull_result = subprocess.run(
+                ["git", "pull", "origin", "main"],
+                cwd=project_dir, capture_output=True, text=True, timeout=30
+            )
+            if pull_result.returncode != 0:
+                return {"status": "error", "step": "pull", "message": pull_result.stderr[:200]}
+
+            # Step 2: Get the new version
+            version_file = project_dir / "guanaco" / "__init__.py"
+            new_version = old_version
+            for line in version_file.read_text().splitlines():
+                if line.startswith("__version__"):
+                    new_version = line.split('"')[1]
+                    break
+
+            # Step 3: Reinstall
+            venv_python = project_dir / "venv" / "bin" / "python"
+            install_result = subprocess.run(
+                [str(venv_python), "-m", "pip", "install", "-e", ".", "--quiet"],
+                cwd=project_dir, capture_output=True, text=True, timeout=60
+            )
+            if install_result.returncode != 0:
+                return {"status": "error", "step": "install", "message": install_result.stderr[:200]}
+
+            # Step 4: Restart systemd service (runs as root via sudo)
+            subprocess.run(["sudo", "systemctl", "restart", "guanaco.service"], capture_output=True, timeout=10)
+
+            return {
+                "status": "ok",
+                "old_version": old_version,
+                "new_version": new_version,
+                "message": f"Updated from {old_version} to {new_version}. Service restarting."
+            }
+        except subprocess.TimeoutExpired:
+            return {"status": "error", "step": "timeout", "message": "Operation timed out"}
+        except Exception as e:
+            return {"status": "error", "step": "unknown", "message": str(e)[:200]}
+
+    @router.post("/api/update/auto-toggle")
+    async def toggle_auto_update(request: Request):
+        """Enable or disable automatic updates."""
+        body = await request.json()
+        config = get_config()
+        config.router.auto_update = bool(body.get("enabled", False))
+        save_config(config)
+        return {"status": "ok", "auto_update": config.router.auto_update}
+
     return router

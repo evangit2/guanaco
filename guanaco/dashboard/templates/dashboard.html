@@ -577,6 +577,33 @@
                     <div id="svc-configdir">—</div>
                     <div>Working Dir</div>
                     <div id="svc-workdir">—</div>
+                    <div>Version</div>
+                    <div id="svc-version">—</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card" style="margin-top:16px;">
+            <h2><span class="emoji">🔄</span> Updates</h2>
+            <p style="font-size:13px;color:var(--text2);margin-bottom:16px;">Check for new versions and update Guanaco. Updates pull the latest code from GitHub and restart the service.</p>
+            <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;">
+                <button id="check-update-btn" onclick="checkForUpdate()" style="padding:8px 16px;border:1px solid var(--border);border-radius:8px;background:var(--card);color:var(--text);cursor:pointer;font-size:13px;font-weight:600;">Check for Update</button>
+                <span id="update-status" style="font-size:13px;color:var(--text2);">—</span>
+            </div>
+            <div id="update-available-box" class="hidden" style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:16px;">
+                <div style="font-weight:600;font-size:14px;margin-bottom:8px;" id="update-title">—</div>
+                <div style="font-size:12px;color:var(--text2);margin-bottom:4px;" id="update-notes"></div>
+                <div style="font-size:12px;color:var(--text2);margin-bottom:12px;" id="update-link"></div>
+                <button id="apply-update-btn" onclick="applyUpdate()" style="padding:8px 20px;border:none;border-radius:8px;background:var(--accent);color:#fff;cursor:pointer;font-size:13px;font-weight:600;">Apply Update</button>
+            </div>
+            <div style="display:flex;align-items:center;gap:16px;">
+                <label class="toggle" style="flex-shrink:0;">
+                    <input type="checkbox" id="auto-update-toggle" onchange="toggleAutoUpdate()">
+                    <span class="slider"></span>
+                </label>
+                <div>
+                    <div style="font-weight:600;font-size:13px;">Auto-update</div>
+                    <div style="font-size:12px;color:var(--text2);">Automatically check and apply updates on startup</div>
                 </div>
             </div>
         </div>
@@ -602,7 +629,7 @@ function showTab(tab) {
     if (tab === 'cache') loadCacheStats();
     if (tab === 'analytics') loadAnalytics();
     if (tab === 'status') { checkOllamaStatus(); loadUsageConfig(); checkUsage(); loadStatusLog(); }
-    if (tab === 'system') loadAutostart();
+    if (tab === 'system') { loadAutostart(); checkForUpdate(); }
 }
 
 function copyUrl(id) {
@@ -1392,6 +1419,15 @@ async function loadAutostart() {
         document.getElementById('svc-port').textContent = CONFIG.port || '8080';
         document.getElementById('svc-configdir').textContent = '~/.guanaco';
         document.getElementById('svc-workdir').textContent = location.origin;
+
+        // Show version
+        try {
+            const vResp = await fetch('/health');
+            const vData = await vResp.json();
+            document.getElementById('svc-version').textContent = 'v' + (vData.version || '?');
+        } catch (e) {
+            document.getElementById('svc-version').textContent = '?';
+        }
     } catch (e) {
         document.getElementById('autostart-status').textContent = 'Error checking status';
         document.getElementById('autostart-detail').textContent = e.message;
@@ -1512,6 +1548,145 @@ async function clearCache() {
         loadCacheStats();
     } catch (e) {
         alert('Failed to clear cache: ' + e.message);
+    }
+}
+
+// ── Update Functions ──
+
+async function checkForUpdate() {
+    const btn = document.getElementById('check-update-btn');
+    const statusEl = document.getElementById('update-status');
+    const box = document.getElementById('update-available-box');
+
+    btn.disabled = true;
+    btn.textContent = 'Checking...';
+    statusEl.textContent = '';
+
+    try {
+        const resp = await fetch('/dashboard/api/update/check');
+        const data = await resp.json();
+
+        document.getElementById('auto-update-toggle').checked = data.auto_update || false;
+
+        if (data.error) {
+            statusEl.textContent = 'Error: ' + data.error;
+            statusEl.style.color = '#f87171';
+            box.classList.add('hidden');
+            return;
+        }
+
+        statusEl.textContent = `v${data.current_version} installed`;
+        statusEl.style.color = '#94a3b8';
+
+        if (data.update_available) {
+            document.getElementById('update-title').textContent = `Update available: v${data.current_version} → v${data.latest_version}`;
+            document.getElementById('update-title').style.color = '#4ade80';
+            document.getElementById('update-notes').textContent = data.release_notes ? data.release_notes.substring(0, 200) : 'No release notes available.';
+            document.getElementById('update-link').innerHTML = data.release_url ? `<a href="${data.release_url}" target="_blank" style="color:var(--accent);">View on GitHub →</a>` : '';
+            box.classList.remove('hidden');
+            statusEl.textContent = `v${data.latest_version} available`;
+            statusEl.style.color = '#4ade80';
+        } else {
+            box.classList.add('hidden');
+            statusEl.textContent = `Up to date (v${data.current_version})`;
+            statusEl.style.color = '#4ade80';
+        }
+    } catch (e) {
+        statusEl.textContent = 'Failed to check: ' + e.message;
+        statusEl.style.color = '#f87171';
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Check for Update';
+    }
+}
+
+async function applyUpdate() {
+    const btn = document.getElementById('apply-update-btn');
+    const statusEl = document.getElementById('update-status');
+
+    if (!confirm('Apply this update? Guanaco will pull the latest code and restart. This takes a few seconds.')) return;
+
+    btn.disabled = true;
+    btn.textContent = 'Updating...';
+    statusEl.textContent = 'Pulling latest code and restarting...';
+    statusEl.style.color = '#facc15';
+
+    try {
+        const resp = await fetch('/dashboard/api/update/apply', { method: 'POST' });
+        const data = await resp.json();
+
+        if (data.status === 'ok') {
+            statusEl.textContent = `Updated to v${data.new_version}! Service is restarting...`;
+            statusEl.style.color = '#4ade80';
+            btn.textContent = 'Restarting...';
+            // Wait for service to come back up
+            let retries = 0;
+            const check = async () => {
+                try {
+                    const r = await fetch('/health', { signal: AbortSignal.timeout(2000) });
+                    if (r.ok) {
+                        statusEl.textContent = `Updated to v${data.new_version}! ✓`;
+                        btn.textContent = 'Updated ✓';
+                        btn.disabled = true;
+                        // Reload the page after update
+                        setTimeout(() => location.reload(), 1500);
+                        return;
+                    }
+                } catch {}
+                retries++;
+                if (retries < 15) setTimeout(check, 2000);
+                else {
+                    statusEl.textContent = 'Service may still be restarting. Refresh the page manually.';
+                    statusEl.style.color = '#facc15';
+                    btn.textContent = 'Apply Update';
+                    btn.disabled = false;
+                }
+            };
+            setTimeout(check, 3000);
+        } else {
+            statusEl.textContent = `Update failed: ${data.message || 'Unknown error'}`;
+            statusEl.style.color = '#f87171';
+            btn.textContent = 'Apply Update';
+            btn.disabled = false;
+        }
+    } catch (e) {
+        // Network error likely means service is restarting (which is good)
+        statusEl.textContent = 'Update applied — service is restarting...';
+        statusEl.style.color = '#facc15';
+        let retries = 0;
+        const check = async () => {
+            try {
+                const r = await fetch('/health', { signal: AbortSignal.timeout(2000) });
+                if (r.ok) {
+                    statusEl.textContent = 'Update complete! ✓';
+                    setTimeout(() => location.reload(), 1500);
+                    return;
+                }
+            } catch {}
+            retries++;
+            if (retries < 15) setTimeout(check, 2000);
+            else location.reload();
+        };
+        setTimeout(check, 5000);
+    }
+}
+
+async function toggleAutoUpdate() {
+    const toggle = document.getElementById('auto-update-toggle');
+    const enabled = toggle.checked;
+    try {
+        const resp = await fetch('/dashboard/api/update/auto-toggle', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ enabled })
+        });
+        const data = await resp.json();
+        if (!resp.ok) {
+            toggle.checked = !enabled;
+            return;
+        }
+    } catch (e) {
+        toggle.checked = !enabled;
     }
 }
 </script>
