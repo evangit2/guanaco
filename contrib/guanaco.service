@@ -1,0 +1,36 @@
+[Unit]
+Description=Guanaco - OpenAI-compatible LLM proxy for Ollama Cloud
+Documentation=https://github.com/evanrice/ollama-cloud-tools
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+Group=__GROUP__
+WorkingDirectory=__INSTALL_DIR__
+ExecStart=__VENV__/bin/python -m guanaco.cli start
+Restart=on-failure
+RestartSec=5
+StartLimitBurst=3
+StartLimitIntervalSec=60
+
+# Environment
+EnvironmentFile=-__INSTALL_DIR__/env
+Environment=PATH=__VENV__/bin:/usr/local/bin:/usr/bin:/bin
+Environment=GUANACO_CONFIG_DIR=__INSTALL_DIR__/config
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=__INSTALL_DIR__ /tmp
+PrivateTmp=true
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=guanaco
+
+[Install]
+WantedBy=multi-user.target

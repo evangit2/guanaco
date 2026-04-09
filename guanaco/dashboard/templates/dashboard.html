@@ -1,0 +1,1485 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Guanaco</title>
+<style>
+    :root {
+        --bg: #0a0a0a; --surface: #141414; --surface2: #1e1e1e;
+        --border: #2a2a2a; --text: #e5e5e5; --text2: #888;
+        --accent: #7c3aed; --green: #22c55e; --red: #ef4444; --orange: #f59e0b;
+        --blue: #3b82f6; --cyan: #06b6d4;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); padding: 20px; max-width: 960px; margin: 0 auto; }
+    .container { width: 100%; }
+    .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; }
+    .header h1 { font-size: 22px; font-weight: 700; }
+    .header h1 span { color: var(--accent); }
+    .status-badge { display: flex; align-items: center; gap: 8px; background: var(--surface); border: 1px solid var(--border); border-radius: 20px; padding: 6px 14px; font-size: 13px; }
+    .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); animation: pulse 2s ease-in-out infinite; }
+    .status-dot.error { background: var(--red); }
+    .status-dot.warn { background: var(--orange); }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+
+    .stat-strip { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-bottom: 24px; }
+    .stat { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px; text-align: center; }
+    .stat .value { font-size: 24px; font-weight: 700; color: var(--accent); }
+    .stat .label { font-size: 11px; color: var(--text2); margin-top: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
+
+    .tabs { display: flex; gap: 4px; margin-bottom: 24px; background: var(--surface); border-radius: 10px; padding: 4px; flex-wrap: wrap; }
+    .tab { padding: 8px 16px; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 500; color: var(--text2); transition: all 0.15s; white-space: nowrap; }
+    .tab:hover { color: var(--text); }
+    .tab.active { background: var(--accent); color: white; }
+
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin-bottom: 16px; }
+    .card h2 { font-size: 16px; margin-bottom: 16px; display: flex; align-items: center; gap: 8px; }
+    .card h2 .emoji { font-size: 20px; }
+
+    .hidden { display: none !important; }
+
+    /* Endpoints */
+    .endpoint { padding: 12px; background: var(--surface2); border: 1px solid transparent; border-radius: 8px; margin-bottom: 8px; display: flex; align-items: center; gap: 12px; cursor: pointer; }
+    .endpoint:hover { border-color: var(--accent); }
+    .provider { font-weight: 600; font-size: 13px; min-width: 80px; }
+    .url { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 12px; color: var(--text2); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .copy-btn { background: transparent; border: 1px solid var(--border); color: var(--text2); padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 11px; transition: all 0.15s; }
+    .copy-btn:hover { border-color: var(--accent); color: var(--text); }
+    .copy-btn.copied { background: var(--green); color: white; border-color: var(--green); }
+    .pill { display: inline-block; padding: 4px 10px; border-radius: 6px; font-size: 11px; font-weight: 600; margin: 2px; }
+    .pill.on { background: rgba(34,197,94,0.15); color: var(--green); }
+    .pill.off { background: rgba(136,136,136,0.1); color: var(--text2); }
+
+    /* Models */
+    .model-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+    .model-card { background: var(--surface2); border: 1px solid var(--border); border-radius: 10px; padding: 14px; transition: border-color 0.15s; }
+    .model-card:hover { border-color: var(--accent); }
+    .model-card .model-name { font-weight: 700; font-size: 14px; margin-bottom: 4px; }
+    .model-card .model-details { font-size: 11px; color: var(--text2); }
+    .model-card .model-details span { margin-right: 12px; }
+    .model-card .model-caps { margin-top: 8px; }
+    .model-card .cap { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: 600; margin: 2px; }
+    .cap.cloud { background: rgba(59,130,246,0.15); color: var(--blue); }
+    .cap.vision { background: rgba(6,182,212,0.15); color: var(--cyan); }
+    .cap.tools { background: rgba(124,58,237,0.15); color: var(--accent); }
+    .cap.thinking { background: rgba(245,158,11,0.15); color: var(--orange); }
+    .model-select-btn { background: var(--accent); color: white; border: none; padding: 4px 10px; border-radius: 6px; cursor: pointer; font-size: 11px; font-weight: 600; margin-top: 8px; }
+    .model-select-btn:hover { opacity: 0.9; }
+
+    .config-row { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+    .config-row > span:first-child,
+    .config-row > label:first-child:not(.toggle) { font-size: 13px; font-weight: 600; width: 180px; flex-shrink: 0; }
+    .config-row select, .config-row input { background: var(--surface2); border: 1px solid var(--border); color: var(--text); padding: 8px 12px; border-radius: 8px; font-size: 13px; flex: 1; }
+    .config-row select { min-width: 180px; }
+    .btn { background: var(--accent); color: white; border: none; padding: 8px 16px; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 13px; }
+    .btn:hover { opacity: 0.9; }
+    .btn-sm { padding: 4px 12px; font-size: 12px; }
+    .btn-outline { background: transparent; border: 1px solid var(--accent); color: var(--accent); }
+    .btn-danger { background: var(--red); }
+    .btn-danger:hover { opacity: 0.9; }
+
+    /* Status */
+    .status-check { background: var(--surface2); border-radius: 10px; padding: 16px; margin-bottom: 12px; }
+    .status-check .status-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--border); }
+    .status-check .status-row:last-child { border-bottom: none; }
+    .status-check .status-label { font-size: 13px; }
+    .status-check .status-value { font-size: 13px; font-weight: 600; }
+    .status-ok { color: var(--green); }
+    .status-err { color: var(--red); }
+    .status-warn { color: var(--orange); }
+
+    .log-entry { background: var(--surface2); border-radius: 8px; padding: 10px 14px; margin-bottom: 6px; font-size: 12px; font-family: 'SF Mono', 'Fira Code', monospace; }
+    .log-entry .log-ts { color: var(--text2); margin-right: 8px; }
+    .log-entry .log-level { font-weight: 700; margin-right: 8px; }
+    .log-entry .log-level.error { color: var(--red); }
+    .log-entry .log-level.warning { color: var(--orange); }
+    .log-entry .log-level.info { color: var(--blue); }
+
+    /* Analytics */
+    .metric-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 16px; }
+    .metric { background: var(--surface2); border-radius: 10px; padding: 14px; text-align: center; }
+    .metric .metric-val { font-size: 22px; font-weight: 700; color: var(--accent); }
+    .metric .metric-label { font-size: 10px; color: var(--text2); text-transform: uppercase; letter-spacing: 0.5px; margin-top: 4px; }
+
+    .usage-row { display: grid; grid-template-columns: 2fr 1fr 1fr 1fr 1fr 1fr; padding: 10px 14px; background: var(--surface2); border-radius: 8px; margin-bottom: 6px; font-size: 12px; }
+    .usage-row.header { font-weight: 600; color: var(--text2); }
+    .usage-bar-track { width: 100%; height: 8px; background: var(--surface2); border-radius: 4px; overflow: hidden; border: 1px solid var(--border); }
+    .usage-bar-fill { height: 100%; border-radius: 4px; transition: width 0.5s ease, background 0.3s ease; }
+    .usage-reset { font-size: 11px; color: var(--text2); margin-top: 2px; }
+
+    /* Keys */
+    .key-row { display: flex; align-items: center; padding: 10px 14px; background: var(--surface2); border-radius: 8px; margin-bottom: 6px; }
+    .key-row .key-provider { font-weight: 600; font-size: 13px; min-width: 80px; }
+    .key-row .key-name { color: var(--text); font-size: 13px; flex: 1; }
+    .key-row .key-prefix { font-family: monospace; font-size: 12px; color: var(--text2); }
+    .key-row .revoke-btn { background: transparent; border: 1px solid var(--red); color: var(--red); padding: 4px 10px; border-radius: 6px; font-size: 11px; cursor: pointer; }
+    .key-row .revoke-btn:hover { background: rgba(239,68,68,0.1); }
+    .key-form { display: flex; gap: 8px; margin-bottom: 16px; }
+    .key-form select, .key-form input { background: var(--surface2); border: 1px solid var(--border); color: var(--text); padding: 8px 12px; border-radius: 8px; font-size: 13px; }
+    .key-form select { min-width: 120px; }
+    .key-form input { flex: 1; }
+    .new-key-banner { background: rgba(34,197,94,0.1); border: 1px solid var(--green); border-radius: 8px; padding: 12px; margin-bottom: 16px; font-family: monospace; font-size: 13px; word-break: break-all; }
+    .new-key-banner .warn { color: var(--orange); font-size: 11px; font-family: inherit; }
+
+    /* Toggle */
+    .toggle { position: relative; width: 40px; height: 22px; cursor: pointer; }
+    .toggle input { opacity: 0; width: 0; height: 0; }
+    .toggle .slider { position: absolute; inset: 0; background: var(--border); border-radius: 11px; transition: 0.2s; }
+    .toggle .slider::before { content: ''; position: absolute; width: 16px; height: 16px; border-radius: 50%; background: white; left: 3px; top: 3px; transition: 0.2s; }
+    .toggle input:checked + .slider { background: var(--accent); }
+    .toggle input:checked + .slider::before { transform: translateX(18px); }
+
+    .refresh-btn { background: transparent; border: 1px solid var(--border); color: var(--text2); padding: 4px 10px; border-radius: 6px; cursor: pointer; font-size: 12px; }
+    .refresh-btn:hover { border-color: var(--accent); color: var(--text); }
+</style>
+</head>
+<body>
+<div class="container">
+    <div class="header">
+        <h1>🦙 Guanaco</h1>
+        <div class="status-badge" id="connection-status"><div class="status-dot"></div><span id="connection-text">Connected</span></div>
+    </div>
+
+    <!-- Stats -->
+    <div class="stat-strip" id="stats">
+        <div class="stat"><div class="value" id="stat-requests">0</div><div class="label">Requests</div></div>
+        <div class="stat"><div class="value" id="stat-tokens">0</div><div class="label">Tokens</div></div>
+        <div class="stat"><div class="value" id="stat-tps">0</div><div class="label">Avg TPS</div></div>
+        <div class="stat"><div class="value" id="stat-ttft">0ms</div><div class="label">Avg TTFT</div></div>
+        <div class="stat"><div class="value" id="stat-keys">0</div><div class="label">API Keys</div></div>
+    </div>
+
+    <!-- Tabs -->
+    <div class="tabs">
+        <div class="tab active" onclick="showTab('endpoints')">Endpoints</div>
+        <div class="tab" onclick="showTab('models')">Models</div>
+        <div class="tab" onclick="showTab('fallback')">Fallback</div>
+        <div class="tab" onclick="showTab('analytics')">Analytics</div>
+        <div class="tab" onclick="showTab('status')">Status</div>
+        <div class="tab" onclick="showTab('cache')">Cache</div>
+        <div class="tab" onclick="showTab('keys')">API Keys</div>
+        <div class="tab" onclick="showTab('system')">System</div>
+    </div>
+
+    <!-- ─── Endpoints Tab ─── -->
+    <div id="tab-endpoints">
+        <div class="card">
+            <h2><span class="emoji">🔄</span> LLM Router</h2>
+            <div id="llm-endpoint" class="endpoint">
+                <div class="provider">OpenAI</div>
+                <div class="url" id="llm-url"></div>
+                <button class="copy-btn" onclick="copyUrl('llm-url')">Copy</button>
+            </div>
+            <div id="anthropic-endpoint" class="endpoint">
+                <div class="provider">Anthropic</div>
+                <div class="url" id="anthropic-url"></div>
+                <button class="copy-btn" onclick="copyUrl('anthropic-url')">Copy</button>
+            </div>
+            <p style="color:var(--text2);font-size:12px;margin-top:12px;">Use as OpenAI/Anthropic-compatible base URL with your Ollama API key</p>
+        </div>
+        <div class="card">
+            <h2><span class="emoji">🔍</span> Emulated Search Provider Endpoints</h2>
+            <div class="provider-pills" id="provider-pills"></div>
+            <div id="search-endpoints" style="margin-top:12px;"></div>
+        </div>
+        <div class="card">
+            <h2><span class="emoji">🌐</span> Network</h2>
+            <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;">
+                <label class="toggle"><input type="checkbox" id="tailscale-toggle" onchange="toggleTailscale()"><span class="slider"></span></label>
+                <div><div style="font-size:14px;font-weight:600;">Tailscale</div><div style="font-size:12px;color:var(--text2);" id="tailscale-status">Disabled</div></div>
+            </div>
+            <div id="network-info" style="font-size:13px;color:var(--text2);"></div>
+        </div>
+    </div>
+
+    <!-- ─── Models Tab ─── -->
+    <div id="tab-models" class="hidden">
+        <div class="card">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+                <h2 style="margin:0;"><span class="emoji">🤖</span> Available Models</h2>
+                <button class="refresh-btn" onclick="refreshModels()">🔄 Refresh</button>
+            </div>
+            <div id="models-loading" style="text-align:center;padding:20px;color:var(--text2);">Loading models...</div>
+            <div class="model-grid" id="models-grid"></div>
+        </div>
+
+        <div class="card">
+            <h2><span class="emoji">⚙️</span> Model Selection</h2>
+            <p style="font-size:12px;color:var(--text2);margin-bottom:16px;">Choose which models to use for internal tasks. These are also available as fallback routing targets.</p>
+            <div class="config-row">
+                <label>Reranker Model</label>
+                <select id="cfg-reranker"></select>
+            </div>
+            <div class="config-row">
+                <label>Scraper Model</label>
+                <select id="cfg-scraper"></select>
+            </div>
+            <div class="config-row">
+                <label>Summary Model</label>
+                <select id="cfg-summary"></select>
+            </div>
+            <div class="config-row">
+                <label>Default Chat Model</label>
+                <select id="cfg-default"></select>
+            </div>
+            <div class="config-row">
+                <label>Fallback Model</label>
+                <select id="cfg-fallback"></select>
+            </div>
+            <button class="btn" onclick="saveModelConfig()" style="margin-top:8px;">Save Configuration</button>
+            <span id="cfg-save-status" style="margin-left:12px;font-size:13px;"></span>
+        </div>
+
+        <div class="card">
+            <h2><span class="emoji">🔌</span> Endpoint Emulation</h2>
+            <div class="config-row">
+                <label>OpenAI /v1/chat/completions</label>
+                <label class="toggle"><input type="checkbox" id="cfg-emulate-openai" checked onchange="saveEmulationConfig()"><span class="slider"></span></label>
+            </div>
+            <div class="config-row">
+                <label>Anthropic /v1/messages</label>
+                <label class="toggle"><input type="checkbox" id="cfg-emulate-anthropic" checked onchange="saveEmulationConfig()"><span class="slider"></span></label>
+            </div>
+        </div>
+    </div>
+
+    <!-- ─── Fallback Tab ─── -->
+    <div id="tab-fallback" class="hidden">
+        <div class="card">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+                <h2 style="margin:0;"><span class="emoji">🔀</span> Fallback Provider</h2>
+                <div style="display:flex;align-items:center;gap:8px;">
+                    <span style="font-size:13px;color:var(--text2);">Enabled</span>
+                    <label class="toggle"><input type="checkbox" id="fb-enabled" onchange="saveFallbackConfig()"><span class="slider"></span></label>
+                </div>
+            </div>
+            <p style="font-size:12px;color:var(--text2);margin-bottom:16px;">When the primary Guanaco provider fails or times out, requests are automatically routed to this fallback provider.</p>
+            <div class="config-row">
+                <label>Provider Name</label>
+                <input type="text" id="fb-name" placeholder="e.g. openrouter, openai">
+            </div>
+            <div class="config-row">
+                <label>Base URL</label>
+                <input type="text" id="fb-base-url" placeholder="https://openrouter.ai/api/v1">
+            </div>
+            <div class="config-row">
+                <label>API Key</label>
+                <input type="password" id="fb-api-key" placeholder="sk-...">
+            </div>
+            <div class="config-row">
+                <label>Default Model</label>
+                <input type="text" id="fb-default-model" placeholder="meta-llama/llama-3-70b-instruct">
+            </div>
+            <div class="config-row">
+                <label>Timeout (seconds)</label>
+                <input type="number" id="fb-timeout" value="30" min="5" max="300" step="5">
+            </div>
+            <div class="config-row" style="flex-wrap:wrap;">
+                <label>Primary Timeout (sec)</label>
+                <input type="number" id="fb-primary-timeout" value="30" min="5" max="120" step="5" style="flex:1;">
+                <span style="font-size:11px;color:var(--text2);width:100%;margin-left:192px;">Max wait for first chunk before falling back</span>
+            </div>
+            <div class="config-row" style="flex-wrap:wrap;">
+                <label>Chunk Timeout (sec)</label>
+                <input type="number" id="fb-chunk-timeout" value="180" min="30" max="600" step="10" style="flex:1;">
+                <span style="font-size:11px;color:var(--text2);width:100%;margin-left:192px;">Max gap between stream chunks</span>
+            </div>
+            <div class="config-row" style="flex-wrap:wrap;">
+                <label>Max Tokens</label>
+                <input type="number" id="fb-max-tokens" value="128000" min="100" max="1000000" step="1000" style="flex:1;">
+                <span style="font-size:11px;color:var(--text2);width:100%;margin-left:192px;">Default max_tokens sent to fallback provider</span>
+            </div>
+            <div class="config-row">
+                <label>Stream Fallback</label>
+                <label class="toggle"><input type="checkbox" id="fb-stream" checked><span class="slider"></span></label>
+            </div>
+            <div style="display:flex;gap:8px;margin-top:8px;align-items:center;">
+                <button class="btn" onclick="saveFallbackConfig()">Save Fallback Config</button>
+                <button class="btn btn-sm" onclick="testFallbackConfig()" id="fb-test-btn" style="background:var(--surface2);border:1px solid var(--border);">🧪 Test Connection</button>
+                <span id="fb-save-status" style="font-size:13px;"></span>
+                <span id="fb-test-status" style="font-size:13px;"></span>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2><span class="emoji">🗺️</span> Model Mapping</h2>
+            <p style="font-size:12px;color:var(--text2);margin-bottom:16px;">Map Guanaco model names to fallback provider model names. Unmapped models use the default model.</p>
+            <div id="fb-model-map-rows"></div>
+            <div style="display:flex;gap:8px;margin-top:12px;">
+                <input type="text" id="fb-map-from" placeholder="Ollama model (e.g. gemma4:31b)" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:8px;font-size:13px;flex:1;">
+                <input type="text" id="fb-map-to" placeholder="Fallback model (e.g. google/gemma-2-27b)" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:8px;font-size:13px;flex:1;">
+                <button class="btn btn-sm" onclick="addModelMapping()">Add</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ─── Analytics Tab ─── -->
+    <div id="tab-analytics" class="hidden">
+        <div class="card">
+            <h2><span class="emoji">📊</span> Overview</h2>
+            <div class="metric-grid">
+                <div class="metric"><div class="metric-val" id="an-llm">0</div><div class="metric-label">LLM Calls</div></div>
+                <div class="metric"><div class="metric-val" id="an-search">0</div><div class="metric-label">Search Calls</div></div>
+                <div class="metric"><div class="metric-val" id="an-ptokens">0</div><div class="metric-label">Prompt Tokens</div></div>
+                <div class="metric"><div class="metric-val" id="an-ctokens">0</div><div class="metric-label">Completion Tokens</div></div>
+            </div>
+            <div class="metric-grid">
+                <div class="metric"><div class="metric-val" id="an-tps">0</div><div class="metric-label">Avg TPS</div></div>
+                <div class="metric"><div class="metric-val" id="an-ttft">0ms</div><div class="metric-label">Avg TTFT</div></div>
+                <div class="metric"><div class="metric-val" id="an-errors">0</div><div class="metric-label">Errors</div></div>
+                <div class="metric"><div class="metric-val" id="an-weekly">—</div><div class="metric-label">Ollama Weekly</div></div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+                <h2 style="margin:0;"><span class="emoji">🔢</span> Per-Model Stats</h2>
+                <div>
+                    <button class="refresh-btn" onclick="loadAnalytics()">🔄</button>
+                    <button class="btn btn-sm btn-outline" onclick="clearAnalytics()" style="margin-left:4px;">Reset</button>
+                </div>
+            </div>
+            <div class="usage-row header">
+                <div>Model</div><div>Requests</div><div>Prompt Tok</div><div>Comp Tok</div><div>Avg TPS</div><div>Avg TTFT</div>
+            </div>
+            <div id="model-rows"></div>
+        </div>
+
+        <div class="card">
+            <h2><span class="emoji">🔍</span> Per-Provider Stats</h2>
+            <div id="provider-rows"></div>
+        </div>
+
+        <div class="card">
+            <h2><span class="emoji">⚠️</span> Recent Errors</h2>
+            <div id="error-rows"></div>
+        </div>
+    </div>
+
+    <!-- ─── Status Tab ─── -->
+    <div id="tab-status" class="hidden">
+        <div class="card">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+                <h2 style="margin:0;"><span class="emoji">🩺</span> Guanaco Status</h2>
+                <button class="refresh-btn" onclick="checkOllamaStatus()">🔄 Check Now</button>
+            </div>
+            <div id="ollama-status" class="status-check">
+                <div class="status-row"><span class="status-label">Connection</span><span class="status-value" id="os-connection">Checking...</span></div>
+                <div class="status-row"><span class="status-label">Models Available</span><span class="status-value" id="os-models">—</span></div>
+                <div class="status-row"><span class="status-label">Latency</span><span class="status-value" id="os-latency">—</span></div>
+                <div class="status-row"><span class="status-label">API Key</span><span class="status-value" id="os-apikey">—</span></div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2><span class="emoji">📈</span> Ollama Usage / Quota</h2>
+            <div id="usage-info" class="status-check">
+                <div class="status-row"><span class="status-label">Plan</span><span class="status-value" id="usage-plan">—</span></div>
+                <div class="status-row">
+                    <span class="status-label">Session Usage</span>
+                    <span class="status-value" id="usage-session">—</span>
+                </div>
+                <div style="margin:0 0 8px 0;">
+                    <div class="usage-bar-track"><div class="usage-bar-fill" id="usage-session-bar" style="width:0%;"></div></div>
+                    <div class="usage-reset" id="usage-session-reset"></div>
+                </div>
+                <div class="status-row">
+                    <span class="status-label">Weekly Usage</span>
+                    <span class="status-value" id="usage-weekly">—</span>
+                </div>
+                <div style="margin:0 0 8px 0;">
+                    <div class="usage-bar-track"><div class="usage-bar-fill" id="usage-weekly-bar" style="width:0%;"></div></div>
+                    <div class="usage-reset" id="usage-weekly-reset"></div>
+                </div>
+                <div class="status-row" id="usage-last-checked-row" style="display:none;"><span class="status-label" style="color:var(--text2);">Last Checked</span><span class="status-value" id="usage-last-checked" style="color:var(--text2);font-size:11px;"></span></div>
+            </div>
+            <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
+                <label style="font-size:12px;color:var(--text2);display:block;margin-bottom:4px;">__Secure-session cookie <span id="cookie-status" style="color:var(--text2);"></span></label>
+                <div style="display:flex;gap:8px;">
+                    <input type="password" id="session-cookie" placeholder="Paste your __Secure-session cookie value…" style="flex:1;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:6px;font-size:12px;font-family:monospace;" spellcheck="false" autocomplete="off">
+                    <button class="btn btn-sm" onclick="saveSessionCookie()" id="save-cookie-btn">Save</button>
+                </div>
+                <button class="btn btn-sm" onclick="checkUsage()" style="margin-top:8px;">Refresh Usage</button>
+                <button class="btn btn-sm" onclick="clearSessionCookie()" style="margin-top:8px;margin-left:4px;color:var(--danger);">Clear Cookie</button>
+                <div style="display:flex;align-items:center;gap:8px;margin-top:8px;">
+                    <label style="font-size:12px;color:var(--text2);white-space:nowrap;">Auto-refresh</label>
+                    <select id="usage-refresh-interval" onchange="setUsageRefreshInterval()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:6px;font-size:12px;">
+                        <option value="0">Off</option>
+                        <option value="60">1 min</option>
+                        <option value="300">5 min</option>
+                        <option value="600">10 min</option>
+                        <option value="1800">30 min</option>
+                        <option value="3600">1 hour</option>
+                    </select>
+                    <span id="usage-refresh-status" style="font-size:11px;color:var(--text2);"></span>
+                </div>
+                <div style="display:flex;align-items:center;gap:8px;margin-top:8px;" id="redirect-on-full-row">
+                    <label style="font-size:12px;color:var(--text2);white-space:nowrap;cursor:pointer;display:flex;align-items:center;gap:6px;" id="redirect-on-full-label">
+                        <input type="checkbox" id="redirect-on-full" onchange="toggleRedirectOnFull()" style="accent-color:var(--accent);">
+                        Use fallback when quota full
+                    </label>
+                    <span id="redirect-on-full-status" style="font-size:11px;color:var(--text2);"></span>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+                <h2 style="margin:0;"><span class="emoji">📋</span> Event Log</h2>
+                <div>
+                    <select id="log-level-filter" onchange="loadStatusLog()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:6px;font-size:12px;">
+                        <option value="">All Levels</option>
+                        <option value="error">Errors</option>
+                        <option value="warning">Warnings</option>
+                        <option value="info">Info</option>
+                    </select>
+                </div>
+            </div>
+            <div id="status-log"></div>
+        </div>
+    </div>
+
+    <!-- ─── Cache Tab (Beta) ─── -->
+    <div id="tab-cache" class="hidden">
+        <div class="card">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+                <h2 style="margin:0;"><span class="emoji">⚡</span> Response Cache <span style="font-size:11px;background:#f59e0b;color:#000;padding:2px 6px;border-radius:4px;margin-left:6px;">BETA</span></h2>
+                <div style="display:flex;align-items:center;gap:12px;">
+                    <span style="font-size:13px;color:var(--text2);" id="cache-hit-rate">0% hits</span>
+                    <button class="btn btn-sm btn-outline" onclick="clearCache()">Clear</button>
+                    <button class="refresh-btn" onclick="loadCacheStats()">🔄</button>
+                </div>
+            </div>
+
+            <!-- Beta Mode Toggle -->
+            <div style="display:flex;justify-content:space-between;align-items:center;padding:12px;background:var(--surface2);border-radius:8px;margin-bottom:16px;">
+                <div>
+                    <div style="font-weight:600;">Beta Mode</div>
+                    <div style="font-size:12px;color:var(--text2);">Enable smart response caching for non-streaming requests</div>
+                </div>
+                <label class="toggle"><input type="checkbox" id="cache-beta" onchange="toggleBetaMode()"><span class="slider"></span></label>
+            </div>
+
+            <!-- Stats Grid -->
+            <div class="metric-grid" id="cache-stats-grid" style="grid-template-columns:repeat(4,1fr);">
+                <div class="metric"><div class="metric-value" id="cs-exact-entries">0</div><div class="metric-label">Exact Entries</div></div>
+                <div class="metric"><div class="metric-value" id="cs-prefix-entries">0</div><div class="metric-label">Prefix Entries</div></div>
+                <div class="metric"><div class="metric-value" id="cs-exact-hits">0</div><div class="metric-label">Exact Hits</div></div>
+                <div class="metric"><div class="metric-value" id="cs-prefix-hits">0</div><div class="metric-label">Prefix Hits</div></div>
+            </div>
+            <div class="metric-grid" style="grid-template-columns:repeat(4,1fr);margin-top:8px;">
+                <div class="metric"><div class="metric-value" id="cs-misses">0</div><div class="metric-label">Misses</div></div>
+                <div class="metric"><div class="metric-value" id="cs-dedup-saves">0</div><div class="metric-label">Dedup Saves</div></div>
+                <div class="metric"><div class="metric-value" id="cs-evictions">0</div><div class="metric-label">Evictions</div></div>
+                <div class="metric"><div class="metric-value" id="cs-in-flight">0</div><div class="metric-label">In-Flight</div></div>
+            </div>
+
+            <!-- Config Section -->
+            <h3 style="margin-top:20px;margin-bottom:12px;font-size:14px;">Cache Configuration</h3>
+            <div class="config-row">
+                <label>Exact Cache TTL</label>
+                <div style="display:flex;align-items:center;gap:8px;">
+                    <input type="number" id="cfg-exact-ttl" value="600" min="0" max="86400" style="width:80px;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:6px;font-size:13px;">
+                    <span style="font-size:12px;color:var(--text2);">seconds</span>
+                </div>
+            </div>
+            <div class="config-row">
+                <label>Session Prefix TTL</label>
+                <div style="display:flex;align-items:center;gap:8px;">
+                    <input type="number" id="cfg-prefix-ttl" value="3600" min="0" max="86400" style="width:80px;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:6px;font-size:13px;">
+                    <span style="font-size:12px;color:var(--text2);">seconds</span>
+                </div>
+            </div>
+            <div class="config-row">
+                <label>Max Entries</label>
+                <input type="number" id="cfg-max-entries" value="500" min="10" max="10000" style="width:80px;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:6px;font-size:13px;">
+            </div>
+            <div class="config-row">
+                <label>Min Prompt Chars</label>
+                <input type="number" id="cfg-min-chars" value="50" min="0" max="10000" style="width:80px;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:6px;font-size:13px;">
+            </div>
+            <div class="config-row">
+                <label>Exact Cache</label>
+                <label class="toggle"><input type="checkbox" id="cfg-exact-enabled" checked><span class="slider"></span></label>
+            </div>
+            <div class="config-row">
+                <label>Session Prefix</label>
+                <label class="toggle"><input type="checkbox" id="cfg-prefix-enabled" checked><span class="slider"></span></label>
+            </div>
+            <div class="config-row">
+                <label>Request Dedup</label>
+                <label class="toggle"><input type="checkbox" id="cfg-dedup-enabled" checked><span class="slider"></span></label>
+            </div>
+            <button class="btn" onclick="saveCacheConfig()" style="margin-top:8px;">Save Cache Config</button>
+            <span id="cache-save-status" style="margin-left:12px;font-size:13px;"></span>
+        </div>
+    </div>
+
+    <!-- ─── API Keys Tab ─── -->
+    <div id="tab-keys" class="hidden">
+        <div class="card">
+            <h2><span class="emoji">🔑</span> Generate API Key</h2>
+            <div id="new-key-banner" class="new-key-banner hidden"></div>
+            <div class="key-form">
+                <select id="key-provider">
+                    <option value="general">General</option>
+                    <option value="tavily">Tavily</option>
+                    <option value="exa">Exa</option>
+                    <option value="searxng">SearXNG</option>
+                    <option value="firecrawl">Firecrawl</option>
+                    <option value="serper">Serper</option>
+                    <option value="jina">Jina</option>
+                    <option value="cohere">Cohere</option>
+                    <option value="brave">Brave</option>
+                </select>
+                <input type="text" id="key-name" placeholder="Key name (optional)">
+                <button class="btn" onclick="generateKey()">Generate</button>
+            </div>
+        </div>
+        <div class="card" style="margin-top:16px;">
+            <h2><span class="emoji">📋</span> Active Keys</h2>
+            <div id="keys-list"></div>
+        </div>
+    </div>
+
+    <!-- ─── System Tab ─── -->
+    <div id="tab-system" class="hidden">
+        <div class="card">
+            <h2><span class="emoji">⚙️</span> Autostart</h2>
+            <p style="font-size:13px;color:var(--text2);margin-bottom:16px;">Configure Guanaco to start automatically when the system boots via systemd.</p>
+            <div style="display:flex;align-items:center;gap:16px;margin-bottom:16px;">
+                <label class="toggle" style="flex-shrink:0;">
+                    <input type="checkbox" id="autostart-toggle" onchange="toggleAutostart()">
+                    <span class="slider"></span>
+                </label>
+                <div>
+                    <div id="autostart-status" style="font-weight:600;">Checking...</div>
+                    <div id="autostart-detail" style="font-size:12px;color:var(--text2);"></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card" style="margin-top:16px;">
+            <h2><span class="emoji">🖥️</span> Service Info</h2>
+            <div id="service-info" style="font-size:13px;color:var(--text2);">
+                <div style="display:grid;grid-template-columns:140px 1fr;gap:8px;">
+                    <div>Process</div>
+                    <div id="svc-process">—</div>
+                    <div>Port</div>
+                    <div id="svc-port">—</div>
+                    <div>Config Dir</div>
+                    <div id="svc-configdir">—</div>
+                    <div>Working Dir</div>
+                    <div id="svc-workdir">—</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+const CONFIG = __CONFIG__;
+const USAGE = __USAGE__;
+const KEYS = __KEYS__;
+const PROVIDERS = __PROVIDERS__;
+const FALLBACK = __FALLBACK__;
+
+function showTab(tab) {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    event.target.classList.add('active');
+    ['endpoints','models','fallback','analytics','status','cache','keys','system'].forEach(t => {
+        document.getElementById('tab-'+t).classList.toggle('hidden', t !== tab);
+    });
+    // Load data for tabs when switched
+    if (tab === 'models') loadModels();
+    if (tab === 'fallback') loadFallbackConfig();
+    if (tab === 'cache') loadCacheStats();
+    if (tab === 'analytics') loadAnalytics();
+    if (tab === 'status') { checkOllamaStatus(); loadUsageConfig(); checkUsage(); loadStatusLog(); }
+    if (tab === 'system') loadAutostart();
+}
+
+function copyUrl(id) {
+    const url = document.getElementById(id).textContent;
+    const btn = event.target;
+    if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(url);
+    } else {
+        const ta = document.createElement('textarea');
+        ta.value = url;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+    }
+    btn.textContent = 'Copied!';
+    btn.classList.add('copied');
+    setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 1500);
+}
+
+function toggleTailscale() {
+    const on = document.getElementById('tailscale-toggle').checked;
+    document.getElementById('tailscale-status').textContent = on ? 'Enabled — ' + (CONFIG.tailscale_ip || 'fetching...') : 'Disabled';
+}
+
+function generateKey() {
+    fetch('/dashboard/api/keys/generate', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            provider: document.getElementById('key-provider').value,
+            name: document.getElementById('key-name').value,
+        })
+    }).then(r => r.json()).then(data => {
+        const banner = document.getElementById('new-key-banner');
+        banner.classList.remove('hidden');
+        banner.innerHTML = `<strong>New Key:</strong> ${data.key}<br><span class="warn">⚠️ Copy this key now — it won't be shown again!</span>`;
+        loadKeys();
+    });
+}
+
+function revokeKey(prefix) {
+    fetch('/dashboard/api/keys/revoke', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({prefix: prefix})
+    }).then(r => r.json()).then(() => loadKeys());
+}
+
+function loadKeys() {
+    fetch('/dashboard/api/keys').then(r => r.json()).then(keys => {
+        const container = document.getElementById('keys-list');
+        if (!keys.length) {
+            container.innerHTML = '<div style="color:var(--text2);font-size:13px;text-align:center;padding:20px;">No API keys yet</div>';
+            return;
+        }
+        container.innerHTML = keys.map(k => `
+            <div class="key-row">
+                <div class="key-provider">${k.provider}</div>
+                <div class="key-name">${k.name}</div>
+                <div class="key-prefix">${k.prefix}</div>
+                <button class="revoke-btn" onclick="revokeKey('${k.prefix}')">Revoke</button>
+            </div>
+        `).join('');
+    });
+}
+
+// ─── Models ───
+
+let availableModels = [];
+
+function loadModels() {
+    document.getElementById('models-loading').style.display = 'block';
+    fetch('/api/ollama/models').then(r => {
+        if (!r.ok) throw new Error('API error ' + r.status);
+        return r.json();
+    }).then(data => {
+        const models = data.models || [];
+        availableModels = models;
+        document.getElementById('models-loading').style.display = 'none';
+        renderModels(models);
+        populateModelSelects(models);
+    }).catch(err => {
+        // Fallback to config model list when API is down
+        const cfg = CONFIG.llm || {};
+        const names = cfg.available_models || [];
+        const fallbackModels = names.map(n => ({name: n, model: n, id: n, capabilities: _getCapabilities(n)}));
+        availableModels = fallbackModels;
+        document.getElementById('models-loading').style.display = 'none';
+        document.getElementById('models-loading').textContent = '';
+        if (fallbackModels.length) {
+            renderModels(fallbackModels);
+            populateModelSelects(fallbackModels);
+        } else {
+            document.getElementById('models-grid').innerHTML = '<div style="color:var(--text2);font-size:13px;text-align:center;padding:20px;">Could not load models. Check Guanaco connection.</div>';
+        }
+    });
+}
+
+function refreshModels() {
+    document.getElementById('models-loading').style.display = 'block';
+    document.getElementById('models-loading').textContent = 'Refreshing...';
+    fetch('/dashboard/api/models/sync', {method: 'POST'}).then(r => r.json()).then(() => loadModels()).catch(() => loadModels());
+}
+
+function renderModels(models) {
+    const grid = document.getElementById('models-grid');
+    grid.innerHTML = models.map(m => {
+        const name = m.name || m.model || 'unknown';
+        const display = name.replace('-cloud','');
+        const details = m.details || {};
+        const family = details.family || '';
+        const paramSize = details.parameter_size || '';
+        const quant = details.quantization_level || '';
+        const caps = m.capabilities || ['cloud'];
+        const capHtml = caps.map(c => `<span class="cap ${c}">${c}</span>`).join('');
+        return `<div class="model-card">
+            <div class="model-name">${display}</div>
+            <div class="model-details">
+                ${family ? `<span>📋 ${family}</span>` : ''}
+                ${paramSize ? `<span>🔢 ${paramSize}</span>` : ''}
+                ${quant ? `<span>⚡ ${quant}</span>` : ''}
+            </div>
+            <div class="model-caps">${capHtml}</div>
+        </div>`;
+    }).join('');
+}
+
+function populateModelSelects(models) {
+    const selects = ['cfg-reranker','cfg-scraper','cfg-summary','cfg-default','cfg-fallback'];
+    const names = models.map(m => (m.name || m.model || '').replace('-cloud','')).filter(n => n);
+    // Add config defaults if not in list
+    const cfg = CONFIG.llm || {};
+    const allNames = [...new Set([...names, ...cfg.available_models || []])].sort();
+
+    selects.forEach(id => {
+        const sel = document.getElementById(id);
+        const configKey = id.replace('cfg-','') + '_model';
+        const currentVal = cfg[configKey] || '';
+        sel.innerHTML = allNames.map(n =>
+            `<option value="${n}" ${n === currentVal ? 'selected' : ''}>${n}</option>`
+        ).join('');
+    });
+}
+
+function saveModelConfig() {
+    const data = {
+        reranker_model: document.getElementById('cfg-reranker').value,
+        scraper_model: document.getElementById('cfg-scraper').value,
+        summary_model: document.getElementById('cfg-summary').value,
+        default_model: document.getElementById('cfg-default').value,
+        fallback_model: document.getElementById('cfg-fallback').value,
+    };
+    fetch('/v1/config/model', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(data)
+    }).then(r => r.json()).then(result => {
+        document.getElementById('cfg-save-status').textContent = '✅ Saved';
+        setTimeout(() => document.getElementById('cfg-save-status').textContent = '', 2000);
+    });
+}
+
+function saveEmulationConfig() {
+    const data = {
+        emulate_openai: document.getElementById('cfg-emulate-openai').checked,
+        emulate_anthropic: document.getElementById('cfg-emulate-anthropic').checked,
+    };
+    fetch('/dashboard/api/config/emulation', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(data)
+    }).then(r => r.json()).then(result => {
+        const el = document.getElementById('emulation-save-status');
+        if (el) { el.textContent = '✅ Saved'; setTimeout(() => el.textContent = '', 2000); }
+    });
+}
+
+// ─── Analytics ───
+
+function loadAnalytics() {
+    fetch('/dashboard/api/analytics/summary').then(r => r.json()).then(data => {
+        document.getElementById('an-llm').textContent = (data.llm_calls || 0).toLocaleString();
+        document.getElementById('an-search').textContent = (data.search_calls || 0).toLocaleString();
+        document.getElementById('an-ptokens').textContent = (data.prompt_tokens || 0).toLocaleString();
+        document.getElementById('an-ctokens').textContent = (data.completion_tokens || 0).toLocaleString();
+        document.getElementById('an-tps').textContent = data.avg_tps || 0;
+        document.getElementById('an-ttft').textContent = data.avg_ttft ? (data.avg_ttft * 1000).toFixed(0) + 'ms' : '—';
+        document.getElementById('an-errors').textContent = (data.errors || 0).toLocaleString();
+
+        // Usage
+        const usageEl = document.getElementById('an-weekly');
+        if (data.usage && data.usage.weekly_pct !== null) {
+            usageEl.textContent = data.usage.weekly_pct + '%';
+        } else {
+            usageEl.textContent = '—';
+        }
+
+        // Model rows
+        const models = data.models || [];
+        const modelEl = document.getElementById('model-rows');
+        if (models.length === 0) {
+            modelEl.innerHTML = '<div style="color:var(--text2);text-align:center;padding:20px;">No usage data yet</div>';
+        } else {
+            modelEl.innerHTML = models.map(m => `
+                <div class="usage-row">
+                    <div>${m.model}</div>
+                    <div>${m.requests}</div>
+                    <div>${(m.prompt_tokens || 0).toLocaleString()}</div>
+                    <div>${(m.completion_tokens || 0).toLocaleString()}</div>
+                    <div>${m.avg_tps || '—'}</div>
+                    <div>${m.avg_ttft ? (m.avg_ttft * 1000).toFixed(0) + 'ms' : '—'}</div>
+                </div>
+            `).join('');
+        }
+
+        // Provider rows
+        const providers = data.providers || [];
+        const provEl = document.getElementById('provider-rows');
+        provEl.innerHTML = providers.length ? providers.map(p => `
+            <div class="usage-row" style="grid-template-columns:2fr 1fr 1fr;">
+                <div>${p.provider}</div><div>${p.requests}</div>
+                <div style="color:var(--text2);font-size:11px;">${new Date(p.last_used * 1000).toLocaleString()}</div>
+            </div>
+        `).join('') : '<div style="color:var(--text2);text-align:center;padding:20px;">No search data yet</div>';
+
+        // Errors
+        const errors = data.recent_errors || [];
+        const errEl = document.getElementById('error-rows');
+        errEl.innerHTML = errors.length ? errors.map(e => `
+            <div class="log-entry">
+                <span class="log-ts">${new Date(e.ts * 1000).toLocaleString()}</span>
+                <span class="log-level error">ERR</span>
+                <span>${e.model || e.provider || ''} ${e.endpoint || ''}: ${e.error}</span>
+            </div>
+        `).join('') : '<div style="color:var(--text2);text-align:center;padding:20px;">No errors 🎉</div>';
+
+        // Top stats
+        document.getElementById('stat-requests').textContent = (data.total_requests || 0).toLocaleString();
+        document.getElementById('stat-tokens').textContent = ((data.prompt_tokens || 0) + (data.completion_tokens || 0)).toLocaleString();
+        document.getElementById('stat-tps').textContent = data.avg_tps || 0;
+        document.getElementById('stat-ttft').textContent = data.avg_ttft ? (data.avg_ttft * 1000).toFixed(0) + 'ms' : '—';
+        document.getElementById('stat-keys').textContent = KEYS.length;
+    });
+}
+
+function clearAnalytics() {
+    if (!confirm('Clear all analytics data?')) return;
+    fetch('/dashboard/api/analytics/clear', {method: 'POST'}).then(() => loadAnalytics());
+}
+
+// ─── Status ───
+
+function checkOllamaStatus() {
+    const connEl = document.getElementById('os-connection');
+    const modelsEl = document.getElementById('os-models');
+    const latEl = document.getElementById('os-latency');
+    const keyEl = document.getElementById('os-apikey');
+    const dotEl = document.querySelector('.status-dot');
+    const textEl = document.getElementById('connection-text');
+
+    connEl.textContent = 'Checking...';
+    fetch('/api/ollama/status').then(r => r.json()).then(data => {
+        if (data.status === 'connected') {
+            connEl.innerHTML = '<span class="status-ok">✅ Connected</span>';
+            modelsEl.textContent = data.model_count || 0;
+            dotEl.classList.remove('error','warn');
+            textEl.textContent = 'Connected';
+        } else {
+            connEl.innerHTML = `<span class="status-err">❌ ${data.error || data.status}</span>`;
+            modelsEl.textContent = '0';
+            dotEl.classList.add('error');
+            dotEl.classList.remove('warn');
+            textEl.textContent = 'Error';
+        }
+        latEl.textContent = data.latency_ms ? data.latency_ms + 'ms' : '—';
+        keyEl.textContent = CONFIG.llm ? '✓ Set' : '✗ Not set';
+        keyEl.className = 'status-value ' + (CONFIG.llm ? 'status-ok' : 'status-err');
+    }).catch(err => {
+        connEl.innerHTML = '<span class="status-err">❌ Unreachable</span>';
+        dotEl.classList.add('error');
+        textEl.textContent = 'Unreachable';
+    });
+}
+
+function checkUsage() {
+    const planEl = document.getElementById('usage-plan');
+    const sessionEl = document.getElementById('usage-session');
+    const weeklyEl = document.getElementById('usage-weekly');
+    const sessionBar = document.getElementById('usage-session-bar');
+    const weeklyBar = document.getElementById('usage-weekly-bar');
+    const sessionReset = document.getElementById('usage-session-reset');
+    const weeklyReset = document.getElementById('usage-weekly-reset');
+    const lastCheckedRow = document.getElementById('usage-last-checked-row');
+    const lastCheckedEl = document.getElementById('usage-last-checked');
+    planEl.textContent = 'Loading...';
+    fetch('/dashboard/api/usage/check', {method: 'POST'}).then(r => r.json()).then(data => {
+        if (data.source === 'unavailable' || data.source === 'error') {
+            planEl.textContent = '—';
+            planEl.style.color = '';
+            sessionEl.textContent = data.error || 'N/A';
+            sessionEl.style.color = 'var(--danger)';
+            weeklyEl.textContent = '';
+            sessionBar.style.width = '0%';
+            weeklyBar.style.width = '0%';
+            sessionReset.textContent = '';
+            weeklyReset.textContent = '';
+            lastCheckedRow.style.display = 'none';
+        } else {
+            const plan = data.plan ? data.plan.charAt(0).toUpperCase() + data.plan.slice(1) : '—';
+            planEl.textContent = plan;
+            planEl.style.color = '';
+            const sPct = data.session_pct;
+            const wPct = data.weekly_pct;
+            sessionEl.textContent = sPct !== undefined && sPct !== null ? sPct + '%' : '—';
+            sessionEl.style.color = '';
+            weeklyEl.textContent = wPct !== undefined && wPct !== null ? wPct + '%' : '—';
+            // Progress bars with color coding
+            if (sPct !== undefined && sPct !== null) {
+                sessionBar.style.width = Math.min(sPct, 100) + '%';
+                sessionBar.style.background = sPct > 90 ? 'var(--danger)' : sPct > 70 ? '#f59e0b' : 'var(--accent)';
+            } else { sessionBar.style.width = '0%'; }
+            if (wPct !== undefined && wPct !== null) {
+                weeklyBar.style.width = Math.min(wPct, 100) + '%';
+                weeklyBar.style.background = wPct > 90 ? 'var(--danger)' : wPct > 70 ? '#f59e0b' : 'var(--accent)';
+            } else { weeklyBar.style.width = '0%'; }
+            // Reset timers
+            sessionReset.textContent = data.session_reset ? '⏱ Resets in ' + data.session_reset : '';
+            weeklyReset.textContent = data.weekly_reset ? '⏱ Resets in ' + data.weekly_reset : '';
+            // Last checked
+            if (data.last_checked) {
+                lastCheckedRow.style.display = '';
+                lastCheckedEl.textContent = new Date(data.last_checked * 1000).toLocaleTimeString();
+            }
+        }
+    }).catch(err => {
+        planEl.textContent = 'Error';
+        sessionEl.textContent = '—';
+        weeklyEl.textContent = '—';
+    });
+}
+
+function saveSessionCookie() {
+    const input = document.getElementById('session-cookie');
+    const statusEl = document.getElementById('cookie-status');
+    const cookie = input.value.trim();
+    if (!cookie) { statusEl.textContent = '(empty)'; return; }
+    statusEl.textContent = 'Saving…';
+    fetch('/dashboard/api/usage/session-cookie', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({session_cookie: cookie})
+    }).then(r => r.json()).then(data => {
+        if (data.status === 'ok') {
+            statusEl.textContent = '✓ Saved';
+            statusEl.style.color = 'var(--accent)';
+            input.value = '';
+            checkUsage();
+        } else {
+            statusEl.textContent = '✗ Failed';
+            statusEl.style.color = 'var(--danger)';
+        }
+        setTimeout(() => { statusEl.textContent = ''; statusEl.style.color = ''; }, 3000);
+    }).catch(err => {
+        statusEl.textContent = '✗ Error';
+        statusEl.style.color = 'var(--danger)';
+    });
+}
+
+function clearSessionCookie() {
+    const statusEl = document.getElementById('cookie-status');
+    fetch('/dashboard/api/usage/session-cookie', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({session_cookie: ''})
+    }).then(r => r.json()).then(data => {
+        if (data.status === 'ok') {
+            statusEl.textContent = '✓ Cleared';
+            statusEl.style.color = 'var(--text2)';
+            document.getElementById('usage-plan').textContent = '—';
+            document.getElementById('usage-session').textContent = '—';
+            document.getElementById('usage-weekly').textContent = '—';
+            document.getElementById('usage-session-bar').style.width = '0%';
+            document.getElementById('usage-weekly-bar').style.width = '0%';
+            document.getElementById('usage-session-reset').textContent = '';
+            document.getElementById('usage-weekly-reset').textContent = '';
+        }
+        setTimeout(() => { statusEl.textContent = ''; statusEl.style.color = ''; }, 3000);
+    });
+}
+
+function loadUsageConfig() {
+    const input = document.getElementById('session-cookie');
+    const statusEl = document.getElementById('cookie-status');
+    const intervalEl = document.getElementById('usage-refresh-interval');
+    const refreshStatusEl = document.getElementById('usage-refresh-status');
+    fetch('/dashboard/api/usage/config').then(r => r.json()).then(data => {
+        if (data.session_cookie_set) {
+            statusEl.textContent = '(set: ' + data.session_cookie_preview + ')';
+            statusEl.style.color = 'var(--text2)';
+        } else {
+            statusEl.textContent = '(not set)';
+            statusEl.style.color = 'var(--text2)';
+        }
+        // Set the dropdown to saved interval
+        intervalEl.value = String(data.check_interval || 0);
+        startUsageAutoRefresh(data.check_interval || 0);
+        // Show last-known values if available
+        if (data.last_plan) document.getElementById('usage-plan').textContent = data.last_plan;
+        if (data.last_session_pct !== null) {
+            document.getElementById('usage-session').textContent = data.last_session_pct + '%';
+            const bar = document.getElementById('usage-session-bar');
+            bar.style.width = Math.min(data.last_session_pct, 100) + '%';
+            bar.style.background = data.last_session_pct > 90 ? 'var(--danger)' : data.last_session_pct > 70 ? '#f59e0b' : 'var(--accent)';
+        }
+        if (data.last_weekly_pct !== null) {
+            document.getElementById('usage-weekly').textContent = data.last_weekly_pct + '%';
+            const bar = document.getElementById('usage-weekly-bar');
+            bar.style.width = Math.min(data.last_weekly_pct, 100) + '%';
+            bar.style.background = data.last_weekly_pct > 90 ? 'var(--danger)' : data.last_weekly_pct > 70 ? '#f59e0b' : 'var(--accent)';
+        }
+        if (data.last_session_reset) document.getElementById('usage-session-reset').textContent = '⏱ Resets in ' + data.last_session_reset;
+        if (data.last_weekly_reset) document.getElementById('usage-weekly-reset').textContent = '⏱ Resets in ' + data.last_weekly_reset;
+        if (data.last_checked) {
+            document.getElementById('usage-last-checked-row').style.display = '';
+            document.getElementById('usage-last-checked').textContent = new Date(data.last_checked * 1000).toLocaleTimeString();
+        }
+        // Redirect-on-full checkbox
+        const redirectEl = document.getElementById('redirect-on-full');
+        const redirectRow = document.getElementById('redirect-on-full-row');
+        // Also need fallback state — fetch config
+        fetch('/dashboard/api/config').then(r => r.json()).then(cfg => {
+            const fbEnabled = cfg.fallback && cfg.fallback.enabled;
+            redirectEl.checked = data.redirect_on_full || false;
+            if (!fbEnabled) {
+                redirectEl.disabled = true;
+                redirectEl.checked = false;
+                redirectRow.style.opacity = '0.4';
+                document.getElementById('redirect-on-full-status').textContent = 'Requires fallback provider';
+            } else {
+                redirectEl.disabled = false;
+                redirectRow.style.opacity = '1';
+                document.getElementById('redirect-on-full-status').textContent = redirectEl.checked ? '✓ Active' : '';
+            }
+        });
+    }).catch(() => {});
+}
+
+let _usageAutoTimer = null;
+
+function startUsageAutoRefresh(intervalSec) {
+    const statusEl = document.getElementById('usage-refresh-status');
+    if (_usageAutoTimer) { clearInterval(_usageAutoTimer); _usageAutoTimer = null; }
+    if (!intervalSec || intervalSec <= 0) {
+        statusEl.textContent = '';
+        return;
+    }
+    statusEl.textContent = 'every ' + formatInterval(intervalSec);
+    _usageAutoTimer = setInterval(() => { checkUsage(); }, intervalSec * 1000);
+}
+
+function formatInterval(sec) {
+    if (sec >= 3600) return (sec / 3600) + 'h';
+    if (sec >= 60) return (sec / 60) + 'm';
+    return sec + 's';
+}
+
+function setUsageRefreshInterval() {
+    const intervalEl = document.getElementById('usage-refresh-interval');
+    const sec = parseInt(intervalEl.value, 10);
+    startUsageAutoRefresh(sec);
+    // Persist to config
+    fetch('/dashboard/api/usage/session-cookie', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({check_interval: sec})
+    }).catch(() => {});
+}
+
+function toggleRedirectOnFull() {
+    const redirectEl = document.getElementById('redirect-on-full');
+    const statusEl = document.getElementById('redirect-on-full-status');
+    const enabled = redirectEl.checked;
+    statusEl.textContent = enabled ? '✓ Active' : '';
+    fetch('/dashboard/api/usage/session-cookie', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({redirect_on_full: enabled})
+    }).then(r => r.json()).then(data => {
+        if (data.status === 'ok') {
+            statusEl.textContent = enabled ? '✓ Active' : '';
+        }
+    }).catch(() => {
+        redirectEl.checked = !enabled;
+        statusEl.textContent = '';
+    });
+}
+
+function loadStatusLog() {
+    const level = document.getElementById('log-level-filter').value;
+    const url = '/dashboard/api/analytics/logs?limit=50' + (level ? '&type=' + level : '');
+    // Use the status events endpoint
+    fetch('/dashboard/api/status/events?limit=50' + (level ? '&level=' + level : '')).then(r => r.json()).then(events => {
+        const logEl = document.getElementById('status-log');
+        if (!events || !events.length) {
+            logEl.innerHTML = '<div style="color:var(--text2);text-align:center;padding:20px;">No events logged</div>';
+            return;
+        }
+        logEl.innerHTML = events.map(e => `
+            <div class="log-entry">
+                <span class="log-ts">${new Date(e.ts * 1000).toLocaleTimeString()}</span>
+                <span class="log-level ${e.level}">${e.level.toUpperCase()}</span>
+                <span style="color:var(--text2);">[${e.source}]</span>
+                <span>${e.message}</span>
+            </div>
+        `).join('');
+    }).catch(() => {
+        document.getElementById('status-log').innerHTML = '<div style="color:var(--text2);text-align:center;padding:20px;">Could not load events</div>';
+    });
+}
+
+// ─── Fallback Provider ───
+
+let fallbackModelMap = {};
+
+function loadFallbackConfig() {
+    document.getElementById('fb-enabled').checked = FALLBACK.enabled || false;
+    document.getElementById('fb-name').value = FALLBACK.name || '';
+    document.getElementById('fb-base-url').value = FALLBACK.base_url || '';
+    document.getElementById('fb-api-key').value = FALLBACK.api_key || '';
+    document.getElementById('fb-default-model').value = FALLBACK.default_model || '';
+    document.getElementById('fb-timeout').value = FALLBACK.timeout || 30;
+    document.getElementById('fb-primary-timeout').value = FALLBACK.primary_timeout || 30;
+    document.getElementById('fb-chunk-timeout').value = FALLBACK.stream_chunk_timeout || 180;
+    document.getElementById('fb-max-tokens').value = FALLBACK.max_tokens || 128000;
+    document.getElementById('fb-stream').checked = FALLBACK.stream_fallback !== false;
+    fallbackModelMap = FALLBACK.model_map || {};
+    renderModelMap();
+}
+
+function saveFallbackConfig() {
+    const data = {
+        fallback: {
+            enabled: document.getElementById('fb-enabled').checked,
+            name: document.getElementById('fb-name').value,
+            base_url: document.getElementById('fb-base-url').value,
+            api_key: document.getElementById('fb-api-key').value,
+            default_model: document.getElementById('fb-default-model').value,
+            timeout: parseFloat(document.getElementById('fb-timeout').value) || 30,
+            primary_timeout: parseFloat(document.getElementById('fb-primary-timeout').value) || 30,
+            stream_chunk_timeout: parseFloat(document.getElementById('fb-chunk-timeout').value) || 180,
+            max_tokens: parseInt(document.getElementById('fb-max-tokens').value) || 128000,
+            stream_fallback: document.getElementById('fb-stream').checked,
+            model_map: fallbackModelMap,
+        }
+    };
+    // Don't send empty api_key (keep existing)
+    if (!data.fallback.api_key) delete data.fallback.api_key;
+    fetch('/dashboard/api/config', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(data)
+    }).then(r => r.json()).then(() => {
+        document.getElementById('fb-save-status').textContent = '✅ Saved';
+        setTimeout(() => document.getElementById('fb-save-status').textContent = '', 2000);
+    }).catch(err => {
+        document.getElementById('fb-save-status').textContent = '❌ Error';
+    });
+}
+
+function renderModelMap() {
+    const el = document.getElementById('fb-model-map-rows');
+    const entries = Object.entries(fallbackModelMap);
+    if (!entries.length) {
+        el.innerHTML = '<div style="color:var(--text2);font-size:13px;text-align:center;padding:12px;">No model mappings configured — unmapped models will use the default model</div>';
+        return;
+    }
+    el.innerHTML = entries.map(([from, to]) => `
+        <div class="usage-row" style="grid-template-columns:1fr 40px 1fr 40px;">
+            <div style="font-weight:600;">${from}</div>
+            <div style="color:var(--accent);">→</div>
+            <div style="color:var(--text2);">${to}</div>
+            <button class="revoke-btn" onclick="removeModelMapping('${from}')" style="font-size:10px;padding:2px 8px;">✕</button>
+        </div>
+    `).join('');
+}
+
+function addModelMapping() {
+    const from = document.getElementById('fb-map-from').value.trim();
+    const to = document.getElementById('fb-map-to').value.trim();
+    if (!from || !to) return;
+    fallbackModelMap[from] = to;
+    document.getElementById('fb-map-from').value = '';
+    document.getElementById('fb-map-to').value = '';
+    renderModelMap();
+    saveFallbackConfig();
+}
+
+function removeModelMapping(key) {
+    delete fallbackModelMap[key];
+    renderModelMap();
+    saveFallbackConfig();
+}
+
+function testFallbackConfig() {
+    const statusEl = document.getElementById('fb-test-status');
+    const btn = document.getElementById('fb-test-btn');
+    statusEl.textContent = '⏳ Testing...';
+    statusEl.style.color = 'var(--text2)';
+    btn.disabled = true;
+
+    fetch('/dashboard/api/fallback/test', {method: 'POST'})
+    .then(r => r.json())
+    .then(data => {
+        btn.disabled = false;
+        if (data.ok) {
+            statusEl.textContent = '✅ ' + (data.message || 'Connected');
+            statusEl.style.color = '#4ade80';
+        } else {
+            statusEl.textContent = '❌ ' + (data.error || 'Failed');
+            statusEl.style.color = '#f87171';
+        }
+        setTimeout(() => { statusEl.textContent = ''; }, 6000);
+    })
+    .catch(err => {
+        btn.disabled = false;
+        statusEl.textContent = '❌ Network error';
+        statusEl.style.color = '#f87171';
+    });
+}
+
+function _getCapabilities(modelName) {
+    const base = modelName.split(':')[0];
+    const known = {
+        'qwen3.5': ['cloud','tools','thinking','vision'],
+        'qwen3-coder': ['cloud','tools'],
+        'qwen3-vl': ['cloud','tools','thinking','vision'],
+        'qwen3-next': ['cloud','tools','thinking'],
+        'gemma4': ['cloud','tools','thinking','vision'],
+        'gemma3': ['cloud','tools','thinking','vision'],
+        'gpt-oss': ['cloud','tools','thinking'],
+        'deepseek-v3.1': ['cloud','thinking'],
+        'deepseek-v3.2': ['cloud','thinking'],
+        'glm-5.1': ['cloud','tools','thinking'],
+        'glm-5': ['cloud','tools','thinking'],
+        'minimax-m2.7': ['cloud','tools','thinking'],
+        'minimax-m2.5': ['cloud','tools','thinking'],
+        'minimax-m2.1': ['cloud','tools','thinking'],
+        'devstral-small-2': ['cloud','tools'],
+        'devstral-2': ['cloud','tools'],
+        'nemotron-3-super': ['cloud','tools','thinking'],
+        'mistral-large-3': ['cloud','tools','thinking'],
+        'ministral-3': ['cloud','tools'],
+        'kimi-k2.5': ['cloud','tools','thinking','vision'],
+        'cogito-2.1': ['cloud','thinking'],
+    };
+    return known[base] || ['cloud'];
+}
+
+// ─── Init ───
+
+document.addEventListener('DOMContentLoaded', () => {
+    const base = CONFIG.base_url;
+
+    // Endpoints
+    document.getElementById('llm-url').textContent = `${base}:${CONFIG.router_port}/v1/chat/completions`;
+    document.getElementById('anthropic-url').textContent = `${base}:${CONFIG.router_port}/v1/messages`;
+
+    // Search endpoints
+    const endpoints = {
+        'Tavily': `/tavily/search`, 'Exa': `/exa/search`, 'SearXNG': `/searxng/search`,
+        'Firecrawl': `/firecrawl/scrape`, 'Serper': `/serper/search`,
+        'Jina': `/jina/search`, 'Cohere': `/cohere/rerank`, 'Brave': `/brave/search`,
+    };
+    const el = document.getElementById('search-endpoints');
+    el.innerHTML = Object.entries(endpoints).map(([name, path]) => `
+        <div class="endpoint" onclick="copyUrl('ep-${name}')">
+            <div class="provider">${name}</div>
+            <div class="url" id="ep-${name}">${base}:${CONFIG.router_port}${path}</div>
+            <button class="copy-btn" onclick="event.stopPropagation();copyUrl('ep-${name}')">Copy</button>
+        </div>
+    `).join('');
+
+    // Provider pills
+    const pills = document.getElementById('provider-pills');
+    pills.innerHTML = Object.entries(PROVIDERS).map(([name, cfg]) =>
+        `<div class="pill ${cfg.enabled ? 'on' : 'off'}">${name}</div>`
+    ).join('');
+
+    // Stats
+    const stats = USAGE;
+    let totalReqs = 0, totalTokens = 0;
+    Object.values(stats).forEach(v => {
+        if (v && typeof v === 'object') { totalReqs += v.requests || 0; totalTokens += (v.prompt_tokens || 0) + (v.completion_tokens || 0); }
+    });
+    if (stats.total_requests) totalReqs = stats.total_requests;
+    if (stats.total_tokens) totalTokens = stats.total_tokens;
+    document.getElementById('stat-requests').textContent = totalReqs.toLocaleString();
+    document.getElementById('stat-tokens').textContent = totalTokens.toLocaleString();
+    if (stats.avg_tps) document.getElementById('stat-tps').textContent = stats.avg_tps;
+    if (stats.avg_ttft) document.getElementById('stat-ttft').textContent = (stats.avg_ttft * 1000).toFixed(0) + 'ms';
+    else document.getElementById('stat-ttft').textContent = '—';
+    document.getElementById('stat-keys').textContent = KEYS.length;
+
+    // Model selects — populate from config
+    const cfg = CONFIG.llm || {};
+    const modelNames = cfg.available_models || [];
+    ['cfg-reranker','cfg-scraper','cfg-summary','cfg-default','cfg-fallback'].forEach(id => {
+        const sel = document.getElementById(id);
+        const configKey = id.replace('cfg-','') + '_model';
+        const currentVal = cfg[configKey] || '';
+        sel.innerHTML = modelNames.map(n =>
+            `<option value="${n}" ${n === currentVal ? 'selected' : ''}>${n}</option>`
+        ).join('');
+    });
+
+    // Emulation toggles
+    document.getElementById('cfg-emulate-openai').checked = cfg.emulate_openai !== false;
+    document.getElementById('cfg-emulate-anthropic').checked = cfg.emulate_anthropic !== false;
+
+    // Tailscale
+    document.getElementById('tailscale-toggle').checked = CONFIG.tailscale;
+    document.getElementById('tailscale-status').textContent = CONFIG.tailscale ? `Enabled — ${CONFIG.tailscale_ip || 'unknown'}` : 'Disabled';
+    document.getElementById('network-info').innerHTML = `<div>Local: ${base}</div><div>Tailscale IP: ${CONFIG.tailscale_ip || 'Not available'}</div>`;
+
+    // Keys
+    loadKeys();
+
+    // Check connection
+    checkOllamaStatus();
+});
+
+// ── Autostart / System ──
+
+async function loadAutostart() {
+    try {
+        const resp = await fetch('/dashboard/api/autostart');
+        const data = await resp.json();
+        const toggle = document.getElementById('autostart-toggle');
+        const statusEl = document.getElementById('autostart-status');
+        const detailEl = document.getElementById('autostart-detail');
+
+        toggle.checked = data.enabled;
+        if (data.enabled) {
+            statusEl.textContent = 'Autostart Enabled';
+            statusEl.style.color = '#4ade80';
+            detailEl.textContent = data.active ? 'Service is running' : 'Service installed but not running';
+        } else {
+            statusEl.textContent = 'Autostart Disabled';
+            statusEl.style.color = '#94a3b8';
+            detailEl.textContent = data.installed ? 'Service installed but disabled' : 'No systemd service installed';
+        }
+
+        // Service info
+        document.getElementById('svc-process').textContent = data.active ? 'Running (PID via systemd)' : 'Not running';
+        document.getElementById('svc-port').textContent = CONFIG.port || '8080';
+        document.getElementById('svc-configdir').textContent = '~/.guanaco';
+        document.getElementById('svc-workdir').textContent = location.origin;
+    } catch (e) {
+        document.getElementById('autostart-status').textContent = 'Error checking status';
+        document.getElementById('autostart-detail').textContent = e.message;
+    }
+}
+
+async function toggleAutostart() {
+    const toggle = document.getElementById('autostart-toggle');
+    const enabled = toggle.checked;
+    const statusEl = document.getElementById('autostart-status');
+    const detailEl = document.getElementById('autostart-detail');
+
+    statusEl.textContent = enabled ? 'Enabling...' : 'Disabling...';
+    detailEl.textContent = '';
+
+    try {
+        const resp = await fetch('/dashboard/api/autostart/' + (enabled ? 'enable' : 'disable'), { method: 'POST' });
+        const data = await resp.json();
+
+        if (!resp.ok) {
+            toggle.checked = !enabled;
+            statusEl.textContent = enabled ? 'Failed to enable' : 'Failed to disable';
+            statusEl.style.color = '#f87171';
+            detailEl.textContent = data.detail || data.message || 'Unknown error';
+            return;
+        }
+
+        statusEl.textContent = enabled ? 'Autostart Enabled' : 'Autostart Disabled';
+        statusEl.style.color = enabled ? '#4ade80' : '#94a3b8';
+        detailEl.textContent = data.message || '';
+    } catch (e) {
+        toggle.checked = !enabled;
+        statusEl.textContent = 'Error';
+        statusEl.style.color = '#f87171';
+        detailEl.textContent = e.message;
+    }
+}
+
+// ─── Cache Tab Functions ───
+
+async function loadCacheStats() {
+    try {
+        const resp = await fetch('/v1/cache/stats');
+        const data = await resp.json();
+
+        document.getElementById('cache-beta').checked = data.beta_mode;
+        document.getElementById('cs-exact-entries').textContent = data.exact_cache_entries;
+        document.getElementById('cs-prefix-entries').textContent = data.prefix_cache_entries;
+        document.getElementById('cs-exact-hits').textContent = data.stats.exact_hits;
+        document.getElementById('cs-prefix-hits').textContent = data.stats.prefix_hits;
+        document.getElementById('cs-misses').textContent = data.stats.misses;
+        document.getElementById('cs-dedup-saves').textContent = data.stats.dedup_saves;
+        document.getElementById('cs-evictions').textContent = data.stats.evictions;
+        document.getElementById('cs-in-flight').textContent = data.in_flight_requests;
+        document.getElementById('cache-hit-rate').textContent = data.stats.hit_rate_pct + '% hits';
+
+        // Populate config fields
+        if (data.config) {
+            document.getElementById('cfg-exact-ttl').value = data.config.exact_cache_ttl;
+            document.getElementById('cfg-prefix-ttl').value = data.config.session_prefix_ttl;
+            document.getElementById('cfg-max-entries').value = data.config.max_entries;
+            document.getElementById('cfg-min-chars').value = data.config.min_prompt_chars;
+            document.getElementById('cfg-exact-enabled').checked = data.config.exact_cache_enabled;
+            document.getElementById('cfg-prefix-enabled').checked = data.config.session_prefix_enabled;
+            document.getElementById('cfg-dedup-enabled').checked = data.config.dedup_enabled;
+        }
+    } catch (e) {
+        console.error('Cache stats load failed:', e);
+    }
+}
+
+async function toggleBetaMode() {
+    const enabled = document.getElementById('cache-beta').checked;
+    try {
+        const resp = await fetch('/v1/config/cache', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({beta_mode: enabled})
+        });
+        const data = await resp.json();
+        document.getElementById('cache-save-status').textContent = enabled ? '✓ Beta mode enabled' : '✓ Beta mode disabled';
+        setTimeout(() => { document.getElementById('cache-save-status').textContent = ''; }, 3000);
+        loadCacheStats();
+    } catch (e) {
+        document.getElementById('cache-save-status').textContent = '✗ Failed: ' + e.message;
+    }
+}
+
+async function saveCacheConfig() {
+    const config = {
+        exact_cache_ttl: parseInt(document.getElementById('cfg-exact-ttl').value),
+        session_prefix_ttl: parseInt(document.getElementById('cfg-prefix-ttl').value),
+        max_entries: parseInt(document.getElementById('cfg-max-entries').value),
+        min_prompt_chars: parseInt(document.getElementById('cfg-min-chars').value),
+        exact_cache_enabled: document.getElementById('cfg-exact-enabled').checked,
+        session_prefix_enabled: document.getElementById('cfg-prefix-enabled').checked,
+        dedup_enabled: document.getElementById('cfg-dedup-enabled').checked,
+    };
+    try {
+        const resp = await fetch('/v1/config/cache', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(config)
+        });
+        const data = await resp.json();
+        document.getElementById('cache-save-status').textContent = '✓ Saved';
+        setTimeout(() => { document.getElementById('cache-save-status').textContent = ''; }, 3000);
+        loadCacheStats();
+    } catch (e) {
+        document.getElementById('cache-save-status').textContent = '✗ Failed: ' + e.message;
+    }
+}
+
+async function clearCache() {
+    if (!confirm('Clear all cached responses?')) return;
+    try {
+        await fetch('/v1/cache/clear', {method: 'POST'});
+        loadCacheStats();
+    } catch (e) {
+        alert('Failed to clear cache: ' + e.message);
+    }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,35 @@
+[Unit]
+Description=Ollama Cloud Tools - API proxy, router & dashboard
+Documentation=https://github.com/evanrice/ollama-cloud-tools
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+Group=__GROUP__
+WorkingDirectory=__INSTALL_DIR__/repo
+ExecStart=__VENV__/bin/python -m oct.cli start
+Restart=on-failure
+RestartSec=5
+StartLimitBurst=3
+StartLimitIntervalSec=60
+
+# Environment
+EnvironmentFile=-__INSTALL_DIR__/env
+Environment=PATH=__VENV__/bin:/usr/local/bin:/usr/bin:/bin
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=__INSTALL_DIR__ /tmp
+PrivateTmp=true
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=oct
+
+[Install]
+WantedBy=multi-user.target

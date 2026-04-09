@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.guanaco.start</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/__USER__/.local/bin/guanaco</string>
+        <string>start</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/guanaco.stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/tmp/guanaco.stderr.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/Users/__USER__/.local/bin</string>
+        <key>SSL_CERT_FILE</key>
+        <string>__SSL_CERT_FILE__</string>
+        <key>GUANACO_CONFIG_DIR</key>
+        <string>/Users/__USER__/.guanaco</string>
+    </dict>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/__USER__/.guanaco/repo</string>
+</dict>
+</plist>
