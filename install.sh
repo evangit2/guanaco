@@ -33,7 +33,7 @@ prompt() {
     else
         printf "${CYAN}${question}${RESET}: "
     fi
-    read -r value
+    read -r value < /dev/tty || true
     declare -g "$var"="${value:-$default}"
 }
 
@@ -42,7 +42,7 @@ prompt_yesno() {
     local indicator="y/N"
     [ "$default" = "y" ] && indicator="Y/n"
     printf "${CYAN}${question}${RESET} [${indicator}]: "
-    read -r value
+    read -r value < /dev/tty || true
     value="${value:-$default}"
     [[ "$value" =~ ^[Yy] ]] && declare -g "$var"="y" || declare -g "$var"="n"
 }
@@ -183,16 +183,6 @@ echo ""
 echo "${BOLD}━━━ Step 2: Configuration ━━━${RESET}"
 echo ""
 
-# Check if we have a TTY for interactive prompts
-if [ ! -t 0 ]; then
-    echo "  ${YELLOW}⚠ Not running in a terminal — skipping interactive setup.${RESET}"
-    echo "  ${DIM}Run 'guanaco setup' after installation to configure.${RESET}"
-    echo ""
-    OLLAMA_API_KEY=""
-    PORT="$DEFAULT_PORT"
-    BIND_LOCAL="y"
-    BIND_HOST="127.0.0.1"
-else
 echo "  You'll need an Ollama Cloud API key."
 echo "  Get one at: ${CYAN}https://ollama.com${RESET}"
 echo ""
@@ -239,7 +229,6 @@ else
     echo -e "  ${RED}⚠ Binding to 0.0.0.0 — Guanaco will be accessible from ALL network interfaces.${RESET}"
     echo -e "  ${RED}  Make sure you have a firewall or authentication layer in place.${RESET}"
 fi
-fi # end TTY check
 
 echo ""
 
