@@ -412,17 +412,24 @@ echo "    guanaco setup          Reconfigure (API key, ports, etc.)"
 echo ""
 
 # ── Offer to start ──
-echo "  ${BOLD}Start Guanaco now? [Y/n]${RESET}"
-read -r START_NOW < /dev/tty || true
-START_NOW="${START_NOW:-y}"
-if [[ "$START_NOW" =~ ^[Yy]$ ]]; then
+echo "  ${BOLD}Start Guanaco now?${RESET}"
+echo "  ${DIM}  1) Foreground (Ctrl+C to stop)${RESET}"
+echo "  ${DIM}  2) Install as systemd service (auto-starts on boot, runs in background)${RESET}"
+echo ""
+echo "  ${BOLD}Choose [1/2]:${RESET} "
+read -r START_CHOICE < /dev/tty || true
+START_CHOICE="${START_CHOICE:-1}"
+
+if [[ "$START_CHOICE" == "2" ]]; then
     echo ""
-    echo "  ${CYAN}Starting Guanaco...${RESET}"
-    "$BIN_DIR/guanaco" start
+    echo "  ${CYAN}Installing Guanaco as a systemd service...${RESET}"
+    "$BIN_DIR/guanaco" install
 else
     echo ""
-    echo "  ${DIM}Run $BIN_DIR/guanaco start when ready.${RESET}"
+    echo "  ${CYAN}Starting Guanaco in foreground...${RESET}"
+    echo "  ${DIM}Press Ctrl+C to stop. Run 'guanaco install' for background service.${RESET}"
     echo ""
+    "$BIN_DIR/guanaco" start
 fi
 
 # ── macOS auto-start tip ──

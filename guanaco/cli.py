@@ -5,7 +5,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import subprocess
 import sys
+import time
 from pathlib import Path
 
 
@@ -60,6 +62,9 @@ def main():
     # ── version ──
     subparsers.add_parser("version", help="Show version")
 
+    # ── install ──
+    subparsers.add_parser("install", help="Install as systemd service (auto-starts on boot)")
+
     args = parser.parse_args()
 
     if args.command is None:
@@ -101,6 +106,10 @@ def main():
 
     if args.command == "config":
         _run_config(args)
+        return
+
+    if args.command == "install":
+        _run_install()
         return
 
 
@@ -175,6 +184,102 @@ def _run_setup():
     print(f"\nRun 'guanaco start' to begin!")
 
 
+def _run_install():
+    """Install Guanaco as a systemd service that starts on boot."""
+    import shutil
+    from guanaco.config import load_config, get_default_config_dir
+
+    config = load_config()
+    host = config.router.host or "0.0.0.0"
+    port = config.router.port or 8080
+    config_dir = str(get_default_config_dir())
+    venv_python = os.path.join(os.path.dirname(os.path.abspath(shutil.which("python3") or "python3")), "python")
+    if not os.path.exists(venv_python):
+        venv_python = shutil.which("python3") or "/usr/bin/python3"
+    install_dir = os.path.dirname(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+    service_name = "guanaco"
+
+    # Detect Tailscale IP for the service environment
+    ts_ip = ""
+    try:
+        result = subprocess.run(["tailscale", "ip", "-4"], capture_output=True, text=True, timeout=3)
+        if result.returncode == 0:
+            ts_ip = result.stdout.strip()
+    except Exception:
+        pass
+
+    unit_file = f"""[Unit]
+Description=Guanaco - LLM Proxy & Dashboard
+Documentation=https://github.com/evangit2/guanaco
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={os.environ.get("USER", "root")}
+Group={os.environ.get("USER", "root")}
+Environment=PATH={os.path.dirname(shutil.which("python3") or "/usr/bin/python3")}:/usr/bin:/usr/local/bin
+Environment=GUANACO_CONFIG_DIR={config_dir}
+WorkingDirectory={install_dir}
+ExecStart={venv_python} -m uvicorn guanaco.app:create_app --factory --host {host} --port {port} --log-level info
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+    service_path = f"/etc/systemd/system/{service_name}.service"
+
+    # Check if already installed
+    if os.path.exists(service_path):
+        print(f"📝 Updating existing service at {service_path}")
+    else:
+        print(f"📝 Creating service at {service_path}")
+
+    print(f"   Host: {host}:{port}")
+    print(f"   User: {os.environ.get('USER', 'root')}")
+    print(f"   Config: {config_dir}")
+    if ts_ip:
+        print(f"   🌐 Tailscale: {ts_ip}")
+    print()
+
+    # Write service file
+    try:
+        with open(service_path, "w") as f:
+            f.write(unit_file)
+        print(f"✅ Service file written")
+    except PermissionError:
+        print(f"🔑 Need sudo to write service file...")
+        result = subprocess.run(["sudo", "tee", service_path], input=unit_file, text=True, capture_output=True)
+        if result.returncode != 0:
+            print(f"❌ Failed to write service file: {result.stderr}")
+            return
+
+    # Reload systemd
+    subprocess.run(["sudo", "systemctl", "daemon-reload"], check=False)
+
+    # Enable and start
+    subprocess.run(["sudo", "systemctl", "enable", service_name], check=False)
+    subprocess.run(["sudo", "systemctl", "restart", service_name], check=False)
+    time.sleep(2)
+
+    # Check status
+    result = subprocess.run(["sudo", "systemctl", "is-active", service_name], capture_output=True, text=True)
+    if result.stdout.strip() == "active":
+        print(f"✅ Guanaco service is running!")
+        print(f"   Dashboard: http://{ts_ip or host}:{port}/dashboard/")
+        print()
+        print(f"   Manage with:")
+        print(f"     sudo systemctl status guanaco")
+        print(f"     sudo systemctl stop guanaco")
+        print(f"     sudo systemctl restart guanaco")
+        print(f"     sudo journalctl -u guanaco -f")
+    else:
+        print(f"⚠ Service may not have started. Check logs:")
+        print(f"   sudo journalctl -u guanaco -n 50")
+
+
 def _run_start(args):
     """Start all services using uvicorn."""
     from guanaco.config import load_config, save_config
@@ -205,9 +310,16 @@ def _run_start(args):
         import uvicorn
         from guanaco.app import create_app
         app = create_app(config)
+
+        # Suggest installing as a service if not already running as one
+        if not os.path.exists("/etc/systemd/system/guanaco.service"):
+            print("  💡 Tip: Run 'guanaco install' to run as a systemd service (auto-starts on boot)")
+            print()
+
         uvicorn.run(app, host=config.router.host, port=port, log_level="info")
     except KeyboardInterrupt:
         print("\n👋 Shutting down...")
+        print("  💡 Run 'guanaco install' to run as a background service that survives restarts")
     except ImportError as e:
         print(f"❌ Missing dependency: {e}")
         print("   Run: pip install -e .")
