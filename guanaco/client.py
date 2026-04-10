@@ -378,9 +378,10 @@ class OllamaClient:
         payload_copy["stream"] = True
 
         first_token_time = None
-        total_tokens = 0
+        content_chars = 0       # character count for token estimation
+        reasoning_chars = 0     # separate count for reasoning tokens
         prompt_tokens = 0
-        completion_tokens = 0
+        completion_tokens = 0   # from usage data if available
         start = time.time()
 
         async with client.stream("POST", OLLAMA_CHAT_URL, json=payload_copy) as resp:
@@ -389,16 +390,24 @@ class OllamaClient:
                 if line.startswith("data: "):
                     data = line[6:]
                     if data.strip() == "[DONE]":
-                        # Yield final chunk with metrics
+                        # Estimate tokens from character count (4 chars ≈ 1 token)
+                        estimated_content_tokens = max(1, content_chars // 4) if content_chars else 0
+                        estimated_reasoning_tokens = max(1, reasoning_chars // 4) if reasoning_chars else 0
+                        # Use API-provided completion_tokens if available, otherwise estimated content tokens
+                        final_tokens = completion_tokens or estimated_content_tokens
                         elapsed = time.time() - start
+                        ttft = (first_token_time - start) if first_token_time else None
+                        generation_time = (elapsed - ttft) if ttft and elapsed > ttft else elapsed
+
                         metrics = {
-                            "eval_count": completion_tokens or total_tokens,
-                            "elapsed_seconds": elapsed,
+                            "eval_count": final_tokens,
+                            "prompt_eval_count": prompt_tokens,
+                            "reasoning_tokens": estimated_reasoning_tokens,
+                            "elapsed_seconds": round(elapsed, 3),
+                            "ttft_seconds": round(ttft, 3) if ttft else None,
                         }
-                        if (completion_tokens or total_tokens) and elapsed > 0:
-                            metrics["tps"] = round((completion_tokens or total_tokens) / elapsed, 2)
-                        if first_token_time:
-                            metrics["ttft_seconds"] = round(first_token_time - start, 3)
+                        if final_tokens and generation_time > 0:
+                            metrics["tps"] = round(final_tokens / generation_time, 2)
                         if prompt_tokens:
                             metrics["prompt_eval_count"] = prompt_tokens
                         yield f"data: [DONE]\n\n"
@@ -407,14 +416,16 @@ class OllamaClient:
                         return  # Exit generator, don't yield another [DONE]
                     try:
                         chunk_data = json.loads(data)
-                        # Count tokens from streaming chunks
+                        # Accumulate character counts for token estimation
                         for choice in chunk_data.get("choices", []):
                             delta = choice.get("delta", {})
                             content = delta.get("content", "")
-                            if content:
+                            reasoning = delta.get("reasoning", "") or delta.get("reasoning_content", "")
+                            if content or reasoning:
                                 if first_token_time is None:
                                     first_token_time = time.time()
-                                total_tokens += 1
+                                content_chars += len(content)
+                                reasoning_chars += len(reasoning)
                         # Capture usage data from final streaming chunk (Ollama/OpenAI format)
                         usage = chunk_data.get("usage")
                         if usage:
@@ -428,18 +439,22 @@ class OllamaClient:
                 elif line.strip():
                     yield f"data: {line}\n\n"
             # If we get here without seeing [DONE], the stream ended unexpectedly
-            # Yield [DONE] and metrics anyway
+            # Estimate tokens and yield [DONE] + metrics anyway
+            estimated_content_tokens = max(1, content_chars // 4) if content_chars else 0
+            estimated_reasoning_tokens = max(1, reasoning_chars // 4) if reasoning_chars else 0
+            final_tokens = completion_tokens or estimated_content_tokens
             elapsed = time.time() - start
+            ttft = (first_token_time - start) if first_token_time else None
+            generation_time = (elapsed - ttft) if ttft and elapsed > ttft else elapsed
             metrics = {
-                "eval_count": completion_tokens or total_tokens,
-                "elapsed_seconds": elapsed,
+                "eval_count": final_tokens,
+                "prompt_eval_count": prompt_tokens,
+                "reasoning_tokens": estimated_reasoning_tokens,
+                "elapsed_seconds": round(elapsed, 3),
+                "ttft_seconds": round(ttft, 3) if ttft else None,
             }
-            if (completion_tokens or total_tokens) and elapsed > 0:
-                metrics["tps"] = round((completion_tokens or total_tokens) / elapsed, 2)
-            if first_token_time:
-                metrics["ttft_seconds"] = round(first_token_time - start, 3)
-            if prompt_tokens:
-                metrics["prompt_eval_count"] = prompt_tokens
+            if final_tokens and generation_time > 0:
+                metrics["tps"] = round(final_tokens / generation_time, 2)
             yield "data: [DONE]\n\n"
             yield f"__oct_metrics__:{json.dumps(metrics)}\n\n"
 

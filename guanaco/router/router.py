@@ -1032,10 +1032,9 @@ def _is_empty_stream_buffer(chunks: list[str]) -> bool:
             for choice in data.get("choices", []):
                 delta = choice.get("delta", {})
                 content = delta.get("content", "")
+                reasoning = delta.get("reasoning", "") or delta.get("reasoning_content", "")
                 if content and content.strip():
                     return False
-                # Some models (GLM) stream reasoning_content
-                reasoning = delta.get("reasoning_content", "")
                 if reasoning and reasoning.strip():
                     return False
                 # tool_calls count as non-empty
