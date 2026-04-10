@@ -29,7 +29,11 @@ def _describe_error(exc: Exception) -> str:
     if isinstance(exc, httpx.ConnectError):
         return f"ConnectError: {exc}"
     if isinstance(exc, httpx.HTTPStatusError):
-        return f"HTTP {exc.response.status_code}: {exc.response.text[:200]}"
+        try:
+            body = exc.response.text[:200]
+        except Exception:
+            body = "(response body not available)"
+        return f"HTTP {exc.response.status_code}: {body}"
     msg = str(exc)
     if msg:
         return msg
@@ -287,10 +291,15 @@ async def _call_fallback_provider(payload: dict, fallback_config, stream: bool =
         payload["max_tokens"] = fallback_config.max_tokens
 
     timeout = fallback_config.timeout or 60.0
+    # For streaming, use a long connect timeout but generous read timeout for thinking models
+    connect_timeout = min(timeout, 30.0)
+    read_timeout = max(timeout, 120.0)
 
     if stream:
         # Streaming: use a long-lived client that stays open while the generator is consumed
-        client = httpx.AsyncClient(timeout=timeout)
+        # Use generous read timeout for thinking models that can pause mid-stream
+        client_timeout = httpx.Timeout(connect=connect_timeout, read=read_timeout, write=30.0, pool=30.0)
+        client = httpx.AsyncClient(timeout=client_timeout)
 
         async def stream_from_fallback():
             try:
@@ -1023,10 +1032,9 @@ def _is_empty_stream_buffer(chunks: list[str]) -> bool:
             for choice in data.get("choices", []):
                 delta = choice.get("delta", {})
                 content = delta.get("content", "")
+                reasoning = delta.get("reasoning", "") or delta.get("reasoning_content", "")
                 if content and content.strip():
                     return False
-                # Some models (GLM) stream reasoning_content
-                reasoning = delta.get("reasoning_content", "")
                 if reasoning and reasoning.strip():
                     return False
                 # tool_calls count as non-empty
@@ -1120,14 +1128,26 @@ async def _stream_completion_openai(client, payload, model, analytics, start_tim
                         f"Ollama stream ended before producing any chunks"
                     )
 
-                # Got first chunk — yield it and continue with generous inter-chunk timeouts
-                yield first_chunk
+                # Got first chunk — process it (metrics chunks are internal, not yield)
+                if first_chunk.startswith("__oct_metrics__:"):
+                    try:
+                        stream_metrics = json.loads(first_chunk.split(":", 1)[1])
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+                else:
+                    yield first_chunk
                 try:
                     while True:
                         try:
                             chunk = await asyncio.wait_for(
                                 ollama_stream.__anext__(), timeout=chunk_timeout
                             )
+                            if chunk.startswith("__oct_metrics__:"):
+                                try:
+                                    stream_metrics = json.loads(chunk.split(":", 1)[1])
+                                except (json.JSONDecodeError, ValueError):
+                                    pass
+                                continue
                             yield chunk
                         except StopAsyncIteration:
                             break
@@ -1184,6 +1204,7 @@ async def _stream_completion_openai(client, payload, model, analytics, start_tim
                 if used_fallback and fallback_model:
                     analytics.log_llm(
                         model=_normalize_model_name(fallback_model),
+                        prompt_tokens=stream_metrics.get("prompt_eval_count", 0),
                         completion_tokens=stream_metrics.get("eval_count"),
                         tps=stream_metrics.get("tps"),
                         ttft_seconds=stream_metrics.get("ttft_seconds"),
@@ -1201,6 +1222,7 @@ async def _stream_completion_openai(client, payload, model, analytics, start_tim
                 else:
                     analytics.log_llm(
                         model=_normalize_model_name(model),
+                        prompt_tokens=stream_metrics.get("prompt_eval_count", 0),
                         completion_tokens=stream_metrics.get("eval_count"),
                         tps=stream_metrics.get("tps"),
                         ttft_seconds=stream_metrics.get("ttft_seconds"),

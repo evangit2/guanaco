@@ -515,25 +515,41 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
             from importlib.metadata import version as pkg_version
             current_version = pkg_version("guanaco")
         except Exception:
-            current_version = "0.3.0"
+            current_version = "0.0.0"
 
         result = {"current_version": current_version, "latest_version": None, "update_available": False, "error": None}
 
         try:
-            # Get latest release tag from GitHub API
+            # Get release info from GitHub API
+            # Default: only check stable releases (/releases/latest)
+            # If allow_prerelease is set in config, also check prereleases
+            config = get_config()
+            allow_prerelease = getattr(config.router, "allow_prerelease", False)
             import httpx
             async with httpx.AsyncClient(timeout=10) as hc:
+                release_data = None
+                # Always try stable release first
                 resp = await hc.get(
                     "https://api.github.com/repos/evangit2/guanaco/releases/latest",
                     headers={"Accept": "application/vnd.github+json"}
                 )
                 if resp.status_code == 200:
-                    data = resp.json()
-                    tag = data.get("tag_name", "")
+                    release_data = resp.json()
+                elif allow_prerelease:
+                    # No stable release found — check all releases including prereleases
+                    resp = await hc.get(
+                        "https://api.github.com/repos/evangit2/guanaco/releases",
+                        headers={"Accept": "application/vnd.github+json"}
+                    )
+                    if resp.status_code == 200 and resp.json():
+                        release_data = resp.json()[0]  # GitHub sorts newest-first
+                if release_data:
+                    tag = release_data.get("tag_name", "")
                     # Strip leading 'v' if present
                     result["latest_version"] = tag.lstrip("v")
-                    result["release_notes"] = data.get("body", "")[:500]
-                    result["release_url"] = data.get("html_url", "")
+                    result["release_notes"] = release_data.get("body", "")[:500]
+                    result["release_url"] = release_data.get("html_url", "")
+                    result["prerelease"] = release_data.get("prerelease", False)
                 else:
                     result["error"] = f"GitHub API returned {resp.status_code}"
         except Exception as e:
@@ -554,9 +570,9 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
                 # Fall back to string comparison
                 result["update_available"] = result["latest_version"] != current_version
 
-        # Include auto_update setting
-        config = get_config()
+        # Include auto_update and allow_prerelease settings
         result["auto_update"] = config.router.auto_update
+        result["allow_prerelease"] = getattr(config.router, "allow_prerelease", False)
 
         return result
 
@@ -568,21 +584,28 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
             from importlib.metadata import version as pkg_version
             old_version = pkg_version("guanaco")
         except Exception:
-            old_version = "0.3.0"
+            old_version = "0.0.0"
 
         project_dir = Path(__file__).resolve().parent.parent.parent
 
         try:
-            # Step 1: Git fetch + pull
+            # Step 1: Determine current branch and pull from it
+            branch_result = subprocess.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                cwd=project_dir, capture_output=True, text=True, timeout=10
+            )
+            current_branch = branch_result.stdout.strip() or "main"
+
+            # Step 1b: Git fetch + pull
             fetch_result = subprocess.run(
-                ["git", "fetch", "origin", "main"],
+                ["git", "fetch", "origin", current_branch],
                 cwd=project_dir, capture_output=True, text=True, timeout=30
             )
             if fetch_result.returncode != 0:
                 return {"status": "error", "step": "fetch", "message": fetch_result.stderr[:200]}
 
             pull_result = subprocess.run(
-                ["git", "pull", "origin", "main"],
+                ["git", "pull", "origin", current_branch],
                 cwd=project_dir, capture_output=True, text=True, timeout=30
             )
             if pull_result.returncode != 0:

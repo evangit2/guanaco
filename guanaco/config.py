@@ -38,6 +38,7 @@ class RouterConfig(BaseModel):
     use_tailscale: bool = False
     autostart: bool = False
     auto_update: bool = False
+    allow_prerelease: bool = False
 
 
 class LLMConfig(BaseModel):

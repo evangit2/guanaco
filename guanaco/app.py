@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from guanaco.config import load_config, get_config, AppConfig, get_base_url, get_tailscale_ip
 from guanaco.client import OllamaClient
+from guanaco import __version__
 from guanaco.router.router import create_router as create_llm_router
 from guanaco.search.providers import ALL_PROVIDERS
 from guanaco.dashboard import create_dashboard_router
@@ -58,7 +59,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
 
     app = FastAPI(
         title="Guanaco",
-        version="0.3.0",
+        version=__version__,
         lifespan=lifespan,
     )
 
@@ -125,7 +126,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     # ── Health check ──
     @app.get("/health")
     async def health():
-        return {"status": "ok", "version": "0.3.0"}
+        return {"status": "ok", "version": __version__}
 
     # ── LLM Router ──
     app.include_router(create_llm_router(client, analytics=analytics, config=config))
