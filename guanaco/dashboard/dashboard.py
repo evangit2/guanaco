@@ -95,15 +95,18 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
         providers_data = config.providers.model_dump()
         # Include endpoint metadata from provider classes
         from guanaco.search.providers import ALL_PROVIDERS
-        provider_endpoints = {cls.name: cls.endpoints for cls in ALL_PROVIDERS}
+        provider_endpoints = {cls.name: [dict(ep) for ep in cls.endpoints] for cls in ALL_PROVIDERS}
+        
+        # Merge: config data + all known providers (in case config is missing some)
+        all_provider_names = set(providers_data.keys()) | set(provider_endpoints.keys())
         html = html.replace("__PROVIDERS__", json.dumps({
             k: {
-                "enabled": v.get("enabled", True),
-                "require_api_key": v.get("require_api_key", False),
+                "enabled": providers_data.get(k, {}).get("enabled", True),
+                "require_api_key": providers_data.get(k, {}).get("require_api_key", False),
                 "endpoints": provider_endpoints.get(k, []),
                 "prefix": next((cls.prefix for cls in ALL_PROVIDERS if cls.name == k), f"/{k}"),
             }
-            for k, v in providers_data.items()
+            for k in all_provider_names
         }))
 
         return HTMLResponse(content=html)

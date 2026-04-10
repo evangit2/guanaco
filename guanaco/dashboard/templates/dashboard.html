@@ -800,21 +800,8 @@ function updateNetworkInfo() {
             : `<div style="color:var(--text2);font-size:11px;">Tailscale not installed — <a href="https://tailscale.com" target="_blank" style="color:var(--accent);">install it</a> for remote access</div>`);
 }
 
-    } catch (e) {
-        errorEl.textContent = 'Request failed: ' + e.message;
-        errorEl.style.display = 'block';
-    }
-}
 
-        }
-    } catch (e) {
-        errorEl.textContent = 'Request failed: ' + e.message;
-        errorEl.style.display = 'block';
-        summaryEl.style.display = 'none';
-    }
-}
 
-}
 
 function generateKey() {
     fetch('/dashboard/api/keys/generate', {
@@ -1484,13 +1471,6 @@ document.addEventListener('DOMContentLoaded', () => {
         `<div class="pill ${cfg.enabled ? 'on' : 'off'}">${name}</div>`
     ).join('');
 
-    // Playground — populate provider dropdown
-    if (playgroundSel) {
-        playgroundSel.innerHTML = Object.entries(PROVIDERS)
-            .filter(([_, c]) => c.enabled)
-            .map(([name, _]) => `<option value="${name}">${name}</option>`)
-            .join('');
-    }
 
     // Stats
     const stats = USAGE;
