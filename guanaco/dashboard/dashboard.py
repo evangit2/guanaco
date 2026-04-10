@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, BackgroundTasks
 from fastapi.responses import HTMLResponse, FileResponse
 import httpx
 
@@ -510,7 +510,6 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
     @router.get("/api/update/check")
     async def check_for_update(request: Request):
         """Check GitHub for the latest release and compare with current version."""
-        import subprocess
         try:
             from importlib.metadata import version as pkg_version
             current_version = pkg_version("guanaco")
@@ -577,8 +576,13 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
         return result
 
     @router.post("/api/update/apply")
-    async def apply_update(request: Request):
-        """Pull latest from git, reinstall, and restart the service."""
+    async def apply_update(request: Request, background_tasks: BackgroundTasks):
+        """Pull latest from git, reinstall, and restart the service.
+
+        The restart happens in a BackgroundTask so the HTTP response is sent
+        BEFORE the service kills itself — otherwise the client never sees the
+        success message.
+        """
         import subprocess
         try:
             from importlib.metadata import version as pkg_version
@@ -611,15 +615,7 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
             if pull_result.returncode != 0:
                 return {"status": "error", "step": "pull", "message": pull_result.stderr[:200]}
 
-            # Step 2: Get the new version
-            version_file = project_dir / "guanaco" / "__init__.py"
-            new_version = old_version
-            for line in version_file.read_text().splitlines():
-                if line.startswith("__version__"):
-                    new_version = line.split('"')[1]
-                    break
-
-            # Step 3: Reinstall
+            # Step 2: Reinstall
             # Check common venv locations: ~/.guanaco/venv (install.sh default), then repo-local
             install_dir = Path.home() / ".guanaco"
             venv_python = install_dir / "venv" / "bin" / "python"
@@ -632,8 +628,31 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
             if install_result.returncode != 0:
                 return {"status": "error", "step": "install", "message": install_result.stderr[:200]}
 
-            # Step 4: Restart systemd service (runs as root via sudo)
-            subprocess.run(["sudo", "systemctl", "restart", "guanaco.service"], capture_output=True, timeout=10)
+            # Step 3: Validate the update can actually start before restarting
+            validate_result = subprocess.run(
+                [str(venv_python), "-c",
+                 "from guanaco.app import create_app; app = create_app(); "
+                 "from importlib.metadata import version; print(version('guanaco'))"],
+                cwd=project_dir, capture_output=True, text=True, timeout=15
+            )
+            if validate_result.returncode != 0:
+                return {
+                    "status": "error",
+                    "step": "validate",
+                    "message": f"Update installed but app failed to start: {validate_result.stderr[:200]}"
+                }
+            new_version = validate_result.stdout.strip()
+
+            # Step 4: Schedule restart as BackgroundTask so the response is sent first
+            async def _restart_service():
+                import asyncio
+                await asyncio.sleep(1)  # give the HTTP response time to be sent
+                subprocess.run(
+                    ["sudo", "systemctl", "restart", "guanaco.service"],
+                    capture_output=True, timeout=10
+                )
+
+            background_tasks.add_task(_restart_service)
 
             return {
                 "status": "ok",

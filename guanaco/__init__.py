@@ -4,4 +4,4 @@ try:
     from importlib.metadata import version as _version
     __version__ = _version("guanaco")
 except Exception:
-    __version__ = "0.3.5"  # fallback when not installed via pip
+    __version__ = "0.3.6"  # fallback when not installed via pip
