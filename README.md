@@ -1,3 +1,6 @@
+<div align="center">
+  <img src="docs/logo.png" width="200" alt="Guanaco logo"/>
+  
 # Guanaco 🦙
 
 [![PyPI version](https://img.shields.io/pypi/v/guanaco?color=brightgreen)](https://pypi.org/project/guanaco/)
@@ -8,6 +11,8 @@
 **Maximize your Ollama Cloud subscription.**
 
 Guanaco is a self-hosted FastAPI proxy that sits between your applications and Ollama Cloud. It provides an OpenAI-compatible `/v1/chat/completions` endpoint, emulates 8 major search and scrape APIs, tracks token usage, supports transparent fallback to external providers, and ships with a real-time management dashboard — all on a single port.
+
+</div>
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/evangit2/guanaco/main/install.sh | bash
