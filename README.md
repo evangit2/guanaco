@@ -78,6 +78,7 @@ The installer starts Guanaco automatically (as a systemd service or in the foreg
 | `guanaco config --show` | Show current configuration |
 | `guanaco config --set <key> <value>` | Update a config value |
 | `guanaco version` | Show version |
+| `guanaco uninstall` | Remove systemd service and clean up |
 
 ---
 
