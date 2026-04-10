@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from guanaco.config import load_config, get_config, AppConfig, get_base_url, get_tailscale_ip
 from guanaco.client import OllamaClient
-__version__ = "0.3.5"
+from guanaco import __version__
 from guanaco.router.router import create_router as create_llm_router
 from guanaco.search.providers import ALL_PROVIDERS
 from guanaco.dashboard import create_dashboard_router
