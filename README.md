@@ -93,7 +93,7 @@ Your apps can now hit:
 
 The built-in web dashboard is available at `http://localhost:8080/dashboard`.
 
-![Guanaco Dashboard](https://i.ibb.co/0jCGsv6p/Screenshot-2026-04-09-195752.png)
+![Guanaco Dashboard](https://i.ibb.co/KzzP6yNw/Screenshot-2026-04-09-223634.png)
 
 Features: real-time request analytics, token usage graphs, model configuration, fallback provider setup, API key management, and Ollama Cloud quota monitoring.
 
