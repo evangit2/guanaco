@@ -249,6 +249,118 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
+    @router.post("/api/test-search")
+    async def test_search(request: Request):
+        """Test a search provider by forwarding the query to Ollama and formatting results."""
+        from guanaco.search.providers import ALL_PROVIDERS
+
+        body = await request.json()
+        provider_name = body.get("provider", "")
+        query = body.get("query", "")
+
+        if not query:
+            return {"error": "Query is required"}
+
+        # Find the provider class
+        provider_cls = next((cls for cls in ALL_PROVIDERS if cls.name == provider_name), None)
+        if not provider_cls:
+            return {"error": f"Unknown provider: {provider_name}"}
+
+        config = get_config()
+        ollama_client = OllamaClient(api_key=config.ollama_api_key or "")
+
+        try:
+            ollama_resp = await ollama_client.search(query=query, max_results=5)
+        except Exception as e:
+            return {"error": f"Ollama search failed: {str(e)}"}
+
+        # Format results per provider's response model
+        results = []
+        for r in ollama_resp.get("results", []):
+            results.append({
+                "title": r.get("title", ""),
+                "url": r.get("url", ""),
+                "content": r.get("content", ""),
+            })
+
+        return {"query": query, "results": results}
+
+    @router.post("/api/summarize")
+    async def summarize_search(request: Request):
+        """Search the web and summarize results using the configured summary model.
+
+        BETA — combines Ollama web_search with LLM summarization.
+        """
+        body = await request.json()
+        query = body.get("query", "")
+        max_results = min(max(body.get("max_results", 5), 1), 10)
+
+        if not query:
+            return {"error": "Query is required"}
+
+        config = get_config()
+        ollama_client = OllamaClient(api_key=config.ollama_api_key or "")
+
+        # Step 1: Search
+        try:
+            ollama_resp = await ollama_client.search(query=query, max_results=max_results)
+        except Exception as e:
+            return {"error": f"Search failed: {str(e)}"}
+
+        results = []
+        for r in ollama_resp.get("results", []):
+            results.append({
+                "title": r.get("title", ""),
+                "url": r.get("url", ""),
+                "content": r.get("content", ""),
+            })
+
+        if not results:
+            return {"query": query, "results": [], "summary": "No results found.", "model": None}
+
+        # Step 2: Summarize using the configured summary_model
+        summary_model = getattr(config.llm, "summary_model", "") or ""
+        summary = None
+        model_used = summary_model
+
+        if summary_model:
+            try:
+                # Build context from search results
+                context_parts = []
+                for i, r in enumerate(results, 1):
+                    context_parts.append(f"[{i}] {r['title']}\n{r['content'][:500]}")
+                context = "\n\n".join(context_parts)
+
+                prompt = (
+                    f"Summarize the following search results for the query: \"{query}\"\n\n"
+                    f"Provide a concise, informative summary that directly answers the query. "
+                    f"Include key facts and cite sources by number (e.g., [1], [2]).\n\n"
+                    f"Search results:\n{context}"
+                )
+
+                payload = {
+                    "model": summary_model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 4096,
+                    "stream": False,
+                }
+
+                # Call through the LLM client directly
+                llm_resp = await ollama_client.chat_completion(payload)
+                choices = llm_resp.get("choices", [])
+                if choices:
+                    msg = choices[0].get("message", {})
+                    summary = msg.get("content", "") or msg.get("reasoning", "")
+            except Exception as e:
+                summary = f"Summarization failed: {str(e)}"
+
+        return {
+            "query": query,
+            "results": results,
+            "summary": summary,
+            "model": model_used,
+        }
+
     @router.get("/api/config")
     async def get_config_api(request: Request):
         """Get full config as JSON (llm settings + fallback settings)."""
