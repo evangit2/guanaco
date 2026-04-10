@@ -37,7 +37,7 @@ class SearXNGSearchResponse(BaseModel):
 class SearXNGProvider(ProviderEmulator):
     name = "searxng"
     prefix = "/searxng"
-    endpoints = [{"path": "/search", "method": "GET/POST"}]
+    endpoints = ({"path": "/search", "method": "GET/POST"},)
 
     def register_routes(self, app):
         router = APIRouter(prefix=self.prefix, tags=["SearXNG"])

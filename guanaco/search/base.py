@@ -15,7 +15,7 @@ class ProviderEmulator(ABC):
 
     name: str = ""
     prefix: str = ""
-    endpoints: list[dict] = []
+    endpoints: tuple[dict, ...] = ()  # Use tuple — mutable list default is a Python footgun
 
     def __init__(self, ollama_client: "OllamaClient", analytics: Optional["AnalyticsLogger"] = None):
         self.ollama = ollama_client

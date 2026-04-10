@@ -95,15 +95,18 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
         providers_data = config.providers.model_dump()
         # Include endpoint metadata from provider classes
         from guanaco.search.providers import ALL_PROVIDERS
-        provider_endpoints = {cls.name: cls.endpoints for cls in ALL_PROVIDERS}
+        provider_endpoints = {cls.name: [dict(ep) for ep in cls.endpoints] for cls in ALL_PROVIDERS}
+        
+        # Merge: config data + all known providers (in case config is missing some)
+        all_provider_names = set(providers_data.keys()) | set(provider_endpoints.keys())
         html = html.replace("__PROVIDERS__", json.dumps({
             k: {
-                "enabled": v.get("enabled", True),
-                "require_api_key": v.get("require_api_key", False),
+                "enabled": providers_data.get(k, {}).get("enabled", True),
+                "require_api_key": providers_data.get(k, {}).get("require_api_key", False),
                 "endpoints": provider_endpoints.get(k, []),
                 "prefix": next((cls.prefix for cls in ALL_PROVIDERS if cls.name == k), f"/{k}"),
             }
-            for k, v in providers_data.items()
+            for k in all_provider_names
         }))
 
         return HTMLResponse(content=html)
@@ -368,6 +371,7 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
         return {
             "llm": config.llm.model_dump(),
             "fallback": config.fallback.model_dump(),
+            "search": config.search.model_dump(),
         }
 
     @router.post("/api/config")
@@ -382,6 +386,17 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
             for key, value in llm_updates.items():
                 if hasattr(config.llm, key):
                     setattr(config.llm, key, value)
+
+        # Update search settings
+        if "search" in body:
+            s_updates = body["search"]
+            s = config.search
+            if "summarize_enabled" in s_updates:
+                s.summarize_enabled = bool(s_updates["summarize_enabled"])
+            if "summarize_all" in s_updates:
+                s.summarize_all = bool(s_updates["summarize_all"])
+            if "summary_model" in s_updates:
+                s.summary_model = str(s_updates["summary_model"])
 
         # Update fallback settings
         if "fallback" in body:

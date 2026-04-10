@@ -36,7 +36,7 @@ class CohereRerankResponse(BaseModel):
 class CohereProvider(ProviderEmulator):
     name = "cohere"
     prefix = "/cohere"
-    endpoints = [{"path": "/rerank", "method": "POST"}]
+    endpoints = ({"path": "/rerank", "method": "POST"},)
 
     def register_routes(self, app):
         router = APIRouter(prefix=self.prefix, tags=["Cohere"])

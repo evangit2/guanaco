@@ -107,12 +107,12 @@ class ExtractResponse(BaseModel):
 class FirecrawlProvider(ProviderEmulator):
     name = "firecrawl"
     prefix = "/firecrawl"
-    endpoints = [
+    endpoints = (
         {"path": "/scrape", "method": "POST"},
         {"path": "/search", "method": "POST"},
         {"path": "/crawl", "method": "POST"},
         {"path": "/extract", "method": "POST"},
-    ]
+    )
 
     def register_routes(self, app):
         router = APIRouter(prefix=self.prefix, tags=["Firecrawl"])

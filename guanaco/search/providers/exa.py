@@ -64,7 +64,7 @@ class ExaFindSimilarResponse(BaseModel):
 class ExaProvider(ProviderEmulator):
     name = "exa"
     prefix = "/exa"
-    endpoints = [{"path": "/search", "method": "POST"}, {"path": "/findSimilar", "method": "POST"}]
+    endpoints = ({"path": "/search", "method": "POST"}, {"path": "/findSimilar", "method": "POST"})
 
     def register_routes(self, app):
         router = APIRouter(prefix=self.prefix, tags=["Exa"])

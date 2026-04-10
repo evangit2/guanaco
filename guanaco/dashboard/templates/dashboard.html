@@ -197,27 +197,61 @@
     <!-- ─── Search Tab ─── -->
     <div id="tab-search" class="hidden">
         <div class="card">
-            <h2><span class="emoji">🧪</span> Search Playground</h2>
-            <p style="font-size:12px;color:var(--text2);margin-bottom:16px;">Send a search query or get an AI summary of search results.</p>
-            <div style="display:flex;gap:10px;margin-bottom:12px;flex-wrap:wrap;align-items:center;">
-                <select id="playground-provider" style="flex:0 0 160px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--card);color:var(--text);font-size:13px;"></select>
-                <input type="text" id="playground-query" placeholder="Enter search query..." style="flex:1;min-width:200px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--card);color:var(--text);font-size:13px;" onkeydown="if(event.key==='Enter')testSearch()">
-                <button onclick="testSearch()" style="padding:8px 20px;border:none;border-radius:8px;background:var(--accent);color:#fff;cursor:pointer;font-size:13px;font-weight:600;">Search</button>
-                <button onclick="summarizeSearch()" style="padding:8px 20px;border:1px solid var(--accent);border-radius:8px;background:transparent;color:var(--accent);cursor:pointer;font-size:13px;font-weight:600;">✨ Summarize</button>
-            </div>
-            <div id="playground-summary" style="display:none;margin-bottom:16px;padding:16px;border-radius:8px;background:rgba(139,92,246,0.08);border:1px solid rgba(139,92,246,0.2);">
-                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-                    <div style="font-size:13px;font-weight:600;color:var(--text);">AI Summary <span id="summary-model-badge" style="font-size:11px;font-weight:400;color:var(--text2);"></span></div>
-                    <button onclick="copySummary()" style="padding:4px 10px;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--text);cursor:pointer;font-size:11px;">Copy</button>
+            <h2><span class="emoji">🔍</span> Search Settings</h2>
+            <div style="margin-bottom:16px;">
+                <div style="font-size:13px;font-weight:600;margin-bottom:8px;">Summarization <span style="font-size:11px;font-weight:400;color:var(--orange);background:rgba(245,158,11,0.15);padding:2px 8px;border-radius:4px;">BETA</span></div>
+                <p style="font-size:12px;color:var(--text2);margin-bottom:12px;">When enabled, supported endpoints will include AI-generated summaries alongside raw results. Providers that natively support summarization (Tavily, Exa, Firecrawl) will use their own summarization format. Others will use your configured summary model.</p>
+                <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+                    <label class="toggle"><input type="checkbox" id="search-summarize-toggle" onchange="saveSearchConfig()"><span class="slider"></span></label>
+                    <div>
+                        <div style="font-size:13px;font-weight:600;">Enable Summarization</div>
+                        <div style="font-size:11px;color:var(--text2);">Adds summary fields to supported search/scrape responses</div>
+                    </div>
                 </div>
-                <div id="summary-text" style="font-size:13px;line-height:1.6;color:var(--text);"></div>
+                <div id="summarize-all-row" style="display:none;margin-left:40px;margin-bottom:12px;">
+                    <div style="display:flex;align-items:center;gap:12px;">
+                        <label class="toggle"><input type="checkbox" id="search-summarize-all-toggle" onchange="saveSearchConfig()"><span class="slider"></span></label>
+                        <div>
+                            <div style="font-size:13px;font-weight:600;">Summarize All Responses</div>
+                            <div style="font-size:11px;color:var(--text2);">Also summarize for providers without native summarization (uses your summary model)</div>
+                        </div>
+                    </div>
+                </div>
             </div>
-            <div id="playground-results" style="display:none;margin-top:16px;">
-                <div style="font-size:12px;color:var(--text2);margin-bottom:8px;">Results:</div>
-                <pre id="playground-json" style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px;font-size:12px;max-height:400px;overflow:auto;white-space:pre-wrap;word-break:break-all;"></pre>
+            <div style="margin-bottom:16px;">
+                <div style="font-size:13px;font-weight:600;margin-bottom:8px;">Summary Model</div>
+                <select id="cfg-summary-search" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface2);color:var(--text);font-size:13px;"></select>
             </div>
-            <div id="playground-error" style="display:none;margin-top:16px;padding:12px;border-radius:8px;background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.3);color:#ef4444;font-size:13px;"></div>
         </div>
+        <div class="card">
+            <h2><span class="emoji">📋</span> Provider Capabilities</h2>
+            <p style="font-size:12px;color:var(--text2);margin-bottom:12px;">Summarization support varies by provider:</p>
+            <div style="display:grid;gap:8px;">
+                <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--surface2);border-radius:8px;">
+                    <span style="font-size:12px;font-weight:600;min-width:80px;">Tavily</span>
+                    <span style="font-size:11px;color:var(--green);">✓ Native</span>
+                    <span style="font-size:11px;color:var(--text2);">answer field in /search responses</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--surface2);border-radius:8px;">
+                    <span style="font-size:12px;font-weight:600;min-width:80px;">Exa</span>
+                    <span style="font-size:11px;color:var(--green);">✓ Native</span>
+                    <span style="font-size:11px;color:var(--text2);">contents.summary & highlights in /search</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--surface2);border-radius:8px;">
+                    <span style="font-size:12px;font-weight:600;min-width:80px;">Firecrawl</span>
+                    <span style="font-size:11px;color:var(--green);">✓ Native</span>
+                    <span style="font-size:11px;color:var(--text2);">LLM extraction in /scrape & /extract</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--surface2);border-radius:8px;">
+                    <span style="font-size:12px;font-weight:600;min-width:80px;">Others</span>
+                    <span style="font-size:11px;color:var(--orange);">⟐ Model</span>
+                    <span style="font-size:11px;color:var(--text2);">Requires "Summarize All" — uses your summary model</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+
     </div>
 
     <!-- ─── Models Tab ─── -->
@@ -652,6 +686,7 @@ function showTab(tab) {
     });
     // Load data for tabs when switched
     if (tab === 'models') loadModels();
+    if (tab === 'search') loadSearchConfig();
     if (tab === 'fallback') loadFallbackConfig();
     if (tab === 'cache') loadCacheStats();
     if (tab === 'analytics') loadAnalytics();
@@ -677,6 +712,47 @@ function copyUrl(id) {
     btn.textContent = 'Copied!';
     btn.classList.add('copied');
     setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 1500);
+}
+
+function loadSearchConfig() {
+    fetch('/dashboard/api/config').then(r => r.json()).then(cfg => {
+        const s = cfg.search || {};
+        const toggle = document.getElementById('search-summarize-toggle');
+        const allToggle = document.getElementById('search-summarize-all-toggle');
+        const allRow = document.getElementById('summarize-all-row');
+        if (toggle) toggle.checked = s.summarize_enabled || false;
+        if (allToggle) allToggle.checked = s.summarize_all || false;
+        if (allRow) allRow.style.display = (s.summarize_enabled) ? 'flex' : 'none';
+        // Populate summary model dropdown
+        const sel = document.getElementById('cfg-summary-search');
+        if (sel) {
+            const models = CONFIG.llm?.available_models || [];
+            const currentModel = s.summary_model || cfg.llm?.summary_model || '';
+            sel.innerHTML = models.map(m => `<option value="${m}" ${m === currentModel ? 'selected' : ''}>${m}</option>`).join('');
+        }
+    });
+}
+
+function saveSearchConfig() {
+    const summarize = document.getElementById('search-summarize-toggle')?.checked || false;
+    const allToggle = document.getElementById('search-summarize-all-toggle');
+    const summarizeAll = allToggle?.checked || false;
+    const modelSel = document.getElementById('cfg-summary-search');
+    const allRow = document.getElementById('summarize-all-row');
+    if (allRow) allRow.style.display = summarize ? 'flex' : 'none';
+    if (!summarize && allToggle) allToggle.checked = false;
+
+    fetch('/dashboard/api/config', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({search: {
+            summarize_enabled: summarize,
+            summarize_all: summarizeAll,
+            summary_model: modelSel?.value || '',
+        }}),
+    }).then(r => r.json()).then(() => {
+        if (summarize) loadSearchConfig();
+    });
 }
 
 function getCurrentBaseUrl() {
@@ -724,104 +800,8 @@ function updateNetworkInfo() {
             : `<div style="color:var(--text2);font-size:11px;">Tailscale not installed — <a href="https://tailscale.com" target="_blank" style="color:var(--accent);">install it</a> for remote access</div>`);
 }
 
-async function testSearch() {
-    const provider = document.getElementById('playground-provider').value;
-    const query = document.getElementById('playground-query').value.trim();
-    if (!query) return;
 
-    const resultsEl = document.getElementById('playground-results');
-    const jsonEl = document.getElementById('playground-json');
-    const errorEl = document.getElementById('playground-error');
-    const summaryEl = document.getElementById('playground-summary');
 
-    resultsEl.style.display = 'none';
-    summaryEl.style.display = 'none';
-    errorEl.style.display = 'none';
-    jsonEl.textContent = 'Loading...';
-    resultsEl.style.display = 'block';
-
-    try {
-        const resp = await fetch('/dashboard/api/test-search', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({provider, query}),
-        });
-        const data = await resp.json();
-        if (!resp.ok) {
-            errorEl.textContent = data.error || `Error ${resp.status}`;
-            errorEl.style.display = 'block';
-        } else {
-            jsonEl.textContent = JSON.stringify(data, null, 2);
-        }
-    } catch (e) {
-        errorEl.textContent = 'Request failed: ' + e.message;
-        errorEl.style.display = 'block';
-    }
-}
-
-async function summarizeSearch() {
-    const query = document.getElementById('playground-query').value.trim();
-    if (!query) return;
-
-    const resultsEl = document.getElementById('playground-results');
-    const jsonEl = document.getElementById('playground-json');
-    const errorEl = document.getElementById('playground-error');
-    const summaryEl = document.getElementById('playground-summary');
-    const summaryTextEl = document.getElementById('summary-text');
-    const summaryBadge = document.getElementById('summary-model-badge');
-
-    resultsEl.style.display = 'none';
-    summaryEl.style.display = 'none';
-    errorEl.style.display = 'none';
-    summaryTextEl.textContent = 'Generating summary...';
-    summaryBadge.textContent = '';
-    summaryEl.style.display = 'block';
-    jsonEl.textContent = 'Searching...';
-    resultsEl.style.display = 'block';
-
-    try {
-        const resp = await fetch('/dashboard/api/summarize', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({query}),
-        });
-        const data = await resp.json();
-        if (data.error) {
-            errorEl.textContent = data.error;
-            errorEl.style.display = 'block';
-            summaryEl.style.display = 'none';
-        } else {
-            jsonEl.textContent = JSON.stringify(data, null, 2);
-            if (data.summary) {
-                summaryTextEl.textContent = data.summary;
-                summaryBadge.textContent = data.model ? `via ${data.model}` : '';
-            } else {
-                summaryTextEl.textContent = 'No summary generated.';
-                summaryBadge.textContent = '';
-            }
-        }
-    } catch (e) {
-        errorEl.textContent = 'Request failed: ' + e.message;
-        errorEl.style.display = 'block';
-        summaryEl.style.display = 'none';
-    }
-}
-
-function copySummary() {
-    const text = document.getElementById('summary-text').textContent;
-    if (navigator.clipboard && window.isSecureContext) {
-        navigator.clipboard.writeText(text);
-    } else {
-        const ta = document.createElement('textarea');
-        ta.value = text;
-        ta.style.position = 'fixed';
-        ta.style.opacity = '0';
-        document.body.appendChild(ta);
-        ta.select();
-        document.execCommand('copy');
-        document.body.removeChild(ta);
-    }
-}
 
 function generateKey() {
     fetch('/dashboard/api/keys/generate', {
@@ -1491,14 +1471,6 @@ document.addEventListener('DOMContentLoaded', () => {
         `<div class="pill ${cfg.enabled ? 'on' : 'off'}">${name}</div>`
     ).join('');
 
-    // Playground — populate provider dropdown
-    const playgroundSel = document.getElementById('playground-provider');
-    if (playgroundSel) {
-        playgroundSel.innerHTML = Object.entries(PROVIDERS)
-            .filter(([_, c]) => c.enabled)
-            .map(([name, _]) => `<option value="${name}">${name}</option>`)
-            .join('');
-    }
 
     // Stats
     const stats = USAGE;

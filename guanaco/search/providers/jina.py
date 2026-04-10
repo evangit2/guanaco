@@ -74,7 +74,7 @@ class JinaRerankResponse(BaseModel):
 class JinaProvider(ProviderEmulator):
     name = "jina"
     prefix = "/jina"
-    endpoints = [{"path": "/search", "method": "POST"}, {"path": "/read", "method": "POST"}, {"path": "/rerank", "method": "POST"}]
+    endpoints = ({"path": "/search", "method": "POST"}, {"path": "/read", "method": "POST"}, {"path": "/rerank", "method": "POST"})
 
     def register_routes(self, app):
         router = APIRouter(prefix=self.prefix, tags=["Jina"])
