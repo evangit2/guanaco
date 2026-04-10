@@ -22,13 +22,13 @@ curl -sSL https://raw.githubusercontent.com/evangit2/guanaco/main/install.sh | b
 
 ## Features
 
-- **🦙 LLM Router** — OpenAI-compatible `/v1/chat/completions` and Anthropic-compatible `/v1/messages` proxy with streaming, token tracking, and analytics
-- **🔍 8 Search/Scrape Emulators** — Drop-in replacements for Tavily, Exa, SearXNG, Firecrawl, Serper, Jina, Cohere, and Brave Search
-- **🔄 Fallback Provider** — Automatically route to a secondary OpenAI-compatible provider when Ollama Cloud is slow, rate-limited, or unavailable
-- **📊 Usage Tracking** — Monitor Ollama Cloud session and weekly quota usage in real time
-- **💾 Smart Caching** — Optional exact-match and session-aware prefix caching (BETA) to reduce redundant API calls
-- **📈 Web Dashboard** — Real-time analytics, model configuration, API key management, and service status at `http://localhost:8080/dashboard`
-- **🐳 Docker & systemd** — Production-ready deployment with included service unit files
+- **LLM Router** — OpenAI-compatible `/v1/chat/completions` and Anthropic-compatible `/v1/messages` proxy with streaming, token tracking, and analytics
+- **8 Search/Scrape Emulators** — Drop-in replacements for Tavily, Exa, SearXNG, Firecrawl, Serper, Jina, Cohere, and Brave Search
+- **Fallback Provider** — Automatically route to a secondary OpenAI-compatible provider when Ollama Cloud is slow, rate-limited, or unavailable; also kicks in when your Ollama Cloud usage quota is exhausted
+- **Usage Tracking** — Monitor Ollama Cloud session and weekly quota usage in real time
+- **Smart Caching** — Optional exact-match and session-aware prefix caching (BETA) to reduce redundant API calls
+- **Web Dashboard** — Real-time analytics, model configuration, API key management, and service status at `http://localhost:8080/dashboard`
+- **Docker & systemd** — Production-ready deployment with included service unit files
 
 ---
 
