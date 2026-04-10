@@ -205,7 +205,12 @@ class AnthropicRequest(BaseModel):
 def _resolve_model(model: str, config) -> str:
     """Resolve model name for Ollama Cloud API."""
     normalized = model
-    if normalized.endswith("-cloud"):
+    # Strip routing suffixes used by Hermes/clients: :cloud, :local, -cloud
+    if normalized.endswith(":cloud"):
+        normalized = normalized[:-6]
+    elif normalized.endswith(":local"):
+        normalized = normalized[:-6]
+    elif normalized.endswith("-cloud"):
         normalized = normalized[:-6]
 
     if normalized in config.llm.available_models:
