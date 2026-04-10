@@ -42,17 +42,17 @@ curl -sSL https://raw.githubusercontent.com/evangit2/guanaco/main/install.sh | b
 
 The installer will check for prerequisites (git, Python 3.10+, venv) and auto-install them if missing, then prompt you for your Ollama API key and preferred port.
 
-```bash
-export OLLAMA_API_KEY=your_ollama_api_key
-```
+### 2. Reload your shell
 
-### 3. Run
+The installer adds `guanaco` to your PATH, but you need to reload for it to take effect:
 
 ```bash
-guanaco start
+source ~/.bashrc   # or ~/.zshrc on macOS
 ```
 
-Your apps can now hit:
+After this, `guanaco` is available as a system command from anywhere.
+
+The installer starts Guanaco automatically (as a systemd service or in the foreground). Your apps can now hit:
 
 | Endpoint | Purpose |
 |----------|---------|
