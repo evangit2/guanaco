@@ -379,6 +379,8 @@ class OllamaClient:
 
         first_token_time = None
         total_tokens = 0
+        prompt_tokens = 0
+        completion_tokens = 0
         start = time.time()
 
         async with client.stream("POST", OLLAMA_CHAT_URL, json=payload_copy) as resp:
@@ -390,17 +392,19 @@ class OllamaClient:
                         # Yield final chunk with metrics
                         elapsed = time.time() - start
                         metrics = {
-                            "eval_count": total_tokens,
+                            "eval_count": completion_tokens or total_tokens,
                             "elapsed_seconds": elapsed,
                         }
-                        if total_tokens and elapsed > 0:
-                            metrics["tps"] = round(total_tokens / elapsed, 2)
+                        if (completion_tokens or total_tokens) and elapsed > 0:
+                            metrics["tps"] = round((completion_tokens or total_tokens) / elapsed, 2)
                         if first_token_time:
                             metrics["ttft_seconds"] = round(first_token_time - start, 3)
+                        if prompt_tokens:
+                            metrics["prompt_eval_count"] = prompt_tokens
                         yield f"data: [DONE]\n\n"
                         # Store metrics on the response for analytics
                         yield f"__oct_metrics__:{json.dumps(metrics)}\n\n"
-                        break
+                        return  # Exit generator, don't yield another [DONE]
                     try:
                         chunk_data = json.loads(data)
                         # Count tokens from streaming chunks
@@ -411,12 +415,33 @@ class OllamaClient:
                                 if first_token_time is None:
                                     first_token_time = time.time()
                                 total_tokens += 1
+                        # Capture usage data from final streaming chunk (Ollama/OpenAI format)
+                        usage = chunk_data.get("usage")
+                        if usage:
+                            if usage.get("prompt_tokens"):
+                                prompt_tokens = usage["prompt_tokens"]
+                            if usage.get("completion_tokens"):
+                                completion_tokens = usage["completion_tokens"]
                     except (json.JSONDecodeError, KeyError):
                         pass
                     yield f"data: {data}\n\n"
                 elif line.strip():
                     yield f"data: {line}\n\n"
+            # If we get here without seeing [DONE], the stream ended unexpectedly
+            # Yield [DONE] and metrics anyway
+            elapsed = time.time() - start
+            metrics = {
+                "eval_count": completion_tokens or total_tokens,
+                "elapsed_seconds": elapsed,
+            }
+            if (completion_tokens or total_tokens) and elapsed > 0:
+                metrics["tps"] = round((completion_tokens or total_tokens) / elapsed, 2)
+            if first_token_time:
+                metrics["ttft_seconds"] = round(first_token_time - start, 3)
+            if prompt_tokens:
+                metrics["prompt_eval_count"] = prompt_tokens
             yield "data: [DONE]\n\n"
+            yield f"__oct_metrics__:{json.dumps(metrics)}\n\n"
 
     async def close(self):
         if self._client and not self._client.is_closed:

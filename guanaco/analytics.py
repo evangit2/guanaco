@@ -267,32 +267,79 @@ class AnalyticsLogger:
             ).fetchone()
             prompt_tokens, completion_tokens, total_tokens = row
 
-            # Average TPS
-            row = conn.execute(
-                "SELECT AVG(tps) FROM request_log WHERE type='llm' AND tps IS NOT NULL"
-            ).fetchone()
-            avg_tps = round(row[0], 2) if row[0] else 0
+            # Average TPS — based on most recent rows covering ~10k completion tokens
+            tps_rows = conn.execute(
+                "SELECT tps, COALESCE(completion_tokens,0) FROM request_log "
+                "WHERE type='llm' AND tps IS NOT NULL ORDER BY ts DESC"
+            ).fetchall()
+            recent_tps = []
+            token_budget = 10000
+            for tps_val, ct in tps_rows:
+                if token_budget <= 0:
+                    break
+                recent_tps.append(tps_val)
+                token_budget -= ct
+            avg_tps = round(sum(recent_tps) / len(recent_tps), 2) if recent_tps else 0
 
-            # Average TTFT
-            row = conn.execute(
-                "SELECT AVG(ttft_seconds) FROM request_log WHERE type='llm' AND ttft_seconds IS NOT NULL"
-            ).fetchone()
-            avg_ttft = round(row[0], 3) if row[0] else 0
+            # Average TTFT — same 10k token window
+            ttft_rows = conn.execute(
+                "SELECT ttft_seconds, COALESCE(completion_tokens,0) FROM request_log "
+                "WHERE type='llm' AND ttft_seconds IS NOT NULL ORDER BY ts DESC"
+            ).fetchall()
+            recent_ttft = []
+            token_budget = 10000
+            for ttft_val, ct in ttft_rows:
+                if token_budget <= 0:
+                    break
+                recent_ttft.append(ttft_val)
+                token_budget -= ct
+            avg_ttft = round(sum(recent_ttft) / len(recent_ttft), 3) if recent_ttft else 0
 
-            # Per-model stats
+            # Per-model stats — TPS/TTFT from most recent 10k completion tokens per model
             model_rows = conn.execute(
                 """SELECT model, COUNT(*), SUM(prompt_tokens), SUM(completion_tokens),
-                   AVG(tps), AVG(ttft_seconds), MAX(ts)
+                   MAX(ts)
                    FROM request_log WHERE type='llm' GROUP BY model ORDER BY MAX(ts) DESC"""
             ).fetchall()
             models = []
             for row in model_rows:
+                model_name = row[0]
+                # Get recent TPS for this model
+                m_tps_rows = conn.execute(
+                    "SELECT tps, COALESCE(completion_tokens,0) FROM request_log "
+                    "WHERE type='llm' AND model=? AND tps IS NOT NULL ORDER BY ts DESC",
+                    (model_name,)
+                ).fetchall()
+                recent_m_tps = []
+                budget = 10000
+                for tps_val, ct in m_tps_rows:
+                    if budget <= 0:
+                        break
+                    recent_m_tps.append(tps_val)
+                    budget -= ct
+                m_avg_tps = round(sum(recent_m_tps) / len(recent_m_tps), 2) if recent_m_tps else 0
+
+                # Get recent TTFT for this model
+                m_ttft_rows = conn.execute(
+                    "SELECT ttft_seconds, COALESCE(completion_tokens,0) FROM request_log "
+                    "WHERE type='llm' AND model=? AND ttft_seconds IS NOT NULL ORDER BY ts DESC",
+                    (model_name,)
+                ).fetchall()
+                recent_m_ttft = []
+                budget = 10000
+                for ttft_val, ct in m_ttft_rows:
+                    if budget <= 0:
+                        break
+                    recent_m_ttft.append(ttft_val)
+                    budget -= ct
+                m_avg_ttft = round(sum(recent_m_ttft) / len(recent_m_ttft), 3) if recent_m_ttft else 0
+
                 models.append({
-                    "model": row[0], "requests": row[1],
+                    "model": model_name, "requests": row[1],
                     "prompt_tokens": row[2] or 0, "completion_tokens": row[3] or 0,
-                    "avg_tps": round(row[4], 2) if row[4] else 0,
-                    "avg_ttft": round(row[5], 3) if row[5] else 0,
-                    "last_used": row[6],
+                    "avg_tps": m_avg_tps,
+                    "avg_ttft": m_avg_ttft,
+                    "last_used": row[4],
                 })
 
             # Per-provider stats (for search calls)
@@ -306,20 +353,51 @@ class AnalyticsLogger:
                     "provider": row[0], "requests": row[1], "last_used": row[2],
                 })
 
-            # Per-provider LLM stats
+            # Per-provider LLM stats — TPS/TTFT from most recent 10k tokens per provider
             llm_provider_rows = conn.execute(
                 """SELECT provider, COUNT(*), SUM(prompt_tokens), SUM(completion_tokens),
-                   AVG(tps), AVG(ttft_seconds), MAX(ts)
+                   MAX(ts)
                    FROM request_log WHERE type='llm' GROUP BY provider ORDER BY MAX(ts) DESC"""
             ).fetchall()
             llm_providers = []
             for row in llm_provider_rows:
+                prov_name = row[0]
+                # Get recent TPS for this provider
+                p_tps_rows = conn.execute(
+                    "SELECT tps, COALESCE(completion_tokens,0) FROM request_log "
+                    "WHERE type='llm' AND provider=? AND tps IS NOT NULL ORDER BY ts DESC",
+                    (prov_name,)
+                ).fetchall()
+                recent_p_tps = []
+                budget = 10000
+                for tps_val, ct in p_tps_rows:
+                    if budget <= 0:
+                        break
+                    recent_p_tps.append(tps_val)
+                    budget -= ct
+                p_avg_tps = round(sum(recent_p_tps) / len(recent_p_tps), 2) if recent_p_tps else 0
+
+                # Get recent TTFT for this provider
+                p_ttft_rows = conn.execute(
+                    "SELECT ttft_seconds, COALESCE(completion_tokens,0) FROM request_log "
+                    "WHERE type='llm' AND provider=? AND ttft_seconds IS NOT NULL ORDER BY ts DESC",
+                    (prov_name,)
+                ).fetchall()
+                recent_p_ttft = []
+                budget = 10000
+                for ttft_val, ct in p_ttft_rows:
+                    if budget <= 0:
+                        break
+                    recent_p_ttft.append(ttft_val)
+                    budget -= ct
+                p_avg_ttft = round(sum(recent_p_ttft) / len(recent_p_ttft), 3) if recent_p_ttft else 0
+
                 llm_providers.append({
-                    "provider": row[0], "requests": row[1],
+                    "provider": prov_name, "requests": row[1],
                     "prompt_tokens": row[2] or 0, "completion_tokens": row[3] or 0,
-                    "avg_tps": round(row[4], 2) if row[4] else 0,
-                    "avg_ttft": round(row[5], 3) if row[5] else 0,
-                    "last_used": row[6],
+                    "avg_tps": p_avg_tps,
+                    "avg_ttft": p_avg_ttft,
+                    "last_used": row[4],
                 })
 
             # Fallback stats
