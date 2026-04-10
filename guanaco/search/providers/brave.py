@@ -29,6 +29,7 @@ class BraveSearchResponse(BaseModel):
 class BraveProvider(ProviderEmulator):
     name = "brave"
     prefix = "/brave"
+    endpoints = [{"path": "/search", "method": "GET/POST"}]
 
     def register_routes(self, app):
         router = APIRouter(prefix=self.prefix, tags=["Brave"])

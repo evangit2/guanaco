@@ -663,13 +663,12 @@ function updateEndpoints() {
     const port = CONFIG.router_port;
     document.getElementById('llm-url').textContent = `${base}:${port}/v1/chat/completions`;
     document.getElementById('anthropic-url').textContent = `${base}:${port}/v1/messages`;
-    Object.entries({
-        'Tavily': `/tavily/search`, 'Exa': `/exa/search`, 'SearXNG': `/searxng/search`,
-        'Firecrawl': `/firecrawl/scrape`, 'Serper': `/serper/search`,
-        'Jina': `/jina/search`, 'Cohere': `/cohere/rerank`, 'Brave': `/brave/search`,
-    }).forEach(([name, path]) => {
-        const el = document.getElementById(`ep-${name}`);
-        if (el) el.textContent = `${base}:${port}${path}`;
+    // Update all endpoint URLs from PROVIDERS data
+    Object.entries(PROVIDERS).forEach(([name, cfg]) => {
+        (cfg.endpoints || []).forEach((ep, i) => {
+            const el = document.getElementById(`ep-${name}-${i}`);
+            if (el) el.textContent = `${base}:${port}${cfg.prefix}${ep.path}`;
+        });
     });
 }
 
@@ -1343,20 +1342,22 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('llm-url').textContent = `${base}:${CONFIG.router_port}/v1/chat/completions`;
     document.getElementById('anthropic-url').textContent = `${base}:${CONFIG.router_port}/v1/messages`;
 
-    // Search endpoints
-    const endpoints = {
-        'Tavily': `/tavily/search`, 'Exa': `/exa/search`, 'SearXNG': `/searxng/search`,
-        'Firecrawl': `/firecrawl/scrape`, 'Serper': `/serper/search`,
-        'Jina': `/jina/search`, 'Cohere': `/cohere/rerank`, 'Brave': `/brave/search`,
-    };
+    // Search endpoints — rendered dynamically from PROVIDERS data
     const el = document.getElementById('search-endpoints');
-    el.innerHTML = Object.entries(endpoints).map(([name, path]) => `
-        <div class="endpoint" onclick="copyUrl('ep-${name}')">
-            <div class="provider">${name}</div>
-            <div class="url" id="ep-${name}">${base}:${CONFIG.router_port}${path}</div>
-            <button class="copy-btn" onclick="event.stopPropagation();copyUrl('ep-${name}')">Copy</button>
-        </div>
-    `).join('');
+    let html = '';
+    Object.entries(PROVIDERS).forEach(([name, cfg]) => {
+        const eps = cfg.endpoints || [];
+        eps.forEach((ep, i) => {
+            const urlId = `ep-${name}-${i}`;
+            const fullUrl = `${base}:${CONFIG.router_port}${cfg.prefix}${ep.path}`;
+            html += `<div class="endpoint" onclick="copyUrl('${urlId}')">
+                <div class="provider">${name} <span style="font-size:11px;color:var(--text2);font-weight:400;">${ep.method}</span></div>
+                <div class="url" id="${urlId}">${fullUrl}</div>
+                <button class="copy-btn" onclick="event.stopPropagation();copyUrl('${urlId}')">Copy</button>
+            </div>`;
+        });
+    });
+    el.innerHTML = html;
 
     // Provider pills
     const pills = document.getElementById('provider-pills');
