@@ -711,9 +711,10 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
     async def apply_update(request: Request, background_tasks: BackgroundTasks):
         """Pull latest from git, reinstall, and restart the service.
 
-        The restart happens in a BackgroundTask so the HTTP response is sent
-        BEFORE the service kills itself — otherwise the client never sees the
-        success message.
+        The flow is: git pull → pip install → validate → HTTP response → stop → start.
+        The stop/start happens in a BackgroundTask so the response is sent first.
+        We use stop+start (not restart) because restart sometimes fails to
+        fully replace the process, leaving stale code running.
         """
         import subprocess
         from guanaco.app import __version__
@@ -722,14 +723,14 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
         project_dir = Path(__file__).resolve().parent.parent.parent
 
         try:
-            # Step 1: Determine current branch and pull from it
+            # Step 1: Determine current branch
             branch_result = subprocess.run(
                 ["git", "rev-parse", "--abbrev-ref", "HEAD"],
                 cwd=project_dir, capture_output=True, text=True, timeout=10
             )
             current_branch = branch_result.stdout.strip() or "main"
 
-            # Step 1b: Git fetch + pull
+            # Step 2: Git fetch + pull
             fetch_result = subprocess.run(
                 ["git", "fetch", "origin", current_branch],
                 cwd=project_dir, capture_output=True, text=True, timeout=30
@@ -744,8 +745,7 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
             if pull_result.returncode != 0:
                 return {"status": "error", "step": "pull", "message": pull_result.stderr[:200]}
 
-            # Step 2: Reinstall
-            # Check common venv locations: ~/.guanaco/venv (install.sh default), then repo-local
+            # Step 3: Reinstall into venv
             install_dir = Path.home() / ".guanaco"
             venv_python = install_dir / "venv" / "bin" / "python"
             if not venv_python.exists():
@@ -757,11 +757,11 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
             if install_result.returncode != 0:
                 return {"status": "error", "step": "install", "message": install_result.stderr[:200]}
 
-            # Step 3: Validate the update can actually start before restarting
+            # Step 4: Validate the new code can actually start
             validate_result = subprocess.run(
                 [str(venv_python), "-c",
                  "from guanaco.app import create_app; app = create_app(); "
-                 "from guanaco import __version__; print(__version__)"],
+                 "from guanaco.app import __version__; print(__version__)"],
                 cwd=project_dir, capture_output=True, text=True, timeout=15
             )
             if validate_result.returncode != 0:
@@ -772,18 +772,24 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
                 }
             new_version = validate_result.stdout.strip()
 
-            # Step 4: Schedule restart as BackgroundTask so the response is sent first
-            async def _restart_service():
+            # Step 5: Schedule stop → start as a BackgroundTask
+            # This ensures the HTTP response is sent before we kill ourselves.
+            # We use stop + start (not restart) because restart sometimes leaves
+            # the old process running with cached modules.
+            async def _stop_start_service():
                 import asyncio
-                await asyncio.sleep(1)  # give the HTTP response time to be sent
-                # Stop then start (more reliable than restart if process is stuck)
-                subprocess.run(["sudo", "systemctl", "stop", "guanaco.service"],
-                              capture_output=True, timeout=15)
-                await asyncio.sleep(1)  # let the process fully exit
-                subprocess.run(["sudo", "systemctl", "start", "guanaco.service"],
-                              capture_output=True, timeout=15)
+                await asyncio.sleep(1)  # let the HTTP response be sent
+                subprocess.run(
+                    ["sudo", "systemctl", "stop", "guanaco.service"],
+                    capture_output=True, timeout=15
+                )
+                await asyncio.sleep(2)  # let the process fully exit and release ports
+                subprocess.run(
+                    ["sudo", "systemctl", "start", "guanaco.service"],
+                    capture_output=True, timeout=15
+                )
 
-            background_tasks.add_task(_restart_service)
+            background_tasks.add_task(_stop_start_service)
 
             return {
                 "status": "ok",
