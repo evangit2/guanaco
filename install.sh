@@ -12,15 +12,15 @@ VENV_DIR="$INSTALL_DIR/venv"
 BIN_DIR="$HOME/.local/bin"
 DEFAULT_PORT=8080
 
-# ── Colors (only if terminal) ──
+# ── Colors (ANSI escape characters, not strings) ──
 if [ -t 1 ]; then
-    RED='\033[0;31m'
-    GREEN='\033[0;32m'
-    YELLOW='\033[1;33m'
-    CYAN='\033[0;36m'
-    BOLD='\033[1m'
-    DIM='\033[2m'
-    RESET='\033[0m'
+    RED=$'\033[0;31m'
+    GREEN=$'\033[0;32m'
+    YELLOW=$'\033[1;33m'
+    CYAN=$'\033[0;36m'
+    BOLD=$'\033[1m'
+    DIM=$'\033[2m'
+    RESET=$'\033[0m'
 else
     RED='' GREEN='' YELLOW='' CYAN='' BOLD='' DIM='' RESET=''
 fi
@@ -47,6 +47,13 @@ prompt_yesno() {
     [[ "$value" =~ ^[Yy] ]] && declare -g "$var"="y" || declare -g "$var"="n"
 }
 
+# ── Print helpers ──
+step()    { printf "\n  ${BOLD}━━━ %s ━━━${RESET}\n" "$1"; }
+info()    { printf "    %s\n" "$1"; }
+success() { printf "  ${GREEN}✓${RESET} %s\n" "$1"; }
+warn()    { printf "  ${YELLOW}!${RESET} %s\n" "$1"; }
+fail()    { printf "  ${RED}✗${RESET} %s\n" "$1"; }
+
 # ── Detect platform ──
 detect_platform() {
     local os_name="$(uname -s)"
@@ -69,25 +76,22 @@ detect_platform() {
 
 PLATFORM=$(detect_platform)
 
-echo ""
-echo "${BOLD}🦙 Guanaco Installer${RESET}"
-echo "${DIM}   OpenAI-compatible LLM proxy for Ollama Cloud${RESET}"
-echo ""
-echo "Platform: $PLATFORM"
-echo ""
+printf "\n${BOLD}  Guanaco${RESET}\n"
+printf "  OpenAI-compatible LLM proxy for Ollama Cloud\n\n"
+info "Platform: $PLATFORM"
 
 # ── Auto-install prereqs ──
-echo "${BOLD}━━━ Checking prerequisites ━━━${RESET}"
+step "Checking prerequisites"
 
 # git
 if ! command -v git &>/dev/null; then
-    echo "  ${YELLOW}⚠ git not found — installing...${RESET}"
+    warn "git not found — installing..."
     case "$PLATFORM" in
         linux|wsl)
             sudo apt update -qq 2>/dev/null && sudo apt install -y -qq git 2>/dev/null || \
             sudo dnf install -y -q git 2>/dev/null || \
             sudo pacman -S --noconfirm git 2>/dev/null || {
-                echo "${RED}  ❌ Could not install git automatically. Please install it and re-run.${RESET}"
+                fail "Could not install git automatically. Please install it and re-run."
                 exit 1
             }
             ;;
@@ -95,18 +99,18 @@ if ! command -v git &>/dev/null; then
             xcode-select --install 2>/dev/null || true
             ;;
     esac
-    command -v git &>/dev/null && echo "  ✅ git installed" || { echo "${RED}  ❌ git still not found${RESET}"; exit 1; }
+    command -v git &>/dev/null && success "git installed" || { fail "git still not found"; exit 1; }
 fi
 
 # python3
 if ! command -v python3 &>/dev/null; then
-    echo "  ${YELLOW}⚠ Python 3.10+ not found — installing...${RESET}"
+    warn "Python 3.10+ not found — installing..."
     case "$PLATFORM" in
         macos)
             if command -v brew &>/dev/null; then
                 brew install python@3.12
             else
-                echo "${RED}  ❌ No Homebrew found. Install Python from https://python.org or install Homebrew first.${RESET}"
+                fail "No Homebrew found. Install Python from https://python.org or install Homebrew first."
                 exit 1
             fi
             ;;
@@ -114,55 +118,53 @@ if ! command -v python3 &>/dev/null; then
             sudo apt update -qq 2>/dev/null && sudo apt install -y -qq python3 python3-venv python3-pip 2>/dev/null || \
             sudo dnf install -y -q python3 python3-pip 2>/dev/null || \
             sudo pacman -S --noconfirm python python-pip 2>/dev/null || {
-                echo "${RED}  ❌ Could not install Python automatically. Please install it and re-run.${RESET}"
+                fail "Could not install Python automatically. Please install it and re-run."
                 exit 1
             }
             ;;
         *)
-            echo "${RED}  ❌ Please install Python 3.10+ from https://python.org and re-run.${RESET}"
+            fail "Please install Python 3.10+ from https://python.org and re-run."
             exit 1
             ;;
     esac
 fi
 
-# python3-venv (test actual creation, not just import)
+# python3-venv (test actual creation)
 if command -v python3 &>/dev/null; then
     VENV_TEST_DIR=$(mktemp -d)
     if ! python3 -m venv "$VENV_TEST_DIR/test_venv" &>/dev/null; then
-        echo "  ${YELLOW}⚠ python3-venv not working — installing...${RESET}"
+        warn "python3-venv not working — installing..."
         case "$PLATFORM" in
             linux|wsl)
                 sudo apt install -y -qq python3-venv 2>/dev/null || \
-                sudo apt install -y -qq python3."${PYTHON_VERSION}"-venv 2>/dev/null || \
                 sudo dnf install -y -q python3-venv 2>/dev/null || {
-                    echo "${RED}  ❌ Could not install python3-venv. Please install it and re-run.${RESET}"
+                    fail "Could not install python3-venv. Please install it and re-run."
                     exit 1
                 }
                 ;;
             macos)
-                echo "  ${YELLOW}⚠ venv broken — try: brew reinstall python@3.12${RESET}"
+                warn "venv broken — try: brew reinstall python@3.12"
                 ;;
         esac
     fi
     rm -rf "$VENV_TEST_DIR"
 fi
 
-echo "  ✅ git       $(git --version 2>/dev/null | awk '{print $3}')"
+success "git $(git --version 2>/dev/null | awk '{print $3}')"
 PYTHON_VERSION=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "?")
 if python3 -c "import sys; exit(0 if sys.version_info >= (3, 10) else 1)"; then
-    echo "  ✅ python    $PYTHON_VERSION"
+    success "python $PYTHON_VERSION"
 else
-    echo "${RED}  ❌ Python 3.10+ required, found $PYTHON_VERSION${RESET}"
+    fail "Python 3.10+ required, found $PYTHON_VERSION"
     exit 1
 fi
 if python3 -m venv /tmp/guanaco_venv_test &>/dev/null; then
     rm -rf /tmp/guanaco_venv_test
-    echo "  ✅ venv      ok"
+    success "venv ok"
 else
     rm -rf /tmp/guanaco_venv_test
-    echo "  ${YELLOW}⚠ venv      missing (will attempt install)${RESET}"
+    warn "venv missing (will attempt install)"
 fi
-echo ""
 
 # ── macOS SSL cert fix ──
 if [ "$PLATFORM" = "macos" ]; then
@@ -170,118 +172,93 @@ if [ "$PLATFORM" = "macos" ]; then
     if [ -n "$SSL_CERT_FILE" ]; then
         export SSL_CERT_FILE
         mkdir -p "$INSTALL_DIR"
-        # Append to env file (don't overwrite — it may have OLLAMA_API_KEY later)
         grep -q "^export SSL_CERT_FILE=" "$INSTALL_DIR/env" 2>/dev/null && \
             sed -i '' "s|^export SSL_CERT_FILE=.*|export SSL_CERT_FILE=$SSL_CERT_FILE|" "$INSTALL_DIR/env" 2>/dev/null || \
             echo "export SSL_CERT_FILE=$SSL_CERT_FILE" >> "$INSTALL_DIR/env"
-        echo "  ✅ ssl_certs  $SSL_CERT_FILE"
+        success "ssl_certs configured"
     fi
 fi
-echo ""
 
-# ── Step 2: Configuration ──
-echo "${BOLD}━━━ Step 2: Configuration ━━━${RESET}"
-echo ""
+# ── Configuration ──
+step "Configuration"
 
-echo "  You'll need an Ollama Cloud API key."
-echo "  Get one at: ${CYAN}https://ollama.com${RESET}"
+info "You'll need an Ollama Cloud API key."
+info "Get one at: ${CYAN}https://ollama.com${RESET}"
 echo ""
 
 prompt OLLAMA_API_KEY "Enter your Ollama API key" ""
 
 if [ -z "$OLLAMA_API_KEY" ]; then
     echo ""
-    echo "${YELLOW}⚠ No API key provided. You can set it later with:${RESET}"
-    echo "  guanaco setup"
+    warn "No API key provided. You can set it later with: guanaco setup"
     echo ""
 fi
 
-# ── Step 3: Port configuration with security warning ──
-echo ""
-echo "${BOLD}━━━ Step 3: Network configuration ━━━${RESET}"
-echo ""
-echo -e "  ${YELLOW}⚠ Guanaco will start a server on port ${DEFAULT_PORT}.${RESET}"
-echo ""
-echo -e "  ${RED}╔══════════════════════════════════════════════════════════════╗${RESET}"
-echo -e "  ${RED}║  ⚠  SECURITY WARNING                                       ║${RESET}"
-echo -e "  ${RED}║                                                             ║${RESET}"
-echo -e "  ${RED}║  If your machine has automatic port forwarding (some VPS   ║${RESET}"
-echo -e "  ${RED}║  providers, routers with UPnP, Cloudflare tunnels, etc.),   ║${RESET}"
-echo -e "  ${RED}║  this will EXPOSE your Ollama API proxy to the public      ║${RESET}"
-echo -e "  ${RED}║  internet. Anyone who finds it can use your API key and    ║${RESET}"
-echo -e "  ${RED}║  consume your Ollama Cloud quota.                          ║${RESET}"
-echo -e "  ${RED}║                                                             ║${RESET}"
-echo -e "  ${RED}║  • Bind to 127.0.0.1 unless you need remote access         ║${RESET}"
-echo -e "  ${RED}║  • Use a firewall or auth proxy if you must expose it      ║${RESET}"
-echo -e "  ${RED}║  • Never run this on a public-facing VPS without auth      ║${RESET}"
-echo -e "  ${RED}╚══════════════════════════════════════════════════════════════╝${RESET}"
-echo ""
+# ── Network configuration ──
+step "Network configuration"
+
+printf "  ${YELLOW}Guanaco will start a server on port ${DEFAULT_PORT}.${RESET}\n\n"
+
+printf "  ${RED}  SECURITY WARNING${RESET}\n"
+printf "  ${RED}  ─────────────────${RESET}\n"
+printf "  ${RED}  If your machine has automatic port forwarding (some VPS${RESET}\n"
+printf "  ${RED}  providers, routers with UPnP, Cloudflare tunnels, etc.),${RESET}\n"
+printf "  ${RED}  this will EXPOSE your Ollama API proxy to the public${RESET}\n"
+printf "  ${RED}  internet. Anyone who finds it can use your API key and${RESET}\n"
+printf "  ${RED}  consume your Ollama Cloud quota.${RESET}\n\n"
+printf "  ${RED}  - Bind to 127.0.0.1 unless you need remote access${RESET}\n"
+printf "  ${RED}  - Use a firewall or auth proxy if you must expose it${RESET}\n"
+printf "  ${RED}  - Never run this on a public-facing VPS without auth${RESET}\n\n"
 
 prompt PORT "Which port should Guanaco use" "$DEFAULT_PORT"
 
-# Detect Tailscale before bind prompt
+# Detect Tailscale
 TS_IP=""
 if command -v tailscale >/dev/null 2>&1; then
     TS_IP=$(tailscale ip -4 2>/dev/null || true)
 fi
-# Fallback: check if Tailscale socket exists
 if [ -z "$TS_IP" ] && [ -S /run/tailscale/tailscaled.sock ]; then
     TS_IP=$(tailscale ip -4 2>/dev/null || true)
 fi
-# Fallback: check if 100.x.x.x address is on any interface (Tailscale range)
 if [ -z "$TS_IP" ]; then
     TS_IP=$(ip -4 addr show | grep -oP 'inet 100\.\d+\.\d+\.\d+' | head -1 | awk '{print $2}' 2>/dev/null || true)
 fi
+
 if [ -n "$TS_IP" ]; then
-    echo -e "  ${CYAN}🌐 Tailscale detected at ${TS_IP}${RESET}"
-    BIND_DEFAULT="y"
-    BIND_MSG="Bind to 0.0.0.0 (accessible via Tailscale)? [Y/n]"
-else
-    BIND_DEFAULT="y"
-    BIND_MSG="Bind to localhost only (127.0.0.1)? [Y/n]"
-fi
-
-prompt_yesno BIND_LOCAL "$BIND_MSG" "$BIND_DEFAULT"
-
-if [ "$BIND_LOCAL" = "y" ]; then
-    if [ -n "$TS_IP" ]; then
-        # Tailscale detected, Y means bind to 0.0.0.0
+    printf "  ${CYAN}Tailscale detected at ${TS_IP}${RESET}\n"
+    prompt_yesno BIND_LOCAL "Bind to 0.0.0.0 (accessible via Tailscale)?" "y"
+    if [ "$BIND_LOCAL" = "y" ]; then
         BIND_HOST="0.0.0.0"
-        echo -e "  ${CYAN}   Bound to 0.0.0.0 — accessible at http://${TS_IP}:${PORT}/dashboard/${RESET}"
+        info "Bound to 0.0.0.0 — accessible at http://${TS_IP}:${PORT}/dashboard/"
     else
-        # No Tailscale, Y means bind to localhost
         BIND_HOST="127.0.0.1"
     fi
 else
-    if [ -n "$TS_IP" ]; then
-        # Tailscale detected, N means bind to localhost
+    prompt_yesno BIND_LOCAL "Bind to localhost only (127.0.0.1)?" "y"
+    if [ "$BIND_LOCAL" = "y" ]; then
         BIND_HOST="127.0.0.1"
     else
-        # No Tailscale, N means bind to 0.0.0.0
         BIND_HOST="0.0.0.0"
-        echo -e "  ${RED}⚠ Binding to 0.0.0.0 — accessible from ALL network interfaces. Ensure you have auth/firewall.${RESET}"
+        warn "Binding to 0.0.0.0 — accessible from ALL interfaces. Ensure you have auth/firewall."
     fi
 fi
 
-echo ""
-
-# ── Step 4: Install ──
-echo "${BOLD}━━━ Step 4: Installing ━━━${RESET}"
-echo ""
+# ── Install ──
+step "Installing"
 
 # Clone or update
 if [ -d "$INSTALL_DIR/repo" ]; then
-    echo "  📦 Updating existing installation..."
+    info "Updating existing installation..."
     cd "$INSTALL_DIR/repo"
-    git pull --ff-only || { echo "  ${YELLOW}⚠ Could not pull updates. Using existing version.${RESET}"; }
+    git pull --ff-only || { warn "Could not pull updates. Using existing version."; }
 else
-    echo "  📦 Downloading Guanaco..."
+    info "Downloading Guanaco..."
     git clone "https://github.com/$REPO.git" "$INSTALL_DIR/repo"
     cd "$INSTALL_DIR/repo"
 fi
 
 # Create venv
-echo "  🐍 Setting up virtual environment..."
+info "Setting up virtual environment..."
 python3 -m venv "$VENV_DIR"
 
 # Source platform env if exists
@@ -290,11 +267,11 @@ if [ -f "$INSTALL_DIR/env" ]; then
 fi
 
 # Install
-echo "  📥 Installing dependencies..."
+info "Installing dependencies..."
 "$VENV_DIR/bin/pip" install -e . --quiet 2>&1 | tail -1
 
 # ── Write config ──
-echo "  ⚙️  Writing configuration..."
+info "Writing configuration..."
 
 mkdir -p "$INSTALL_DIR"
 
@@ -335,25 +312,26 @@ fi
 # ── Create guanaco binary ──
 mkdir -p "$BIN_DIR"
 
-case "$PLATFORM" in
-    macos)
-        cat > "$BIN_DIR/guanaco" << SCRIPT
+cat > "$BIN_DIR/guanaco" << 'SCRIPT'
 #!/usr/bin/env bash
-if [ -f "$INSTALL_DIR/env" ]; then
-    source "$INSTALL_DIR/env"
+GUANACO_DIR="$HOME/.guanaco"
+if [ -f "$GUANACO_DIR/env" ]; then
+    source "$GUANACO_DIR/env"
 fi
-exec "$VENV_DIR/bin/python" -m guanaco.cli "\$@"
+exec "$GUANACO_DIR/venv/bin/python" -m guanaco.cli "$@"
 SCRIPT
-        ;;
-    *)
-        cat > "$BIN_DIR/guanaco" << SCRIPT
-#!/usr/bin/env bash
-source "$INSTALL_DIR/env" 2>/dev/null || true
-exec "$VENV_DIR/bin/python" -m guanaco.cli "\$@"
-SCRIPT
-        ;;
-esac
 chmod +x "$BIN_DIR/guanaco"
+
+# Also create 'oct' alias for backward compat
+cat > "$BIN_DIR/oct" << 'SCRIPT'
+#!/usr/bin/env bash
+GUANACO_DIR="$HOME/.guanaco"
+if [ -f "$GUANACO_DIR/env" ]; then
+    source "$GUANACO_DIR/env"
+fi
+exec "$GUANACO_DIR/venv/bin/python" -m guanaco.cli "$@"
+SCRIPT
+chmod +x "$BIN_DIR/oct"
 
 # ── Add to PATH if needed ──
 DETECT_SHELL="${SHELL##*/}"
@@ -365,54 +343,48 @@ esac
 
 if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
     echo ""
-    echo "  ${YELLOW}⚠ $BIN_DIR is not in your PATH.${RESET}"
-    echo "  Adding to $PROFILE_FILE..."
+    warn "$BIN_DIR is not in your PATH."
+    info "Adding to $PROFILE_FILE..."
     echo "" >> "$PROFILE_FILE"
     echo "# Added by Guanaco" >> "$PROFILE_FILE"
     echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$PROFILE_FILE"
     export PATH="$BIN_DIR:$PATH"
-    echo "  ${GREEN}✅ Added to $PROFILE_FILE${RESET}"
+    success "Added to $PROFILE_FILE"
 fi
 
-# ── Platform-specific tips ──
+# ── Install complete ──
+step "Install complete"
+
+success "Guanaco installed successfully"
 echo ""
-echo "${BOLD}━━━ Installation complete! ━━━${RESET}"
+printf "  ${BOLD}Start the server:${RESET}\n"
+info "$BIN_DIR/guanaco start"
 echo ""
-echo "  ${GREEN}✅ Guanaco installed successfully${RESET}"
+printf "  ${DIM}Or reload your shell and use 'guanaco' directly:${RESET}\n"
+info "source $PROFILE_FILE"
 echo ""
-echo "  ${BOLD}Start the server:${RESET}"
-if [[ ":$PATH:" == *":$BIN_DIR:"* ]] || [ -x "$BIN_DIR/guanaco" ]; then
-    echo "    $BIN_DIR/guanaco start"
-else
-    echo "    $BIN_DIR/guanaco start"
-fi
-echo ""
-echo "  ${DIM}Or reload your shell and use 'guanaco' directly:${RESET}"
-echo "    ${DIM}source $PROFILE_FILE${RESET}"
-echo ""
-echo "  ${BOLD}Dashboard:${RESET}"
+printf "  ${BOLD}Dashboard:${RESET}\n"
 if [ -n "$TS_IP" ]; then
-    echo "    http://${TS_IP}:${PORT}/dashboard/"
-    echo "    http://127.0.0.1:${PORT}/dashboard/  (local)"
+    info "http://${TS_IP}:${PORT}/dashboard/"
+    info "http://127.0.0.1:${PORT}/dashboard/  (local)"
 else
-    echo "    http://${BIND_HOST}:${PORT}/dashboard/"
+    info "http://${BIND_HOST}:${PORT}/dashboard/"
 fi
 echo ""
-echo "  ${BOLD}CLI commands:${RESET}"
-echo "    guanaco status         Show service & connection status"
-echo "    guanaco models         List available cloud models"
-echo "    guanaco usage          Check your Ollama Cloud usage/quota"
-echo "    guanaco analytics      View request analytics & stats"
-echo "    guanaco key generate   Generate an API key"
-echo "    guanaco config --show  Show current configuration"
-echo "    guanaco setup          Reconfigure (API key, ports, etc.)"
-echo ""
+printf "  ${BOLD}CLI commands:${RESET}\n"
+printf "    %-24s %s\n" "guanaco status" "Show service & connection status"
+printf "    %-24s %s\n" "guanaco models" "List available cloud models"
+printf "    %-24s %s\n" "guanaco usage" "Check your Ollama Cloud usage/quota"
+printf "    %-24s %s\n" "guanaco analytics" "View request analytics & stats"
+printf "    %-24s %s\n" "guanaco key generate" "Generate an API key"
+printf "    %-24s %s\n" "guanaco config --show" "Show current configuration"
+printf "    %-24s %s\n" "guanaco setup" "Reconfigure (API key, ports, etc.)"
 
-# ── Start ──
+# ── Service setup ──
 echo ""
-echo "  ${BOLD}How should Guanaco run?${RESET}"
-echo "  ${DIM}  1) Foreground — press Ctrl+C to stop${RESET}"
-echo "  ${DIM}  2) systemd service — auto-starts on boot, runs in background${RESET}"
+printf "  ${BOLD}How should Guanaco run?${RESET}\n"
+printf "    1) Foreground — press Ctrl+C to stop\n"
+printf "    2) systemd service — auto-starts on boot, runs in background\n"
 echo ""
 prompt_yesno USE_SYSTEMD "Install as systemd service?" "y"
 
@@ -420,8 +392,8 @@ SERVICE_NAME="guanaco"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 
 if [ "$USE_SYSTEMD" = "y" ]; then
-    echo ""
-    echo "  ${CYAN}Installing Guanaco as a systemd service...${RESET}"
+    printf "\n"
+    info "Installing Guanaco as a systemd service..."
 
     CONFIG_DIR="$INSTALL_DIR"
     if [ ! -d "$CONFIG_DIR" ]; then
@@ -458,43 +430,38 @@ SERVICEEOF
     STATUS=$(sudo systemctl is-active "$SERVICE_NAME" 2>/dev/null)
     if [ "$STATUS" = "active" ]; then
         echo ""
-        echo "  ${GREEN}✅ Guanaco service is running!${RESET}"
+        success "Guanaco service is running!"
         if [ -n "$TS_IP" ]; then
-            echo "  ${BOLD}Dashboard:${RESET}  http://${TS_IP}:${PORT}/dashboard/"
+            printf "  ${BOLD}Dashboard:${RESET}  http://${TS_IP}:${PORT}/dashboard/\n"
         else
-            echo "  ${BOLD}Dashboard:${RESET}  http://${BIND_HOST}:${PORT}/dashboard/"
+            printf "  ${BOLD}Dashboard:${RESET}  http://${BIND_HOST}:${PORT}/dashboard/\n"
         fi
         echo ""
-        echo "  Manage with:"
-        echo "    sudo systemctl status guanaco"
-        echo "    sudo systemctl stop guanaco"
-        echo "    sudo systemctl restart guanaco"
-        echo "    sudo journalctl -u guanaco -f"
+        info "Manage with:"
+        printf "    %-30s %s\n" "sudo systemctl status guanaco" "Check status"
+        printf "    %-30s %s\n" "sudo systemctl stop guanaco" "Stop service"
+        printf "    %-30s %s\n" "sudo systemctl restart guanaco" "Restart service"
+        printf "    %-30s %s\n" "sudo journalctl -u guanaco -f" "View live logs"
     else
         echo ""
-        echo "  ${YELLOW}⚠ Service may not have started. Check logs:${RESET}"
-        echo "    sudo journalctl -u guanaco -n 50"
+        warn "Service may not have started. Check logs:"
+        info "sudo journalctl -u guanaco -n 50"
     fi
 else
     echo ""
-    echo "  ${CYAN}Starting Guanaco in foreground...${RESET}"
-    echo "  ${DIM}Press Ctrl+C to stop. Run 'guanaco install' later for background service.${RESET}"
+    info "Starting Guanaco in foreground..."
+    info "Press Ctrl+C to stop. Run 'guanaco install' later for background service."
     echo ""
     "$BIN_DIR/guanaco" start
 fi
 
-# ── macOS auto-start tip ──
+# ── Platform tips ──
 if [ "$PLATFORM" = "macos" ]; then
-    echo "  ${DIM}🍎 macOS: To auto-start on login, see contrib/com.guanaco.start.plist${RESET}"
-    echo ""
+    printf "\n  ${DIM}macOS: To auto-start on login, see contrib/com.guanaco.start.plist${RESET}\n"
 fi
-
-# ── WSL tip ──
 if [ "$PLATFORM" = "wsl" ]; then
     WIN_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
-    echo "  ${DIM}🪟 WSL: Access dashboard from Windows at http://${WIN_IP}:${PORT}/dashboard${RESET}"
-    echo ""
+    printf "  ${DIM}WSL: Access dashboard from Windows at http://${WIN_IP}:${PORT}/dashboard${RESET}\n"
 fi
 
-echo "  ${DIM}Docs: https://github.com/$REPO${RESET}"
-echo ""
+printf "\n  ${DIM}Docs: https://github.com/$REPO${RESET}\n"
