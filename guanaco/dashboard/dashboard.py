@@ -515,7 +515,7 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
             from importlib.metadata import version as pkg_version
             current_version = pkg_version("guanaco")
         except Exception:
-            current_version = "0.3.0"
+            current_version = "0.0.0"
 
         result = {"current_version": current_version, "latest_version": None, "update_available": False, "error": None}
 
@@ -584,7 +584,7 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
             from importlib.metadata import version as pkg_version
             old_version = pkg_version("guanaco")
         except Exception:
-            old_version = "0.3.0"
+            old_version = "0.0.0"
 
         project_dir = Path(__file__).resolve().parent.parent.parent
 
