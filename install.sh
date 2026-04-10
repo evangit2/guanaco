@@ -303,33 +303,34 @@ EOF
 
 # Write API key env file
 if [ -n "$OLLAMA_API_KEY" ]; then
-    cat > "$INSTALL_DIR/env" << EOF
-$(grep -v "^export OLLAMA_API_KEY=" "$INSTALL_DIR/env" 2>/dev/null || true)
-export OLLAMA_API_KEY="${OLLAMA_API_KEY}"
-EOF
+    # Preserve existing env lines except old OLLAMA_API_KEY
+    TMP_ENV=$(mktemp)
+    grep -v "^export OLLAMA_API_KEY=" "$INSTALL_DIR/env" 2>/dev/null > "$TMP_ENV" || true
+    echo "export OLLAMA_API_KEY=\"${OLLAMA_API_KEY}\"" >> "$TMP_ENV"
+    mv "$TMP_ENV" "$INSTALL_DIR/env"
 fi
 
 # ── Create guanaco binary ──
 mkdir -p "$BIN_DIR"
 
-cat > "$BIN_DIR/guanaco" << 'SCRIPT'
+cat > "$BIN_DIR/guanaco" << SCRIPT
 #!/usr/bin/env bash
-GUANACO_DIR="$HOME/.guanaco"
-if [ -f "$GUANACO_DIR/env" ]; then
-    source "$GUANACO_DIR/env"
+GUANACO_DIR="$INSTALL_DIR"
+if [ -f "\$GUANACO_DIR/env" ]; then
+    source "\$GUANACO_DIR/env"
 fi
-exec "$GUANACO_DIR/venv/bin/python" -m guanaco.cli "$@"
+exec "$VENV_DIR/bin/python" -m guanaco.cli "\$@"
 SCRIPT
 chmod +x "$BIN_DIR/guanaco"
 
 # Also create 'oct' alias for backward compat
-cat > "$BIN_DIR/oct" << 'SCRIPT'
+cat > "$BIN_DIR/oct" << SCRIPT
 #!/usr/bin/env bash
-GUANACO_DIR="$HOME/.guanaco"
-if [ -f "$GUANACO_DIR/env" ]; then
-    source "$GUANACO_DIR/env"
+GUANACO_DIR="$INSTALL_DIR"
+if [ -f "\$GUANACO_DIR/env" ]; then
+    source "\$GUANACO_DIR/env"
 fi
-exec "$GUANACO_DIR/venv/bin/python" -m guanaco.cli "$@"
+exec "$VENV_DIR/bin/python" -m guanaco.cli "\$@"
 SCRIPT
 chmod +x "$BIN_DIR/oct"
 
