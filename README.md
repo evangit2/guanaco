@@ -42,6 +42,8 @@ curl -sSL https://raw.githubusercontent.com/evangit2/guanaco/main/install.sh | b
 
 The installer will check for prerequisites (git, Python 3.10+, venv) and auto-install them if missing, then prompt you for your Ollama API key and preferred port.
 
+For platform-specific instructions, see [WSL Installation](#wsl-installation) and [macOS Installation](#macos-installation).
+
 ### 2. Reload your shell
 
 The installer adds `guanaco` to your PATH, but you need to reload for it to take effect:
@@ -52,17 +54,7 @@ source ~/.bashrc   # or ~/.zshrc on macOS
 
 After this, `guanaco` is available as a system command from anywhere.
 
-The installer starts Guanaco automatically (as a systemd service or in the foreground). Your apps can now hit:
-
-| Endpoint | Purpose |
-|----------|---------|
-| `http://localhost:8080/v1/chat/completions` | OpenAI-compatible LLM router |
-| `http://localhost:8080/v1/messages` | Anthropic-compatible proxy |
-| `http://localhost:8080/tavily/search` | Tavily search (emulated) |
-| `http://localhost:8080/exa/search` | Exa search (emulated) |
-| `http://localhost:8080/firecrawl/scrape` | Firecrawl scrape (emulated) |
-| `http://localhost:8080/brave/search` | Brave Search (emulated) |
-| `http://localhost:8080/dashboard` | Web dashboard |
+The installer starts Guanaco automatically (as a systemd service or in the foreground).
 
 ---
 
@@ -207,6 +199,18 @@ fallback:
 
 Or configure via the dashboard at **Dashboard → Config → Fallback**.
 
+Once running, your apps can hit:
+
+| Endpoint | Purpose |
+|----------|---------|
+| `http://localhost:8080/v1/chat/completions` | OpenAI-compatible LLM router |
+| `http://localhost:8080/v1/messages` | Anthropic-compatible proxy |
+| `http://localhost:8080/tavily/search` | Tavily search (emulated) |
+| `http://localhost:8080/exa/search` | Exa search (emulated) |
+| `http://localhost:8080/firecrawl/scrape` | Firecrawl scrape (emulated) |
+| `http://localhost:8080/brave/search` | Brave Search (emulated) |
+| `http://localhost:8080/dashboard` | Web dashboard |
+
 ---
 
 ## API Reference
@@ -307,6 +311,81 @@ journalctl -u guanaco -f
 ```
 
 Edit `/etc/systemd/system/guanaco.service` to set `User`, `Group`, install directory, and venv path as appropriate for your environment.
+
+---
+
+## WSL Installation
+
+Install and run Guanaco in a real WSL Linux distro such as Ubuntu.
+
+1. In Windows PowerShell or Command Prompt, check your WSL distros:
+
+```bash
+wsl -l -v
+```
+
+2. Install Ubuntu for WSL if needed:
+
+```bash
+wsl --install -d Ubuntu
+```
+
+3. Start Ubuntu:
+
+```bash
+wsl -d Ubuntu
+```
+
+4. Inside the Ubuntu WSL distro, install prerequisites:
+
+```bash
+sudo apt update
+sudo apt install -y curl bash git python3 python3-venv python3-pip
+```
+
+5. Run the Guanaco installer:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/evangit2/guanaco/main/install.sh | bash
+```
+
+> **Note:** Run the installer inside a normal WSL Linux distro like Ubuntu, not a minimal helper environment that may be missing tools such as `bash` and `curl`.
+
+## macOS Installation
+
+1. Open Terminal — you can use the built-in Terminal app or iTerm2.
+
+2. Install Xcode Command Line Tools:
+
+```bash
+xcode-select --install
+```
+
+3. Install Homebrew if needed:
+
+```bash
+brew --version
+```
+
+If `brew` is not installed, run:
+
+```bash
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+```
+
+4. Install prerequisites:
+
+```bash
+brew install git python@3.12 curl
+```
+
+5. Run the Guanaco installer:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/evangit2/guanaco/main/install.sh | bash
+```
+
+> **Note:** If `python3` is still not found after installing Homebrew Python, restart Terminal or add Homebrew to your shell path first.
 
 ---
 
