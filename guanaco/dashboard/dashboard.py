@@ -521,25 +521,28 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
 
         try:
             # Get release info from GitHub API
-            # Use /releases to include prereleases, pick newest by semver
+            # Default: only check stable releases (/releases/latest)
+            # If allow_prerelease is set in config, also check prereleases
+            config = get_config()
+            allow_prerelease = getattr(config.router, "allow_prerelease", False)
             import httpx
             async with httpx.AsyncClient(timeout=10) as hc:
-                # Try /releases/latest first (excludes prereleases)
+                release_data = None
+                # Always try stable release first
                 resp = await hc.get(
                     "https://api.github.com/repos/evangit2/guanaco/releases/latest",
                     headers={"Accept": "application/vnd.github+json"}
                 )
-                release_data = None
                 if resp.status_code == 200:
                     release_data = resp.json()
-                else:
-                    # Fallback: list all releases (includes prereleases), pick newest
+                elif allow_prerelease:
+                    # No stable release found — check all releases including prereleases
                     resp = await hc.get(
                         "https://api.github.com/repos/evangit2/guanaco/releases",
                         headers={"Accept": "application/vnd.github+json"}
                     )
                     if resp.status_code == 200 and resp.json():
-                        release_data = resp.json()[0]  # already sorted newest-first by GitHub
+                        release_data = resp.json()[0]  # GitHub sorts newest-first
                 if release_data:
                     tag = release_data.get("tag_name", "")
                     # Strip leading 'v' if present
@@ -567,9 +570,9 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
                 # Fall back to string comparison
                 result["update_available"] = result["latest_version"] != current_version
 
-        # Include auto_update setting
-        config = get_config()
+        # Include auto_update and allow_prerelease settings
         result["auto_update"] = config.router.auto_update
+        result["allow_prerelease"] = getattr(config.router, "allow_prerelease", False)
 
         return result
 
