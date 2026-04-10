@@ -597,7 +597,11 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
                     break
 
             # Step 3: Reinstall
-            venv_python = project_dir / "venv" / "bin" / "python"
+            # Check common venv locations: ~/.guanaco/venv (install.sh default), then repo-local
+            install_dir = Path.home() / ".guanaco"
+            venv_python = install_dir / "venv" / "bin" / "python"
+            if not venv_python.exists():
+                venv_python = project_dir / "venv" / "bin" / "python"
             install_result = subprocess.run(
                 [str(venv_python), "-m", "pip", "install", "-e", ".", "--quiet"],
                 cwd=project_dir, capture_output=True, text=True, timeout=60
