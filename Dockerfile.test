@@ -1,0 +1,36 @@
+# Guanaco test container — mimics a fresh install environment
+# Used to validate: pip install, CLI commands, app startup, auto-update flow
+FROM python:3.12-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git curl sudo systemd && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt/guanaco
+
+# Copy project files
+COPY . .
+
+# Install into a clean venv (same as install.sh does)
+RUN python -m venv /opt/guanaco-venv && \
+    /opt/guanaco-venv/bin/pip install --no-cache-dir -e .
+
+# Create guanaco user (mimics install.sh)
+RUN useradd -m -s /bin/bash guanaco && \
+    mkdir -p /home/guanaco/.guanaco && \
+    chown -R guanaco:guanaco /home/guanaco/.guanaco && \
+    mkdir -p /home/guanaco/.local/bin && \
+    cp /opt/guanaco/contrib/guanaco-wrapper.sh /home/guanaco/.local/bin/guanaco && \
+    chmod +x /home/guanaco/.local/bin/guanaco
+
+ENV PATH="/opt/guanaco-venv/bin:/home/guanaco/.local/bin:$PATH"
+USER guanaco
+
+# Health check — app should start and respond
+HEALTHCHECK --interval=5s --timeout=3s --retries=3 \
+    CMD curl -f http://localhost:8080/health || exit 1
+
+EXPOSE 8080
+
+# Default: start the server (can override for tests)
+CMD ["python", "-m", "uvicorn", "guanaco.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8080"]
