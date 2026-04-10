@@ -24,7 +24,6 @@ curl -sSL https://raw.githubusercontent.com/evangit2/guanaco/main/install.sh | b
 - **💾 Smart Caching** — Optional exact-match and session-aware prefix caching (BETA) to reduce redundant API calls
 - **📈 Web Dashboard** — Real-time analytics, model configuration, API key management, and service status at `http://localhost:8080/dashboard`
 - **🐳 Docker & systemd** — Production-ready deployment with included service unit files
-- **🔁 Backward Compatible** — The `oct` CLI alias is fully preserved
 
 ---
 
@@ -89,22 +88,7 @@ Your apps can now hit:
 
 The built-in web dashboard is available at `http://localhost:8080/dashboard`.
 
-```
-┌────────────────────────────────────────────────────────────────┐
-│  Dashboard Preview                                              │
-│                                                                │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────┐│
-│  │ Total Requests│  │ LLM Calls    │  │ Prompt Tokens        ││
-│  │    1,249     │  │    892       │  │   4.2M               ││
-│  └──────────────┘  └──────────────┘  └──────────────────────┘│
-│                                                                │
-│  ┌─────────────────────────────────────────────────────────┐  │
-│  │ Usage: Session ████████░░░░░░░░░  62%  Resets in 12 min  │  │
-│  └─────────────────────────────────────────────────────────┘  │
-│                                                                │
-│  [Models] [Analytics] [API Keys] [Config] [Status]           │
-└────────────────────────────────────────────────────────────────┘
-```
+![Guanaco Dashboard](https://i.ibb.co/0jCGsv6p/Screenshot-2026-04-09-195752.png)
 
 Features: real-time request analytics, token usage graphs, model configuration, fallback provider setup, API key management, and Ollama Cloud quota monitoring.
 
