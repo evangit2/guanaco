@@ -70,12 +70,13 @@ class OllamaClient:
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
+            headers = {"Content-Type": "application/json"}
+            # Only send Authorization if we have a real API key (not empty, placeholder, or masked)
+            if self.api_key and self.api_key not in ("***", "REPLACE_ME", "your_api_key_here"):
+                headers["Authorization"] = f"Bearer {self.api_key}"
             self._client = httpx.AsyncClient(
                 timeout=self.timeout,
-                headers={
-                    "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": "application/json",
-                },
+                headers=headers,
             )
         return self._client
 
