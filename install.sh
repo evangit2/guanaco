@@ -355,9 +355,6 @@ SCRIPT
 esac
 chmod +x "$BIN_DIR/guanaco"
 
-# Also create an oct alias for backward compat
-ln -sf "$BIN_DIR/guanaco" "$BIN_DIR/oct" 2>/dev/null || true
-
 # ── Add to PATH if needed ──
 DETECT_SHELL="${SHELL##*/}"
 case "$DETECT_SHELL" in
