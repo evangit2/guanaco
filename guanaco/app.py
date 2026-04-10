@@ -17,7 +17,7 @@ try:
     from importlib.metadata import version as _pkg_version
     __version__ = _pkg_version("guanaco")
 except Exception:
-    __version__ = "0.3.6"
+    __version__ = "0.3.7"
 from guanaco.router.router import create_router as create_llm_router
 from guanaco.search.providers import ALL_PROVIDERS
 from guanaco.dashboard import create_dashboard_router

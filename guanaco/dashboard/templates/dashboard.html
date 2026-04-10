@@ -153,6 +153,7 @@
     <!-- Tabs -->
     <div class="tabs">
         <div class="tab active" onclick="showTab('endpoints')">Endpoints</div>
+        <div class="tab" onclick="showTab('search')">Search</div>
         <div class="tab" onclick="showTab('models')">Models</div>
         <div class="tab" onclick="showTab('fallback')">Fallback</div>
         <div class="tab" onclick="showTab('analytics')">Analytics</div>
@@ -190,6 +191,32 @@
                 <div><div style="font-size:14px;font-weight:600;">Tailscale</div><div style="font-size:12px;color:var(--text2);" id="tailscale-status">Not installed</div></div>
             </div>
             <div id="network-info" style="font-size:13px;color:var(--text2);"></div>
+        </div>
+    </div>
+
+    <!-- ─── Search Tab ─── -->
+    <div id="tab-search" class="hidden">
+        <div class="card">
+            <h2><span class="emoji">🧪</span> Search Playground</h2>
+            <p style="font-size:12px;color:var(--text2);margin-bottom:16px;">Send a search query or get an AI summary of search results.</p>
+            <div style="display:flex;gap:10px;margin-bottom:12px;flex-wrap:wrap;align-items:center;">
+                <select id="playground-provider" style="flex:0 0 160px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--card);color:var(--text);font-size:13px;"></select>
+                <input type="text" id="playground-query" placeholder="Enter search query..." style="flex:1;min-width:200px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--card);color:var(--text);font-size:13px;" onkeydown="if(event.key==='Enter')testSearch()">
+                <button onclick="testSearch()" style="padding:8px 20px;border:none;border-radius:8px;background:var(--accent);color:#fff;cursor:pointer;font-size:13px;font-weight:600;">Search</button>
+                <button onclick="summarizeSearch()" style="padding:8px 20px;border:1px solid var(--accent);border-radius:8px;background:transparent;color:var(--accent);cursor:pointer;font-size:13px;font-weight:600;">✨ Summarize</button>
+            </div>
+            <div id="playground-summary" style="display:none;margin-bottom:16px;padding:16px;border-radius:8px;background:rgba(139,92,246,0.08);border:1px solid rgba(139,92,246,0.2);">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                    <div style="font-size:13px;font-weight:600;color:var(--text);">AI Summary <span id="summary-model-badge" style="font-size:11px;font-weight:400;color:var(--text2);"></span></div>
+                    <button onclick="copySummary()" style="padding:4px 10px;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--text);cursor:pointer;font-size:11px;">Copy</button>
+                </div>
+                <div id="summary-text" style="font-size:13px;line-height:1.6;color:var(--text);"></div>
+            </div>
+            <div id="playground-results" style="display:none;margin-top:16px;">
+                <div style="font-size:12px;color:var(--text2);margin-bottom:8px;">Results:</div>
+                <pre id="playground-json" style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px;font-size:12px;max-height:400px;overflow:auto;white-space:pre-wrap;word-break:break-all;"></pre>
+            </div>
+            <div id="playground-error" style="display:none;margin-top:16px;padding:12px;border-radius:8px;background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.3);color:#ef4444;font-size:13px;"></div>
         </div>
     </div>
 
@@ -620,7 +647,7 @@ const FALLBACK = __FALLBACK__;
 function showTab(tab) {
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
     event.target.classList.add('active');
-    ['endpoints','models','fallback','analytics','status','cache','keys','system'].forEach(t => {
+    ['endpoints','search','models','fallback','analytics','status','cache','keys','system'].forEach(t => {
         document.getElementById('tab-'+t).classList.toggle('hidden', t !== tab);
     });
     // Load data for tabs when switched
@@ -663,13 +690,12 @@ function updateEndpoints() {
     const port = CONFIG.router_port;
     document.getElementById('llm-url').textContent = `${base}:${port}/v1/chat/completions`;
     document.getElementById('anthropic-url').textContent = `${base}:${port}/v1/messages`;
-    Object.entries({
-        'Tavily': `/tavily/search`, 'Exa': `/exa/search`, 'SearXNG': `/searxng/search`,
-        'Firecrawl': `/firecrawl/scrape`, 'Serper': `/serper/search`,
-        'Jina': `/jina/search`, 'Cohere': `/cohere/rerank`, 'Brave': `/brave/search`,
-    }).forEach(([name, path]) => {
-        const el = document.getElementById(`ep-${name}`);
-        if (el) el.textContent = `${base}:${port}${path}`;
+    // Update all endpoint URLs from PROVIDERS data
+    Object.entries(PROVIDERS).forEach(([name, cfg]) => {
+        (cfg.endpoints || []).forEach((ep, i) => {
+            const el = document.getElementById(`ep-${name}-${i}`);
+            if (el) el.textContent = `${base}:${port}${cfg.prefix}${ep.path}`;
+        });
     });
 }
 
@@ -696,6 +722,105 @@ function updateNetworkInfo() {
         (CONFIG.tailscale_installed
             ? `<div>Tailscale: ${CONFIG.tailscale_ip ? CONFIG.tailscale_ip : 'Not available'}</div>`
             : `<div style="color:var(--text2);font-size:11px;">Tailscale not installed — <a href="https://tailscale.com" target="_blank" style="color:var(--accent);">install it</a> for remote access</div>`);
+}
+
+async function testSearch() {
+    const provider = document.getElementById('playground-provider').value;
+    const query = document.getElementById('playground-query').value.trim();
+    if (!query) return;
+
+    const resultsEl = document.getElementById('playground-results');
+    const jsonEl = document.getElementById('playground-json');
+    const errorEl = document.getElementById('playground-error');
+    const summaryEl = document.getElementById('playground-summary');
+
+    resultsEl.style.display = 'none';
+    summaryEl.style.display = 'none';
+    errorEl.style.display = 'none';
+    jsonEl.textContent = 'Loading...';
+    resultsEl.style.display = 'block';
+
+    try {
+        const resp = await fetch('/dashboard/api/test-search', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({provider, query}),
+        });
+        const data = await resp.json();
+        if (!resp.ok) {
+            errorEl.textContent = data.error || `Error ${resp.status}`;
+            errorEl.style.display = 'block';
+        } else {
+            jsonEl.textContent = JSON.stringify(data, null, 2);
+        }
+    } catch (e) {
+        errorEl.textContent = 'Request failed: ' + e.message;
+        errorEl.style.display = 'block';
+    }
+}
+
+async function summarizeSearch() {
+    const query = document.getElementById('playground-query').value.trim();
+    if (!query) return;
+
+    const resultsEl = document.getElementById('playground-results');
+    const jsonEl = document.getElementById('playground-json');
+    const errorEl = document.getElementById('playground-error');
+    const summaryEl = document.getElementById('playground-summary');
+    const summaryTextEl = document.getElementById('summary-text');
+    const summaryBadge = document.getElementById('summary-model-badge');
+
+    resultsEl.style.display = 'none';
+    summaryEl.style.display = 'none';
+    errorEl.style.display = 'none';
+    summaryTextEl.textContent = 'Generating summary...';
+    summaryBadge.textContent = '';
+    summaryEl.style.display = 'block';
+    jsonEl.textContent = 'Searching...';
+    resultsEl.style.display = 'block';
+
+    try {
+        const resp = await fetch('/dashboard/api/summarize', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({query}),
+        });
+        const data = await resp.json();
+        if (data.error) {
+            errorEl.textContent = data.error;
+            errorEl.style.display = 'block';
+            summaryEl.style.display = 'none';
+        } else {
+            jsonEl.textContent = JSON.stringify(data, null, 2);
+            if (data.summary) {
+                summaryTextEl.textContent = data.summary;
+                summaryBadge.textContent = data.model ? `via ${data.model}` : '';
+            } else {
+                summaryTextEl.textContent = 'No summary generated.';
+                summaryBadge.textContent = '';
+            }
+        }
+    } catch (e) {
+        errorEl.textContent = 'Request failed: ' + e.message;
+        errorEl.style.display = 'block';
+        summaryEl.style.display = 'none';
+    }
+}
+
+function copySummary() {
+    const text = document.getElementById('summary-text').textContent;
+    if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(text);
+    } else {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+    }
 }
 
 function generateKey() {
@@ -1343,26 +1468,37 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('llm-url').textContent = `${base}:${CONFIG.router_port}/v1/chat/completions`;
     document.getElementById('anthropic-url').textContent = `${base}:${CONFIG.router_port}/v1/messages`;
 
-    // Search endpoints
-    const endpoints = {
-        'Tavily': `/tavily/search`, 'Exa': `/exa/search`, 'SearXNG': `/searxng/search`,
-        'Firecrawl': `/firecrawl/scrape`, 'Serper': `/serper/search`,
-        'Jina': `/jina/search`, 'Cohere': `/cohere/rerank`, 'Brave': `/brave/search`,
-    };
+    // Search endpoints — rendered dynamically from PROVIDERS data
     const el = document.getElementById('search-endpoints');
-    el.innerHTML = Object.entries(endpoints).map(([name, path]) => `
-        <div class="endpoint" onclick="copyUrl('ep-${name}')">
-            <div class="provider">${name}</div>
-            <div class="url" id="ep-${name}">${base}:${CONFIG.router_port}${path}</div>
-            <button class="copy-btn" onclick="event.stopPropagation();copyUrl('ep-${name}')">Copy</button>
-        </div>
-    `).join('');
+    let html = '';
+    Object.entries(PROVIDERS).forEach(([name, cfg]) => {
+        const eps = cfg.endpoints || [];
+        eps.forEach((ep, i) => {
+            const urlId = `ep-${name}-${i}`;
+            const fullUrl = `${base}:${CONFIG.router_port}${cfg.prefix}${ep.path}`;
+            html += `<div class="endpoint" onclick="copyUrl('${urlId}')">
+                <div class="provider">${name} <span style="font-size:11px;color:var(--text2);font-weight:400;">${ep.method}</span></div>
+                <div class="url" id="${urlId}">${fullUrl}</div>
+                <button class="copy-btn" onclick="event.stopPropagation();copyUrl('${urlId}')">Copy</button>
+            </div>`;
+        });
+    });
+    el.innerHTML = html;
 
     // Provider pills
     const pills = document.getElementById('provider-pills');
     pills.innerHTML = Object.entries(PROVIDERS).map(([name, cfg]) =>
         `<div class="pill ${cfg.enabled ? 'on' : 'off'}">${name}</div>`
     ).join('');
+
+    // Playground — populate provider dropdown
+    const playgroundSel = document.getElementById('playground-provider');
+    if (playgroundSel) {
+        playgroundSel.innerHTML = Object.entries(PROVIDERS)
+            .filter(([_, c]) => c.enabled)
+            .map(([name, _]) => `<option value="${name}">${name}</option>`)
+            .join('');
+    }
 
     // Stats
     const stats = USAGE;
