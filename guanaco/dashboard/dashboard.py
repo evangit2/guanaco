@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, FileResponse
 import httpx
 
 from guanaco.config import get_config, get_base_url, get_tailscale_ip, save_config, load_config
@@ -18,6 +18,7 @@ from guanaco.client import OllamaClient
 
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
+LOGO_PATH = TEMPLATES_DIR / "logo.png"
 
 def get_local_ip():
     import socket
@@ -61,6 +62,10 @@ WantedBy=multi-user.target
 
 def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogger, client=None) -> APIRouter:
     router = APIRouter(tags=["Dashboard"])
+
+    @router.get("/logo.png")
+    async def logo():
+        return FileResponse(LOGO_PATH, media_type="image/png")
 
     @router.get("/", response_class=HTMLResponse)
     async def dashboard(request: Request):

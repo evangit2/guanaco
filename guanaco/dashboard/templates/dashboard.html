@@ -15,8 +15,8 @@
     body { font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); padding: 20px; max-width: 960px; margin: 0 auto; }
     .container { width: 100%; }
     .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; }
-    .header h1 { font-size: 22px; font-weight: 700; }
-    .header h1 span { color: var(--accent); }
+    .header h1 { font-size: 22px; font-weight: 700; display: flex; align-items: center; gap: 10px; }
+    .header h1 img { height: 44px; width: 44px; }
     .status-badge { display: flex; align-items: center; gap: 8px; background: var(--surface); border: 1px solid var(--border); border-radius: 20px; padding: 6px 14px; font-size: 13px; }
     .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); animation: pulse 2s ease-in-out infinite; }
     .status-dot.error { background: var(--red); }
@@ -137,7 +137,7 @@
 <body>
 <div class="container">
     <div class="header">
-        <h1>🦙 Guanaco</h1>
+        <h1><img src="/dashboard/logo.png" alt="🦙"> Guanaco</h1>
         <div class="status-badge" id="connection-status"><div class="status-dot"></div><span id="connection-text">Connected</span></div>
     </div>
 
@@ -652,6 +652,27 @@ function copyUrl(id) {
     setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 1500);
 }
 
+function getCurrentBaseUrl() {
+    const on = document.getElementById('tailscale-toggle').checked;
+    const ip = (on && CONFIG.tailscale_ip) ? CONFIG.tailscale_ip : CONFIG.local_ip;
+    return `http://${ip}`;
+}
+
+function updateEndpoints() {
+    const base = getCurrentBaseUrl();
+    const port = CONFIG.router_port;
+    document.getElementById('llm-url').textContent = `${base}:${port}/v1/chat/completions`;
+    document.getElementById('anthropic-url').textContent = `${base}:${port}/v1/messages`;
+    Object.entries({
+        'Tavily': `/tavily/search`, 'Exa': `/exa/search`, 'SearXNG': `/searxng/search`,
+        'Firecrawl': `/firecrawl/scrape`, 'Serper': `/serper/search`,
+        'Jina': `/jina/search`, 'Cohere': `/cohere/rerank`, 'Brave': `/brave/search`,
+    }).forEach(([name, path]) => {
+        const el = document.getElementById(`ep-${name}`);
+        if (el) el.textContent = `${base}:${port}${path}`;
+    });
+}
+
 function toggleTailscale() {
     const on = document.getElementById('tailscale-toggle').checked;
     if (on && CONFIG.tailscale_installed) {
@@ -663,6 +684,7 @@ function toggleTailscale() {
         document.getElementById('tailscale-status').textContent = 'Disabled';
     }
     updateNetworkInfo();
+    updateEndpoints();
 }
 
 function updateNetworkInfo() {
