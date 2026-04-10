@@ -368,6 +368,7 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
         return {
             "llm": config.llm.model_dump(),
             "fallback": config.fallback.model_dump(),
+            "search": config.search.model_dump(),
         }
 
     @router.post("/api/config")
@@ -382,6 +383,17 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
             for key, value in llm_updates.items():
                 if hasattr(config.llm, key):
                     setattr(config.llm, key, value)
+
+        # Update search settings
+        if "search" in body:
+            s_updates = body["search"]
+            s = config.search
+            if "summarize_enabled" in s_updates:
+                s.summarize_enabled = bool(s_updates["summarize_enabled"])
+            if "summarize_all" in s_updates:
+                s.summarize_all = bool(s_updates["summarize_all"])
+            if "summary_model" in s_updates:
+                s.summary_model = str(s_updates["summary_model"])
 
         # Update fallback settings
         if "fallback" in body:

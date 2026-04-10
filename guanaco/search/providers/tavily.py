@@ -45,7 +45,7 @@ class TavilySearchResponse(BaseModel):
 class TavilyProvider(ProviderEmulator):
     name = "tavily"
     prefix = "/tavily"
-    endpoints = [{"path": "/search", "method": "POST"}]
+    endpoints = ({"path": "/search", "method": "POST"},)
 
     def register_routes(self, app):
         router = APIRouter(prefix=self.prefix, tags=["Tavily"])

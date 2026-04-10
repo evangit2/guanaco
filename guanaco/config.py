@@ -41,6 +41,13 @@ class RouterConfig(BaseModel):
     allow_prerelease: bool = False
 
 
+class SearchConfig(BaseModel):
+    """Search provider settings — moved from Models tab to Search tab."""
+    summarize_enabled: bool = False         # BETA — opt-in summarize for supported providers
+    summarize_all: bool = False              # Secondary toggle — summarize ALL responses, not just native ones
+    summary_model: str = "qwen3.5:397b"     # Model used for summarization
+
+
 class LLMConfig(BaseModel):
     """LLM model selection config."""
     reranker_model: str = "gpt-oss:120b"
@@ -130,6 +137,7 @@ class AppConfig(BaseModel):
     providers: AllProvidersConfig = Field(default_factory=AllProvidersConfig)
     cache: CacheConfig = Field(default_factory=CacheConfig)
     usage: UsageConfig = Field(default_factory=UsageConfig)
+    search: SearchConfig = Field(default_factory=SearchConfig)
 
     @property
     def ollama_api_key_resolved(self) -> str:

@@ -58,7 +58,7 @@ class SerperScrapeResponse(BaseModel):
 class SerperProvider(ProviderEmulator):
     name = "serper"
     prefix = "/serper"
-    endpoints = [{"path": "/search", "method": "POST"}, {"path": "/scrape", "method": "POST"}]
+    endpoints = ({"path": "/search", "method": "POST"}, {"path": "/scrape", "method": "POST"})
 
     def register_routes(self, app):
         router = APIRouter(prefix=self.prefix, tags=["Serper"])
