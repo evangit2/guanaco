@@ -305,21 +305,6 @@ Edit `/etc/systemd/system/guanaco.service` to set `User`, `Group`, install direc
 
 ---
 
-## Backward Compatibility with Ollama Cloud Tools (OCT)
-
-Guanaco is the successor to **Ollama Cloud Tools (oct)**. The `oct` CLI is preserved as a drop-in alias:
-
-```bash
-oct start        # → runs guanaco start
-oct status       # → runs guanaco status
-oct models       # → runs guanaco models
-oct config --show # → runs guanaco config --show
-```
-
-Config at `~/.oct/config.yaml` is automatically read if `~/.guanaco/config.yaml` doesn't exist. Update your scripts at your convenience — both commands work indefinitely.
-
----
-
 ## Contributing
 
 Contributions are welcome! Please open an issue or submit a pull request on the [GitHub repository](https://github.com/evangit2/guanaco).
