@@ -750,8 +750,13 @@ function saveSearchConfig() {
             summarize_all: summarizeAll,
             summary_model: modelSel?.value || '',
         }}),
-    }).then(r => r.json()).then(() => {
-        if (summarize) loadSearchConfig();
+    }).then(r => r.json()).then(data => {
+        // Use the server response to sync toggle state (authoritative)
+        const s = (data.config && data.config.search) || {};
+        const toggle = document.getElementById('search-summarize-toggle');
+        if (toggle) toggle.checked = !!s.summarize_enabled;
+        if (allToggle) allToggle.checked = !!s.summarize_all;
+        if (allRow) allRow.style.display = s.summarize_enabled ? 'flex' : 'none';
     });
 }
 
