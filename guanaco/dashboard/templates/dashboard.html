@@ -768,9 +768,11 @@ function updateEndpoints() {
     document.getElementById('anthropic-url').textContent = `${base}:${port}/v1/messages`;
     // Update all endpoint URLs from PROVIDERS data
     Object.entries(PROVIDERS).forEach(([name, cfg]) => {
-        (cfg.endpoints || []).forEach((ep, i) => {
+        const eps = (cfg.endpoints && cfg.endpoints.length > 0) ? cfg.endpoints : (KNOWN_ENDPOINTS[name] || []);
+        const prefix = cfg.prefix || `/${name}`;
+        eps.forEach((ep, i) => {
             const el = document.getElementById(`ep-${name}-${i}`);
-            if (el) el.textContent = `${base}:${port}${cfg.prefix}${ep.path}`;
+            if (el) el.textContent = `${base}:${port}${prefix}${ep.path}`;
         });
     });
 }
@@ -1449,13 +1451,25 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('anthropic-url').textContent = `${base}:${CONFIG.router_port}/v1/messages`;
 
     // Search endpoints — rendered dynamically from PROVIDERS data
+    // Hard fallback: if server didn't provide endpoint data, use known defaults
+    const KNOWN_ENDPOINTS = {
+        tavily: [{path:'/search',method:'POST'}],
+        exa: [{path:'/search',method:'POST'},{path:'/findSimilar',method:'POST'}],
+        searxng: [{path:'/search',method:'GET/POST'}],
+        firecrawl: [{path:'/scrape',method:'POST'},{path:'/search',method:'POST'},{path:'/crawl',method:'POST'},{path:'/extract',method:'POST'}],
+        serper: [{path:'/search',method:'POST'},{path:'/scrape',method:'POST'}],
+        jina: [{path:'/search',method:'POST'},{path:'/read',method:'POST'},{path:'/rerank',method:'POST'}],
+        cohere: [{path:'/rerank',method:'POST'}],
+        brave: [{path:'/search',method:'GET/POST'}]
+    };
     const el = document.getElementById('search-endpoints');
     let html = '';
     Object.entries(PROVIDERS).forEach(([name, cfg]) => {
-        const eps = cfg.endpoints || [];
+        const eps = (cfg.endpoints && cfg.endpoints.length > 0) ? cfg.endpoints : (KNOWN_ENDPOINTS[name] || []);
+        const prefix = cfg.prefix || `/${name}`;
         eps.forEach((ep, i) => {
             const urlId = `ep-${name}-${i}`;
-            const fullUrl = `${base}:${CONFIG.router_port}${cfg.prefix}${ep.path}`;
+            const fullUrl = `${base}:${CONFIG.router_port}${prefix}${ep.path}`;
             html += `<div class="endpoint" onclick="copyUrl('${urlId}')">
                 <div class="provider">${name} <span style="font-size:11px;color:var(--text2);font-weight:400;">${ep.method}</span></div>
                 <div class="url" id="${urlId}">${fullUrl}</div>
