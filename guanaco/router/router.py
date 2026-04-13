@@ -285,9 +285,13 @@ async def _call_fallback_provider(payload: dict, fallback_config, stream: bool =
     if fallback_config.api_key:
         headers["Authorization"] = f"Bearer {fallback_config.api_key}"
 
+    # Ensure the payload has the correct stream value — some providers (e.g. Fireworks)
+    # require "stream": true in the JSON body when max_tokens > 4096
+    payload = dict(payload)
+    payload["stream"] = stream
+
     # Inject fallback max_tokens if not already set in the payload
     if fallback_config.max_tokens and "max_tokens" not in payload:
-        payload = dict(payload)
         payload["max_tokens"] = fallback_config.max_tokens
 
     timeout = fallback_config.timeout or 60.0
