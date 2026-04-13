@@ -72,6 +72,12 @@ class AnalyticsLogger:
                 conn.execute("ALTER TABLE request_log ADD COLUMN fallback_for TEXT")
             except sqlite3.OperationalError:
                 pass  # column already exists
+            # Migration: add caller info and content columns for full history
+            for col in ["source_ip TEXT", "source_port INTEGER", "user_agent TEXT", "input_text TEXT", "output_text TEXT"]:
+                try:
+                    conn.execute(f"ALTER TABLE request_log ADD COLUMN {col}")
+                except sqlite3.OperationalError:
+                    pass  # column already exists
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS status_events (
                     id TEXT PRIMARY KEY,
@@ -130,6 +136,12 @@ class AnalyticsLogger:
         provider: Optional[str] = None,
         fallback_for: Optional[str] = None,
         extra: Optional[dict] = None,
+        # Full history fields (optional, requires opt-in)
+        source_ip: Optional[str] = None,
+        source_port: Optional[int] = None,
+        user_agent: Optional[str] = None,
+        input_text: Optional[str] = None,
+        output_text: Optional[str] = None,
     ) -> str:
         """Log an LLM request. Returns the log entry ID."""
         # Normalize model name so glm-5.1:cloud and glm-5.1 are grouped together
@@ -141,11 +153,13 @@ class AnalyticsLogger:
                 """INSERT INTO request_log
                    (id, ts, type, model, prompt_tokens, completion_tokens, total_tokens,
                     tps, prompt_tps, ttft_seconds, total_duration_seconds,
-                    load_duration_seconds, error, request_id, provider, fallback_for)
-                   VALUES (?, ?, 'llm', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    load_duration_seconds, error, request_id, provider, fallback_for,
+                    source_ip, source_port, user_agent, input_text, output_text)
+                   VALUES (?, ?, 'llm', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (entry_id, time.time(), model, prompt_tokens, completion_tokens,
                  total_tokens, tps, prompt_tps, ttft_seconds, total_duration_seconds,
-                 load_duration_seconds, error, request_id, provider, fallback_for),
+                 load_duration_seconds, error, request_id, provider, fallback_for,
+                 source_ip, source_port, user_agent, input_text, output_text),
             )
         return entry_id
 
@@ -413,6 +427,19 @@ class AnalyticsLogger:
                 fallbacks.append({
                     "original_model": row[0], "fallback_count": row[1], "last_used": row[2],
                 })
+            
+            # Fallback rate (24h window) - percentage of requests routed to fallback
+            cutoff_24h = time.time() - (24 * 3600)
+            fb_24h = conn.execute(
+                "SELECT COUNT(*) FROM request_log WHERE type='llm' AND fallback_for IS NOT NULL AND ts > ?",
+                (cutoff_24h,)
+            ).fetchone()[0]
+            main_24h = conn.execute(
+                "SELECT COUNT(*) FROM request_log WHERE type='llm' AND (provider='ollama' OR provider IS NULL) AND fallback_for IS NULL AND ts > ?",
+                (cutoff_24h,)
+            ).fetchone()[0]
+            total_24h = fb_24h + main_24h
+            fallback_rate = round((fb_24h / total_24h) * 100, 1) if total_24h > 0 else 0.0
 
             # Recent errors
             error_rows = conn.execute(
@@ -457,6 +484,7 @@ class AnalyticsLogger:
                 "recent_errors": recent_errors,
                 "status_errors": status_error_count,
                 "status_warnings": status_warning_count,
+                "fallback_rate": fallback_rate,
                 "usage": {
                     "session_pct": usage_row[0] if usage_row else None,
                     "weekly_pct": usage_row[1] if usage_row else None,
@@ -501,6 +529,127 @@ class AnalyticsLogger:
                 (model, limit),
             ).fetchall()
             return [dict(r) for r in rows]
+
+    def get_fallback_rate(self, hours: int = 24) -> dict:
+        """Calculate fallback routing rate for the specified time window.
+        
+        Returns the percentage of requests that were routed to fallback provider
+        due to main provider failures (timeout, error, quota full).
+        """
+        cutoff = time.time() - (hours * 3600)
+        
+        with sqlite3.connect(self.db_path) as conn:
+            fallback_count = conn.execute(
+                "SELECT COUNT(*) FROM request_log WHERE type='llm' AND fallback_for IS NOT NULL AND ts > ?",
+                (cutoff,)
+            ).fetchone()[0]
+            main_count = conn.execute(
+                "SELECT COUNT(*) FROM request_log WHERE type='llm' AND (provider='ollama' OR provider IS NULL) AND fallback_for IS NULL AND ts > ?",
+                (cutoff,)
+            ).fetchone()[0]
+            total = fallback_count + main_count
+            rate = round((fallback_count / total) * 100, 1) if total > 0 else 0.0
+            return {
+                "rate": rate,
+                "fallback_count": fallback_count,
+                "main_count": main_count,
+                "total": total,
+                "hours": hours,
+            }
+
+
+    def get_history(
+        self,
+        limit: int = 100,
+        offset: int = 0,
+        model_filter: Optional[str] = None,
+        provider_filter: Optional[str] = None,
+        has_content: Optional[bool] = None,
+        include_content: bool = False,
+    ) -> list[dict]:
+        """Get paginated request history with optional filters.
+        
+        Args:
+            limit: Max results to return
+            offset: Skip this many results (pagination)
+            model_filter: Filter by model name
+            provider_filter: Filter by provider
+            has_content: Filter to only requests with/without saved content
+            include_content: Include input_text/output_text in results
+        """
+        query = "SELECT * FROM request_log WHERE type='llm'"
+        params = []
+        
+        if model_filter:
+            query += " AND model = ?"
+            params.append(model_filter)
+        if provider_filter:
+            query += " AND provider = ?"
+            params.append(provider_filter)
+        if has_content is True:
+            query += " AND input_text IS NOT NULL"
+        elif has_content is False:
+            query += " AND input_text IS NULL"
+        
+        query += " ORDER BY ts DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(query, params).fetchall()
+            results = []
+            for row in rows:
+                d = dict(row)
+                # Don't include content unless requested (can be large)
+                if not include_content:
+                    d.pop("input_text", None)
+                    d.pop("output_text", None)
+                # Format timestamp
+                d["ts_formatted"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(d["ts"]))
+                results.append(d)
+            return results
+
+    def get_request_detail(self, request_id: str) -> Optional[dict]:
+        """Get full details of a single request including content."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT * FROM request_log WHERE id = ?",
+                (request_id,)
+            ).fetchone()
+            if row:
+                d = dict(row)
+                d["ts_formatted"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(d["ts"]))
+                return d
+            return None
+
+    def get_history_stats(self) -> dict:
+        """Get stats about history logging."""
+        with sqlite3.connect(self.db_path) as conn:
+            total = conn.execute("SELECT COUNT(*) FROM request_log WHERE type='llm'").fetchone()[0]
+            with_content = conn.execute(
+                "SELECT COUNT(*) FROM request_log WHERE type='llm' AND input_text IS NOT NULL"
+            ).fetchone()[0]
+            oldest = conn.execute(
+                "SELECT MIN(ts) FROM request_log WHERE type='llm'"
+            ).fetchone()[0]
+            newest = conn.execute(
+                "SELECT MAX(ts) FROM request_log WHERE type='llm'"
+            ).fetchone()[0]
+            
+            # Storage size estimate
+            content_size = conn.execute(
+                "SELECT COALESCE(SUM(LENGTH(input_text) + LENGTH(output_text)), 0) FROM request_log WHERE input_text IS NOT NULL OR output_text IS NOT NULL"
+            ).fetchone()[0]
+            
+            return {
+                "total_requests": total,
+                "requests_with_content": with_content,
+                "oldest_ts": oldest,
+                "newest_ts": newest,
+                "content_size_bytes": content_size,
+                "content_size_mb": round(content_size / (1024 * 1024), 2),
+            }
 
     def clear(self):
         """Clear all analytics data."""

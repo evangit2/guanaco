@@ -179,6 +179,61 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
         entry_id = analytics.log_status(level=level, source=source, message=message, details=details)
         return {"id": entry_id, "status": "logged"}
 
+
+    # ── History (Full Request/Response Logging) ──
+
+    @router.get("/api/history")
+    async def get_history(
+        request: Request,
+        limit: int = 50,
+        offset: int = 0,
+        model: Optional[str] = None,
+        provider: Optional[str] = None,
+        has_content: Optional[bool] = None,
+        include_content: bool = False,
+    ):
+        """Get paginated request history."""
+        return analytics.get_history(
+            limit=limit,
+            offset=offset,
+            model_filter=model,
+            provider_filter=provider,
+            has_content=has_content,
+            include_content=include_content,
+        )
+
+    @router.get("/api/history/stats")
+    async def get_history_stats(request: Request):
+        """Get statistics about history logging."""
+        return analytics.get_history_stats()
+
+    @router.get("/api/history/config")
+    async def get_history_config(request: Request):
+        """Get current history logging configuration."""
+        config = get_config()
+        return config.history.model_dump()
+
+    @router.post("/api/history/config")
+    async def save_history_config(request: Request):
+        """Update history logging configuration."""
+        body = await request.json()
+        config = get_config()
+        # Update history config fields
+        for key, value in body.items():
+            if hasattr(config.history, key):
+                setattr(config.history, key, value)
+        save_config(config)
+        return {"status": "ok", "history": config.history.model_dump()}
+
+    @router.get("/api/history/{request_id}")
+    async def get_history_detail(request_id: str, request: Request):
+        """Get full details of a single request including content."""
+        result = analytics.get_request_detail(request_id)
+        if result:
+            return result
+        return {"error": "Request not found"}
+
+
     # ── Config Management ──
 
     @router.post("/api/fallback/test")

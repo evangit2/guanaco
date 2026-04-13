@@ -48,6 +48,16 @@ class SearchConfig(BaseModel):
     summary_model: str = "qwen3.5:397b"     # Model used for summarization
 
 
+
+
+class HistoryConfig(BaseModel):
+    """Full request/response history logging settings."""
+    enabled: bool = False              # Opt-in — must be explicitly enabled
+    save_input: bool = True            # Save input text (prompts)
+    save_output: bool = True           # Save output text (responses)
+    retention_days: int = 30           # Auto-delete after this many days (0 = keep forever)
+    max_content_size: int = 100000     # Max chars to save per input/output (truncates if larger)
+
 class LLMConfig(BaseModel):
     """LLM model selection config."""
     reranker_model: str = "gpt-oss:120b"
@@ -138,6 +148,7 @@ class AppConfig(BaseModel):
     cache: CacheConfig = Field(default_factory=CacheConfig)
     usage: UsageConfig = Field(default_factory=UsageConfig)
     search: SearchConfig = Field(default_factory=SearchConfig)
+    history: HistoryConfig = Field(default_factory=HistoryConfig)
 
     @property
     def ollama_api_key_resolved(self) -> str:
