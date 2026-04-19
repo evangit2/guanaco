@@ -1224,12 +1224,13 @@ function showHistoryDetail(id) {
         
         // Create modal
         const modal = document.createElement('div');
+        modal.className = 'history-modal';
         modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.8);z-index:1000;display:flex;align-items:center;justify-content:center;padding:20px;';
         modal.innerHTML = `
             <div style="background:var(--surface);border-radius:12px;max-width:900px;width:100%;max-height:90vh;overflow-y:auto;">
                 <div style="position:sticky;top:0;background:var(--surface);padding:16px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;">
                     <h3 style="margin:0;">Request Detail</h3>
-                    <button onclick="this.closest('div').parentElement.remove()" style="background:transparent;border:none;color:var(--text);font-size:20px;cursor:pointer;">✕</button>
+                    <button onclick="this.closest('.history-modal').remove()" style="background:transparent;border:none;color:var(--text);font-size:20px;cursor:pointer;">✕</button>
                 </div>
                 <div style="padding:16px;">
                     <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px;">
@@ -1310,12 +1311,13 @@ function viewLogFile(filename) {
     fetch(`/dashboard/api/history/logs/${encodeURIComponent(filename)}`).then(r => r.json()).then(data => {
         if (data.error) { alert(data.error); return; }
         const modal = document.createElement('div');
+        modal.className = 'history-modal';
         modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.8);z-index:1000;display:flex;align-items:center;justify-content:center;padding:20px;';
         modal.innerHTML = `
             <div style="background:var(--surface);border-radius:12px;max-width:900px;width:100%;max-height:90vh;overflow-y:auto;">
                 <div style="position:sticky;top:0;background:var(--surface);padding:12px 16px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;">
                     <h3 style="margin:0;font-size:14px;">📄 ${escapeHtml(filename)}</h3>
-                    <button onclick="this.closest('div').parentElement.parentElement.remove()" style="background:transparent;border:none;color:var(--text);font-size:20px;cursor:pointer;">✕</button>
+                    <button onclick="this.closest('.history-modal').remove()" style="background:transparent;border:none;color:var(--text);font-size:20px;cursor:pointer;">✕</button>
                 </div>
                 <pre style="padding:16px;font-size:12px;white-space:pre-wrap;word-break:break-all;">${escapeHtml(data.content)}</pre>
             </div>`;
