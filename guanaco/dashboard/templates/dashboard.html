@@ -450,6 +450,19 @@
                             <span style="font-size:12px;">Save Output</span>
                         </div>
                     </div>
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+                        <div style="display:flex;align-items:center;gap:8px;">
+                            <input type="checkbox" id="history-log-to-files" onchange="saveHistoryConfig()">
+                            <span style="font-size:12px;">Log to Files</span>
+                            <span style="font-size:10px;color:var(--text2);">(plaintext .log files)</span>
+                        </div>
+                    </div>
+                    <div id="history-logdir-row" style="display:none;margin-bottom:12px;">
+                        <div class="config-row" style="margin-bottom:0;">
+                            <label style="font-size:12px;">Log Dir</label>
+                            <input type="text" id="history-log-dir" placeholder="Default: ~/.guanaco/history_logs" onchange="saveHistoryConfig()" style="width:260px;font-size:12px;">
+                        </div>
+                    </div>
                     <div class="config-row" style="margin-bottom:0;">
                         <label style="font-size:12px;">Retention (days)</label>
                         <input type="number" id="history-retention" value="30" min="0" max="365" style="width:80px;">
@@ -472,6 +485,13 @@
             </div>
             <div id="history-rows" style="max-height:500px;overflow-y:auto;"></div>
             <div id="history-pagination" style="display:flex;justify-content:center;gap:8px;margin-top:12px;"></div>
+            <div id="history-logs-section" style="display:none;margin-top:16px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                    <h3 style="margin:0;font-size:14px;">📁 Log Files</h3>
+                    <button class="refresh-btn" onclick="loadHistoryLogs()">🔄</button>
+                </div>
+                <div id="history-log-files" style="max-height:300px;overflow-y:auto;"></div>
+            </div>
         </div>
     </div>
 
@@ -731,9 +751,12 @@ const FALLBACK = __FALLBACK__;
 
 function showTab(tab) {
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-    event.target.classList.add('active');
-    ['endpoints','search','models','fallback','analytics','status','cache','keys','system'].forEach(t => {
-        document.getElementById('tab-'+t).classList.toggle('hidden', t !== tab);
+    // Find the clicked tab element by matching onclick content (works with both inline onclick and programmatic calls)
+    const tabEl = document.querySelector(`.tab[onclick*="'${tab}'"]`) || document.querySelector(`.tab[onclick*='"${tab}"']`);
+    if (tabEl) tabEl.classList.add('active');
+    ['endpoints','search','models','fallback','analytics','history','status','cache','keys','system'].forEach(t => {
+        const el = document.getElementById('tab-'+t);
+        if (el) el.classList.toggle('hidden', t !== tab);
     });
     // Load data for tabs when switched
     if (tab === 'models') loadModels();
@@ -741,6 +764,7 @@ function showTab(tab) {
     if (tab === 'fallback') loadFallbackConfig();
     if (tab === 'cache') loadCacheStats();
     if (tab === 'analytics') loadAnalytics();
+    if (tab === 'history') { loadHistoryConfig(); loadHistory(); loadHistoryLogs(); }
     if (tab === 'status') { checkOllamaStatus(); loadUsageConfig(); checkUsage(); loadStatusLog(); }
     if (tab === 'system') { loadAutostart(); checkForUpdate(); }
 }
@@ -1099,6 +1123,9 @@ function loadHistoryConfig() {
         document.getElementById('history-save-input').checked = data.save_input !== false;
         document.getElementById('history-save-output').checked = data.save_output !== false;
         document.getElementById('history-retention').value = data.retention_days || 30;
+        document.getElementById('history-log-to-files').checked = data.log_to_files || false;
+        document.getElementById('history-log-dir').value = data.log_dir || '';
+        document.getElementById('history-logdir-row').style.display = data.log_to_files ? 'flex' : 'none';
         document.getElementById('history-config-panel').style.display = data.enabled ? 'block' : 'none';
     });
 }
@@ -1106,12 +1133,16 @@ function loadHistoryConfig() {
 function saveHistoryConfig() {
     const enabled = document.getElementById('history-enabled').checked;
     document.getElementById('history-config-panel').style.display = enabled ? 'block' : 'none';
+    const logToFiles = document.getElementById('history-log-to-files').checked;
+    document.getElementById('history-logdir-row').style.display = logToFiles ? 'flex' : 'none';
     
     const data = {
         enabled: enabled,
         save_input: document.getElementById('history-save-input').checked,
         save_output: document.getElementById('history-save-output').checked,
         retention_days: parseInt(document.getElementById('history-retention').value) || 30,
+        log_to_files: logToFiles,
+        log_dir: document.getElementById('history-log-dir').value.trim(),
     };
     
     fetch('/dashboard/api/history/config', {
@@ -1119,8 +1150,9 @@ function saveHistoryConfig() {
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify(data)
     }).then(r => r.json()).then(() => {
-        // Reload stats
+        // Reload stats and log files
         loadHistoryStats();
+        loadHistoryLogs();
     });
 }
 
@@ -1160,7 +1192,7 @@ function loadHistory() {
                     <span>📍 ${r.source_ip || '—'}:${r.source_port || ''}</span>
                     <span>🏢 ${r.provider || 'ollama'}</span>
                     <span>🔤 ${r.prompt_tokens || 0}/${r.completion_tokens || 0}</span>
-                    ${r.input_text ? '<span style="color:var(--green);">📝 content</span>' : ''}
+                    ${r.has_content ? '<span style="color:var(--green);">📝 content</span>' : ''}
                     ${r.fallback_for ? '<span style="color:var(--orange);">🔀 fallback</span>' : ''}
                     ${r.error ? '<span style="color:var(--red);">❌ error</span>' : ''}
                 </div>
@@ -1237,6 +1269,66 @@ function showHistoryDetail(id) {
 function escapeHtml(text) {
     if (!text) return '';
     return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+// ─── History Log Files ───
+
+function loadHistoryLogs() {
+    fetch('/dashboard/api/history/logs').then(r => r.json()).then(data => {
+        const section = document.getElementById('history-logs-section');
+        const el = document.getElementById('history-log-files');
+        
+        if (!data.enabled) {
+            section.style.display = 'none';
+            return;
+        }
+        section.style.display = 'block';
+        
+        if (!data.files || data.files.length === 0) {
+            el.innerHTML = '<div style="color:var(--text2);text-align:center;padding:12px;">No log files yet</div>';
+            return;
+        }
+        
+        el.innerHTML = data.files.map(f => {
+            const sizeStr = f.size > 1024 ? (f.size / 1024).toFixed(1) + 'KB' : f.size + 'B';
+            return `<div style="background:var(--surface2);border-radius:6px;padding:8px 12px;margin-bottom:4px;display:flex;justify-content:space-between;align-items:center;">
+                <div style="cursor:pointer;flex:1;" onclick="viewLogFile('${f.name}')">
+                    <span style="font-weight:600;font-size:12px;">📄 ${f.name}</span>
+                    <span style="font-size:11px;color:var(--text2);margin-left:8px;">${sizeStr} · ${f.modified_formatted}</span>
+                </div>
+                <button class="btn btn-sm" onclick="event.stopPropagation();deleteLogFile('${f.name}')" style="font-size:10px;padding:2px 6px;">🗑</button>
+            </div>`;
+        }).join('');
+        
+        if (data.total > 200) {
+            el.innerHTML += `<div style="color:var(--text2);font-size:11px;text-align:center;padding:4px;">Showing 200 of ${data.total} files</div>`;
+        }
+    });
+}
+
+function viewLogFile(filename) {
+    fetch(`/dashboard/api/history/logs/${encodeURIComponent(filename)}`).then(r => r.json()).then(data => {
+        if (data.error) { alert(data.error); return; }
+        const modal = document.createElement('div');
+        modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.8);z-index:1000;display:flex;align-items:center;justify-content:center;padding:20px;';
+        modal.innerHTML = `
+            <div style="background:var(--surface);border-radius:12px;max-width:900px;width:100%;max-height:90vh;overflow-y:auto;">
+                <div style="position:sticky;top:0;background:var(--surface);padding:12px 16px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;">
+                    <h3 style="margin:0;font-size:14px;">📄 ${escapeHtml(filename)}</h3>
+                    <button onclick="this.closest('div').parentElement.parentElement.remove()" style="background:transparent;border:none;color:var(--text);font-size:20px;cursor:pointer;">✕</button>
+                </div>
+                <pre style="padding:16px;font-size:12px;white-space:pre-wrap;word-break:break-all;">${escapeHtml(data.content)}</pre>
+            </div>`;
+        document.body.appendChild(modal);
+        modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
+    });
+}
+
+function deleteLogFile(filename) {
+    if (!confirm(`Delete ${filename}?`)) return;
+    fetch(`/dashboard/api/history/logs/${encodeURIComponent(filename)}`, {method: 'DELETE'}).then(r => r.json()).then(() => {
+        loadHistoryLogs();
+    });
 }
 
 // ─── Status ───
@@ -1744,6 +1836,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // History
     loadHistoryConfig();
     loadHistory();
+    loadHistoryLogs();
 
     // Check connection
     checkOllamaStatus();

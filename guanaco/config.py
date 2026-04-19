@@ -57,6 +57,17 @@ class HistoryConfig(BaseModel):
     save_output: bool = True           # Save output text (responses)
     retention_days: int = 30           # Auto-delete after this many days (0 = keep forever)
     max_content_size: int = 100000     # Max chars to save per input/output (truncates if larger)
+    log_to_files: bool = False        # Also write plaintext log files (opt-in, separate from DB)
+    log_dir: str = ""                 # Directory for log files (default: <config_dir>/history_logs)
+
+    def get_log_dir(self, config_dir: Optional[Path] = None) -> Path:
+        """Resolve the log directory, creating it if needed."""
+        if self.log_dir:
+            p = Path(self.log_dir)
+        else:
+            p = (config_dir or get_default_config_dir()) / "history_logs"
+        p.mkdir(parents=True, exist_ok=True)
+        return p
 
 class LLMConfig(BaseModel):
     """LLM model selection config."""

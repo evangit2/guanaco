@@ -223,7 +223,12 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
             if hasattr(config.history, key):
                 setattr(config.history, key, value)
         save_config(config)
-        return {"status": "ok", "history": config.history.model_dump()}
+        # Clean up old log files based on retention_days
+        deleted = analytics.cleanup_old_log_files(config.history)
+        result = {"status": "ok", "history": config.history.model_dump()}
+        if deleted > 0:
+            result["files_deleted"] = deleted
+        return result
 
     @router.get("/api/history/{request_id}")
     async def get_history_detail(request_id: str, request: Request):
@@ -233,6 +238,65 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
             return result
         return {"error": "Request not found"}
 
+
+    # ── History Log Files ──
+
+    @router.get("/api/history/logs")
+    async def list_history_logs(request: Request):
+        """List plaintext log files in the history_logs directory."""
+        config = get_config()
+        if not config.history.log_to_files:
+            return {"files": [], "log_dir": "", "enabled": False}
+        try:
+            log_dir = config.history.get_log_dir()
+            files = []
+            for f in sorted(log_dir.glob("*.log"), reverse=True):
+                stat = f.stat()
+                files.append({
+                    "name": f.name,
+                    "size": stat.st_size,
+                    "modified": stat.st_mtime,
+                    "modified_formatted": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stat.st_mtime)),
+                })
+            return {"files": files[:200], "log_dir": str(log_dir), "enabled": True, "total": len(files)}
+        except Exception as e:
+            return {"files": [], "error": str(e), "enabled": True}
+
+    @router.get("/api/history/logs/{filename}")
+    async def read_history_log(filename: str, request: Request):
+        """Read the contents of a specific log file."""
+        config = get_config()
+        if not config.history.log_to_files:
+            return {"error": "Log files not enabled"}
+        try:
+            log_dir = config.history.get_log_dir()
+            filepath = log_dir / filename
+            # Security: only allow reading from the log dir, no path traversal
+            if not filepath.resolve().parent == log_dir.resolve():
+                return {"error": "Invalid path"}
+            if not filepath.exists():
+                return {"error": "File not found"}
+            content = filepath.read_text(encoding="utf-8", errors="replace")
+            return {"filename": filename, "content": content, "size": len(content)}
+        except Exception as e:
+            return {"error": str(e)}
+
+    @router.delete("/api/history/logs/{filename}")
+    async def delete_history_log(filename: str, request: Request):
+        """Delete a specific log file."""
+        config = get_config()
+        if not config.history.log_to_files:
+            return {"error": "Log files not enabled"}
+        try:
+            log_dir = config.history.get_log_dir()
+            filepath = log_dir / filename
+            if not filepath.resolve().parent == log_dir.resolve():
+                return {"error": "Invalid path"}
+            if filepath.exists():
+                filepath.unlink()
+            return {"status": "ok", "deleted": filename}
+        except Exception as e:
+            return {"error": str(e)}
 
     # ── Config Management ──
 

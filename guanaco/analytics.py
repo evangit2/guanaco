@@ -161,7 +161,57 @@ class AnalyticsLogger:
                  load_duration_seconds, error, request_id, provider, fallback_for,
                  source_ip, source_port, user_agent, input_text, output_text),
             )
+        
+        # Write plaintext log file if configured
+        if input_text or output_text:
+            try:
+                from guanaco.config import get_config
+                _cfg = get_config()
+                if _cfg.history.log_to_files:
+                    self._write_log_file(entry_id, model, provider, source_ip, input_text, output_text, error, _cfg.history)
+            except Exception:
+                pass  # Don't break the request if log file writing fails
+        
         return entry_id
+
+    def _write_log_file(self, entry_id: str, model: str, provider: Optional[str],
+                         source_ip: Optional[str], input_text: Optional[str],
+                         output_text: Optional[str], error: Optional[str],
+                         history_config=None):
+        """Write a plaintext log file for this request."""
+        try:
+            log_dir = history_config.get_log_dir() if history_config else None
+            if not log_dir:
+                return
+            ts = time.strftime("%Y%m%d_%H%M%S", time.localtime())
+            # One file per request: <timestamp>_<model>_<short_id>.log
+            safe_model = model.replace("/", "_").replace(":", "_").replace(" ", "_")
+            filename = f"{ts}_{safe_model}_{entry_id[:8]}.log"
+            filepath = log_dir / filename
+            
+            lines = []
+            lines.append(f"=== Guanaco Request Log ===")
+            lines.append(f"ID:       {entry_id}")
+            lines.append(f"Time:     {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}")
+            lines.append(f"Model:    {model}")
+            lines.append(f"Provider: {provider or 'ollama'}")
+            lines.append(f"Caller:   {source_ip or 'unknown'}")
+            if error:
+                lines.append(f"Error:    {error}")
+            lines.append(f"")
+            if input_text:
+                lines.append(f"--- INPUT ---")
+                lines.append(input_text)
+                lines.append(f"")
+            if output_text:
+                lines.append(f"--- OUTPUT ---")
+                lines.append(output_text)
+                lines.append(f"")
+            lines.append(f"=== END ===")
+            
+            filepath.write_text("\n".join(lines), encoding="utf-8")
+        except Exception:
+            pass  # Don't break the request if log file writing fails
 
     def log_search(
         self,
@@ -600,6 +650,10 @@ class AnalyticsLogger:
             results = []
             for row in rows:
                 d = dict(row)
+                # Add has_content flag for badge rendering without needing full text
+                has_input = bool(d.get("input_text"))
+                has_output = bool(d.get("output_text"))
+                d["has_content"] = has_input or has_output
                 # Don't include content unless requested (can be large)
                 if not include_content:
                     d.pop("input_text", None)
@@ -657,3 +711,24 @@ class AnalyticsLogger:
             conn.execute("DELETE FROM request_log")
             conn.execute("DELETE FROM status_events")
             conn.execute("DELETE FROM usage_snapshots")
+
+    def cleanup_old_log_files(self, history_config=None):
+        """Delete log files older than retention_days from the history_logs directory."""
+        if not history_config or not history_config.log_to_files:
+            return 0
+        retention_days = history_config.retention_days
+        if retention_days <= 0:
+            return 0  # 0 means keep forever
+        try:
+            log_dir = history_config.get_log_dir()
+            if not log_dir.exists():
+                return 0
+            cutoff = time.time() - (retention_days * 86400)
+            deleted = 0
+            for f in log_dir.glob("*.log"):
+                if f.stat().st_mtime < cutoff:
+                    f.unlink()
+                    deleted += 1
+            return deleted
+        except Exception:
+            return 0
