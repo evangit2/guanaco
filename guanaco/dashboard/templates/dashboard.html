@@ -401,7 +401,7 @@
 
         <div class="card">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-                <h2 style="margin:0;"><span class="emoji">🔢</span> Per-Model Stats</h2>
+                <h2 style="margin:0;"><span class="emoji">🔢</span> Per-Model Stats <span style="display:inline-block;cursor:help;position:relative;" onmouseenter="this.querySelector('.tip').style.display='block'" onmouseleave="this.querySelector('.tip').style.display='none'"><span style="font-size:14px;color:var(--text2);">ℹ️</span><span class="tip" style="display:none;position:absolute;bottom:130%;left:50%;transform:translateX(-50%);background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:8px 10px;font-size:11px;font-weight:400;color:var(--text);white-space:nowrap;z-index:10;box-shadow:0 2px 8px rgba(0,0,0,0.3);">Token counts estimated at 4 chars ≈ 1 token for consistency across tokenizers. Native usage data used when available.</span></span></h2>
                 <div>
                     <button class="refresh-btn" onclick="loadAnalytics()">🔄</button>
                     <button class="btn btn-sm btn-outline" onclick="clearAnalytics()" style="margin-left:4px;">Reset</button>
