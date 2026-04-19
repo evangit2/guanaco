@@ -1230,13 +1230,8 @@ function showHistoryDetail(id) {
             return;
         }
         
-        // Skip modal if there's no content and no error (old entries before history was enabled)
         const hasContent = data.input_text || data.output_text;
         const hasError = data.error;
-        if (!hasContent && !hasError) {
-            alert('No details available.\n\nThis request was logged before history logging was enabled, or the request had no content to save.');
-            return;
-        }
         
         // Create modal
         const modal = document.createElement('div');
@@ -1265,18 +1260,19 @@ function showHistoryDetail(id) {
                         <div style="font-family:monospace;font-size:11px;color:var(--red);white-space:pre-wrap;word-break:break-all;">${escapeHtml(data.error)}</div>
                         ${data.provider ? `<div style="font-size:11px;color:var(--text2);margin-top:6px;">Provider: ${data.provider}${data.fallback_for ? ' (fallback also failed)' : ''}</div>` : ''}
                     </div>` : ''}
+                    ${!hasContent && !hasError ? '<div style="background:rgba(245,158,11,0.12);color:var(--orange);padding:10px 12px;border-radius:6px;margin-bottom:12px;font-size:12px;">⚠️ Content not captured for this request. This usually happens when the request was handled by an instance running older code (before history was enabled), or the request had no input/output to save.</div>' : ''}
                     ${data.input_text ? `
                         <div style="margin-bottom:12px;">
                             <div style="font-weight:600;margin-bottom:6px;">📥 Input (${(data.input_text.length).toLocaleString()} chars)</div>
                             <pre style="background:var(--surface2);padding:12px;border-radius:8px;overflow-x:auto;font-size:12px;white-space:pre-wrap;word-break:break-all;max-height:300px;overflow-y:auto;">${escapeHtml(data.input_text)}</pre>
                         </div>
-                    ` : '<div style="color:var(--text2);margin-bottom:12px;">📥 Input not saved</div>'}
+                    ` : ''}
                     ${data.output_text ? `
-                        <div>
+                        <div style="margin-bottom:12px;">
                             <div style="font-weight:600;margin-bottom:6px;">📤 Output (${(data.output_text.length).toLocaleString()} chars)</div>
                             <pre style="background:var(--surface2);padding:12px;border-radius:8px;overflow-x:auto;font-size:12px;white-space:pre-wrap;word-break:break-all;max-height:300px;overflow-y:auto;">${escapeHtml(data.output_text)}</pre>
                         </div>
-                    ` : '<div style="color:var(--text2);">📤 Output not saved</div>'}
+                    ` : ''}
                 </div>
             </div>
         `;
