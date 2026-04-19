@@ -1230,6 +1230,14 @@ function showHistoryDetail(id) {
             return;
         }
         
+        // Skip modal if there's no content and no error (old entries before history was enabled)
+        const hasContent = data.input_text || data.output_text;
+        const hasError = data.error;
+        if (!hasContent && !hasError) {
+            alert('No details available.\n\nThis request was logged before history logging was enabled, or the request had no content to save.');
+            return;
+        }
+        
         // Create modal
         const modal = document.createElement('div');
         modal.className = 'history-modal';
