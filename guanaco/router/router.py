@@ -520,6 +520,7 @@ def create_router(client: OllamaClient, analytics=None, config=None) -> APIRoute
                                 total_duration_seconds=time.time() - start,
                                 provider=_config.fallback.name,
                                 fallback_for=_normalize_model_name(resolved_model),
+                                fallback_reason=f"Quota full (session={_config.usage.last_session_pct or 0:.0f}%, weekly={_config.usage.last_weekly_pct or 0:.0f}%)",
                                 **_hist,
                             )
                         return fallback_resp
@@ -592,6 +593,7 @@ def create_router(client: OllamaClient, analytics=None, config=None) -> APIRoute
                                     total_duration_seconds=elapsed,
                                     provider=_config.fallback.name,
                                     fallback_for=_normalize_model_name(resolved_model),
+                                    fallback_reason=f"Ollama error: {_describe_error(ollama_error)}",
                                     **_hist,
                                 )
 
@@ -682,7 +684,7 @@ def create_router(client: OllamaClient, analytics=None, config=None) -> APIRoute
 
                 try:
                     if body.stream and _config.fallback.stream_fallback:
-                        return await _stream_fallback_openai(fallback_payload, _config, fallback_model, _analytics, start, "ollama_fallback", history_kwargs=_hist)
+                        return await _stream_fallback_openai(fallback_payload, _config, fallback_model, _analytics, start, "ollama_fallback", history_kwargs=_hist, fallback_for=resolved_model, fallback_reason=f"Ollama error: {_describe_error(ollama_error)}")
 
                     fallback_resp = await _call_fallback_provider(fallback_payload, _config.fallback)
                     elapsed = time.time() - start
@@ -692,6 +694,7 @@ def create_router(client: OllamaClient, analytics=None, config=None) -> APIRoute
                             model=fallback_model,
                             total_duration_seconds=elapsed,
                             provider=_config.fallback.name, fallback_for=resolved_model,
+                            fallback_reason=f"Ollama error: {_describe_error(ollama_error)}",
                             **_hist,
                         )
 
@@ -1361,6 +1364,7 @@ async def _stream_completion_openai(client, payload, model, analytics, start_tim
                         total_duration_seconds=stream_metrics.get("elapsed_seconds", elapsed),
                         provider=config.fallback.name if config else "fallback",
                         fallback_for=_normalize_model_name(model),
+                        fallback_reason=f"Ollama error: {original_error}" if original_error else "Ollama stream error",
                         **_hist_kw,
                     )
                 elif original_error:
@@ -1386,7 +1390,7 @@ async def _stream_completion_openai(client, payload, model, analytics, start_tim
     return StreamingResponse(generate(), media_type="text/event-stream")
 
 
-async def _stream_fallback_openai(payload, config, fallback_model, analytics, start_time, provider_tag="fallback", history_kwargs=None):
+async def _stream_fallback_openai(payload, config, fallback_model, analytics, start_time, provider_tag="fallback", history_kwargs=None, fallback_for=None, fallback_reason=None):
     """Stream from fallback provider in OpenAI format."""
     from fastapi.responses import StreamingResponse
 
@@ -1409,7 +1413,7 @@ async def _stream_fallback_openai(payload, config, fallback_model, analytics, st
                     output_text = output_text[:config.history.max_content_size] + "\n...[truncated]"
                 _hist_kw["output_text"] = output_text
             if analytics:
-                analytics.log_llm(model=_normalize_model_name(fallback_model), total_duration_seconds=elapsed, provider=provider_tag, **_hist_kw)
+                analytics.log_llm(model=_normalize_model_name(fallback_model), total_duration_seconds=elapsed, provider=provider_tag, fallback_for=_normalize_model_name(fallback_for) if fallback_for else None, fallback_reason=fallback_reason, **_hist_kw)
 
     return StreamingResponse(generate(), media_type="text/event-stream")
 

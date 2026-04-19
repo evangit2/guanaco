@@ -401,7 +401,7 @@
 
         <div class="card">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-                <h2 style="margin:0;"><span class="emoji">🔢</span> Per-Model Stats <span style="display:inline-block;cursor:help;position:relative;" onmouseenter="this.querySelector('.tip').style.display='block'" onmouseleave="this.querySelector('.tip').style.display='none'"><span style="font-size:14px;color:var(--text2);">ℹ️</span><span class="tip" style="display:none;position:absolute;bottom:130%;left:50%;transform:translateX(-50%);background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:8px 10px;font-size:11px;font-weight:400;color:var(--text);white-space:nowrap;z-index:10;box-shadow:0 2px 8px rgba(0,0,0,0.3);">Token counts estimated at 4 chars ≈ 1 token for consistency across tokenizers. Native usage data used when available.</span></span></h2>
+                <h2 style="margin:0;"><span class="emoji">🔢</span> Per-Model Stats <span style="display:inline-block;cursor:help;position:relative;" onmouseenter="this.querySelector('.tip').style.display='block'" onmouseleave="this.querySelector('.tip').style.display='none'"><svg viewBox="0 0 16 16" style="width:14px;height:14px;vertical-align:middle;fill:var(--text2);"><path d="M8 1a7 7 0 110 14A7 7 0 018 1zm0 4.5a.75.75 0 110-1.5.75.75 0 010 1.5zM8 7a.75.75 0 00-.75.75v3.5a.75.75 0 001.5 0v-3.5A.75.75 0 008 7z"/></svg><span class="tip" style="display:none;position:absolute;bottom:130%;left:50%;transform:translateX(-50%);background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:8px 10px;font-size:11px;font-weight:400;color:var(--text);white-space:nowrap;z-index:10;box-shadow:0 2px 8px rgba(0,0,0,0.3);">Token counts estimated at 4 chars ≈ 1 token for consistency across tokenizers. Native usage data used when available.</span></span></h2>
                 <div>
                     <button class="refresh-btn" onclick="loadAnalytics()">🔄</button>
                     <button class="btn btn-sm btn-outline" onclick="clearAnalytics()" style="margin-left:4px;">Reset</button>
@@ -1200,10 +1200,11 @@ function loadHistory() {
                     <span>🏢 ${r.provider || 'ollama'}</span>
                     <span>🔤 ${r.prompt_tokens || 0}/${r.completion_tokens || 0}</span>
                     ${r.has_content ? '<span style="color:var(--green);">📝 content</span>' : ''}
-                    ${r.fallback_for ? '<span style="color:var(--orange);">🔀 fallback</span>' : ''}
+                    ${r.fallback_for ? `<span style="color:var(--orange);" title="${escapeHtml(r.fallback_reason || '')}">🔀 fallback</span>` : ''}
                     ${isErr ? '<span style="color:var(--red);">❌ failed</span>' : ''}
                 </div>
                 ${errSnippet}
+                ${r.fallback_for && r.fallback_reason ? `<div style="font-size:11px;color:var(--orange);margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%;">🔀 ${escapeHtml(r.fallback_reason).substring(0, 120)}</div>` : ''}
             </div>
         `}).join('');
         
@@ -1254,7 +1255,7 @@ function showHistoryDetail(id) {
                         <div><strong>Caller:</strong> ${data.source_ip || '—'}:${data.source_port || ''}</div>
                         <div><strong>User Agent:</strong> ${data.user_agent || '—'}</div>
                     </div>
-                    ${data.fallback_for ? `<div style="background:rgba(245,158,11,0.15);color:var(--orange);padding:8px 12px;border-radius:6px;margin-bottom:12px;">🔀 Fallback for: ${data.fallback_for}</div>` : ''}
+                    ${data.fallback_for ? `<div style="background:rgba(245,158,11,0.15);color:var(--orange);padding:8px 12px;border-radius:6px;margin-bottom:12px;">🔀 Fallback for: ${data.fallback_for}${data.fallback_reason ? `<div style="font-size:11px;margin-top:4px;opacity:0.85;">Reason: ${escapeHtml(data.fallback_reason)}</div>` : ''}</div>` : ''}
                     ${data.error ? `<div style="background:rgba(239,68,68,0.15);padding:12px;border-radius:8px;margin-bottom:12px;">
                         <div style="font-weight:600;color:var(--red);margin-bottom:6px;">❌ Error</div>
                         <div style="font-family:monospace;font-size:11px;color:var(--red);white-space:pre-wrap;word-break:break-all;">${escapeHtml(data.error)}</div>
