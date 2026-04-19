@@ -615,6 +615,7 @@ class AnalyticsLogger:
         model_filter: Optional[str] = None,
         provider_filter: Optional[str] = None,
         has_content: Optional[bool] = None,
+        errors_only: bool = False,
         include_content: bool = False,
     ) -> list[dict]:
         """Get paginated request history with optional filters.
@@ -625,6 +626,7 @@ class AnalyticsLogger:
             model_filter: Filter by model name
             provider_filter: Filter by provider
             has_content: Filter to only requests with/without saved content
+            errors_only: Filter to only failed requests (error IS NOT NULL)
             include_content: Include input_text/output_text in results
         """
         query = "SELECT * FROM request_log WHERE type='llm'"
@@ -636,7 +638,9 @@ class AnalyticsLogger:
         if provider_filter:
             query += " AND provider = ?"
             params.append(provider_filter)
-        if has_content is True:
+        if errors_only:
+            query += " AND error IS NOT NULL AND error != ''"
+        elif has_content is True:
             query += " AND input_text IS NOT NULL"
         elif has_content is False:
             query += " AND input_text IS NULL"
@@ -696,9 +700,15 @@ class AnalyticsLogger:
                 "SELECT COALESCE(SUM(LENGTH(input_text) + LENGTH(output_text)), 0) FROM request_log WHERE input_text IS NOT NULL OR output_text IS NOT NULL"
             ).fetchone()[0]
             
+            # Error count
+            error_count = conn.execute(
+                "SELECT COUNT(*) FROM request_log WHERE type='llm' AND error IS NOT NULL AND error != ''"
+            ).fetchone()[0]
+            
             return {
                 "total_requests": total,
                 "requests_with_content": with_content,
+                "error_count": error_count,
                 "oldest_ts": oldest,
                 "newest_ts": newest,
                 "content_size_bytes": content_size,

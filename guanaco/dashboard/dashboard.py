@@ -190,6 +190,7 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
         model: Optional[str] = None,
         provider: Optional[str] = None,
         has_content: Optional[bool] = None,
+        errors_only: bool = False,
         include_content: bool = False,
     ):
         """Get paginated request history."""
@@ -199,6 +200,7 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
             model_filter=model,
             provider_filter=provider,
             has_content=has_content,
+            errors_only=errors_only,
             include_content=include_content,
         )
 

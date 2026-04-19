@@ -481,6 +481,7 @@
                     <option value="">All Requests</option>
                     <option value="yes">Has Content</option>
                     <option value="no">No Content</option>
+                    <option value="errors">Failed Only</option>
                 </select>
             </div>
             <div id="history-rows" style="max-height:500px;overflow-y:auto;"></div>
@@ -1159,7 +1160,8 @@ function saveHistoryConfig() {
 function loadHistoryStats() {
     fetch('/dashboard/api/history/stats').then(r => r.json()).then(data => {
         const statsEl = document.getElementById('history-stats');
-        statsEl.textContent = `${data.total_requests.toLocaleString()} requests, ${data.requests_with_content.toLocaleString()} with content, ${data.content_size_mb}MB`;
+        const errStr = data.error_count ? ` | <span style="color:var(--red);">${data.error_count} failed</span>` : '';
+        statsEl.innerHTML = `${data.total_requests.toLocaleString()} requests, ${data.requests_with_content.toLocaleString()} with content, ${data.content_size_mb}MB${errStr}`;
     });
 }
 
@@ -1173,6 +1175,7 @@ function loadHistory() {
     if (provider) url += `&provider=${encodeURIComponent(provider)}`;
     if (contentFilter === 'yes') url += '&has_content=true';
     if (contentFilter === 'no') url += '&has_content=false';
+    if (contentFilter === 'errors') url += '&errors_only=true';
     
     fetch(url).then(r => r.json()).then(data => {
         const el = document.getElementById('history-rows');
@@ -1182,8 +1185,12 @@ function loadHistory() {
             return;
         }
         
-        el.innerHTML = data.map(r => `
-            <div class="history-entry" style="background:var(--surface2);border-radius:8px;padding:12px;margin-bottom:8px;cursor:pointer;" onclick="showHistoryDetail('${r.id}')">
+        el.innerHTML = data.map(r => {
+            const isErr = !!r.error;
+            const borderColor = isErr ? 'var(--red)' : 'transparent';
+            const errSnippet = isErr ? `<div style="font-size:11px;color:var(--red);margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%;">⚠️ ${escapeHtml(r.error).substring(0, 120)}</div>` : '';
+            return `
+            <div class="history-entry" style="background:var(--surface2);border-radius:8px;padding:12px;margin-bottom:8px;cursor:pointer;border-left:3px solid ${borderColor};" onclick="showHistoryDetail('${r.id}')">
                 <div style="display:flex;justify-content:space-between;margin-bottom:6px;">
                     <span style="font-weight:600;">${r.model || '—'}</span>
                     <span style="font-size:11px;color:var(--text2);">${r.ts_formatted}</span>
@@ -1194,10 +1201,11 @@ function loadHistory() {
                     <span>🔤 ${r.prompt_tokens || 0}/${r.completion_tokens || 0}</span>
                     ${r.has_content ? '<span style="color:var(--green);">📝 content</span>' : ''}
                     ${r.fallback_for ? '<span style="color:var(--orange);">🔀 fallback</span>' : ''}
-                    ${r.error ? '<span style="color:var(--red);">❌ error</span>' : ''}
+                    ${isErr ? '<span style="color:var(--red);">❌ failed</span>' : ''}
                 </div>
+                ${errSnippet}
             </div>
-        `).join('');
+        `}).join('');
         
         // Pagination
         const pagEl = document.getElementById('history-pagination');
@@ -1244,7 +1252,11 @@ function showHistoryDetail(id) {
                         <div><strong>User Agent:</strong> ${data.user_agent || '—'}</div>
                     </div>
                     ${data.fallback_for ? `<div style="background:rgba(245,158,11,0.15);color:var(--orange);padding:8px 12px;border-radius:6px;margin-bottom:12px;">🔀 Fallback for: ${data.fallback_for}</div>` : ''}
-                    ${data.error ? `<div style="background:rgba(239,68,68,0.15);color:var(--red);padding:8px 12px;border-radius:6px;margin-bottom:12px;">❌ Error: ${data.error}</div>` : ''}
+                    ${data.error ? `<div style="background:rgba(239,68,68,0.15);padding:12px;border-radius:8px;margin-bottom:12px;">
+                        <div style="font-weight:600;color:var(--red);margin-bottom:6px;">❌ Error</div>
+                        <div style="font-family:monospace;font-size:11px;color:var(--red);white-space:pre-wrap;word-break:break-all;">${escapeHtml(data.error)}</div>
+                        ${data.provider ? `<div style="font-size:11px;color:var(--text2);margin-top:6px;">Provider: ${data.provider}${data.fallback_for ? ' (fallback also failed)' : ''}</div>` : ''}
+                    </div>` : ''}
                     ${data.input_text ? `
                         <div style="margin-bottom:12px;">
                             <div style="font-weight:600;margin-bottom:6px;">📥 Input (${(data.input_text.length).toLocaleString()} chars)</div>
