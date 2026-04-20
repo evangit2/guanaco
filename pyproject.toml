@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "guanaco"
-version = "0.3.9"
+version = "0.4.0rc1"
 description = "OpenAI-compatible LLM proxy that maximizes Ollama Cloud subscriptions — search/scrape API emulation, usage tracking, fallback provider support, and a web dashboard"
 readme = "README.md"
 license = {text = "MIT"}
