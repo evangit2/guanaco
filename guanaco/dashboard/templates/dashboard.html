@@ -1168,7 +1168,18 @@ function saveHistoryConfig() {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify(data)
-    }).then(r => r.json()).then(() => {
+    }).then(r => r.json()).then(resp => {
+        // Sync UI from server response to prevent drift
+        if (resp.history) {
+            document.getElementById('history-enabled').checked = resp.history.enabled || false;
+            document.getElementById('history-save-input').checked = resp.history.save_input !== false;
+            document.getElementById('history-save-output').checked = resp.history.save_output !== false;
+            document.getElementById('history-log-to-files').checked = resp.history.log_to_files || false;
+            document.getElementById('history-log-dir').value = resp.history.log_dir || '';
+            document.getElementById('history-retention').value = resp.history.retention_days || 30;
+            document.getElementById('history-logdir-row').style.display = resp.history.log_to_files ? 'flex' : 'none';
+            document.getElementById('history-config-panel').style.display = resp.history.enabled ? 'block' : 'none';
+        }
         // Reload stats and log files
         loadHistoryStats();
         loadHistoryLogs();
@@ -1894,6 +1905,9 @@ document.addEventListener('DOMContentLoaded', () => {
     loadHistory();
     loadHistoryLogs();
 
+    // Check for updates (auto-check on page load)
+    checkForUpdate();
+
     // Check connection
     checkOllamaStatus();
 });
@@ -2067,42 +2081,57 @@ async function checkForUpdate() {
     btn.textContent = 'Checking...';
     statusEl.textContent = '';
 
-    try {
-        const resp = await fetch('/dashboard/api/update/check');
-        const data = await resp.json();
+    // Helper to actually perform the check
+    async function doCheck(attempt = 0) {
+        try {
+            const resp = await fetch('/dashboard/api/update/check');
+            const data = await resp.json();
 
-        document.getElementById('auto-update-toggle').checked = data.auto_update || false;
+            document.getElementById('auto-update-toggle').checked = data.auto_update || false;
 
-        if (data.error) {
-            statusEl.textContent = 'Error: ' + data.error;
+            if (data.error) {
+                // If service not ready yet, retry a couple times
+                if (attempt < 2 && data.error.includes('503')) {
+                    await new Promise(r => setTimeout(r, 1500));
+                    return doCheck(attempt + 1);
+                }
+                statusEl.textContent = 'Error: ' + data.error;
+                statusEl.style.color = '#f87171';
+                box.classList.add('hidden');
+                return;
+            }
+
+            statusEl.textContent = `v${data.current_version} installed`;
+            statusEl.style.color = '#94a3b8';
+
+            if (data.update_available) {
+                document.getElementById('update-title').textContent = `Update available: v${data.current_version} → v${data.latest_version}`;
+                document.getElementById('update-title').style.color = '#4ade80';
+                document.getElementById('update-notes').textContent = data.release_notes ? data.release_notes.substring(0, 200) : 'No release notes available.';
+                document.getElementById('update-link').innerHTML = data.release_url ? `<a href="${data.release_url}" target="_blank" style="color:var(--accent);">View on GitHub →</a>` : '';
+                box.classList.remove('hidden');
+                statusEl.textContent = `v${data.latest_version} available`;
+                statusEl.style.color = '#4ade80';
+            } else {
+                box.classList.add('hidden');
+                statusEl.textContent = `Up to date (v${data.current_version})`;
+                statusEl.style.color = '#4ade80';
+            }
+        } catch (e) {
+            // Network error - service might be restarting
+            if (attempt < 2) {
+                await new Promise(r => setTimeout(r, 1500));
+                return doCheck(attempt + 1);
+            }
+            statusEl.textContent = 'Failed to check: ' + e.message;
             statusEl.style.color = '#f87171';
-            box.classList.add('hidden');
-            return;
         }
-
-        statusEl.textContent = `v${data.current_version} installed`;
-        statusEl.style.color = '#94a3b8';
-
-        if (data.update_available) {
-            document.getElementById('update-title').textContent = `Update available: v${data.current_version} → v${data.latest_version}`;
-            document.getElementById('update-title').style.color = '#4ade80';
-            document.getElementById('update-notes').textContent = data.release_notes ? data.release_notes.substring(0, 200) : 'No release notes available.';
-            document.getElementById('update-link').innerHTML = data.release_url ? `<a href="${data.release_url}" target="_blank" style="color:var(--accent);">View on GitHub →</a>` : '';
-            box.classList.remove('hidden');
-            statusEl.textContent = `v${data.latest_version} available`;
-            statusEl.style.color = '#4ade80';
-        } else {
-            box.classList.add('hidden');
-            statusEl.textContent = `Up to date (v${data.current_version})`;
-            statusEl.style.color = '#4ade80';
-        }
-    } catch (e) {
-        statusEl.textContent = 'Failed to check: ' + e.message;
-        statusEl.style.color = '#f87171';
-    } finally {
-        btn.disabled = false;
-        btn.textContent = 'Check for Update';
     }
+
+    await doCheck();
+
+    btn.disabled = false;
+    btn.textContent = 'Check for Update';
 }
 
 async function applyUpdate() {

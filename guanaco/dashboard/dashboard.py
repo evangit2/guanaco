@@ -787,14 +787,12 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
         result = {"current_version": current_version, "latest_version": None, "update_available": False, "error": None}
 
         try:
-            # Get release info from GitHub API
-            # Default: only check stable releases (/releases/latest)
-            # If allow_prerelease is set in config, also check prereleases
             config = get_config()
             allow_prerelease = getattr(config.router, "allow_prerelease", False)
             import httpx
             async with httpx.AsyncClient(timeout=10) as hc:
                 release_data = None
+
                 # Always try stable release first
                 resp = await hc.get(
                     "https://api.github.com/repos/evangit2/guanaco/releases/latest",
@@ -802,17 +800,32 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
                 )
                 if resp.status_code == 200:
                     release_data = resp.json()
-                elif allow_prerelease:
-                    # No stable release found — check all releases including prereleases
+
+                # If allow_prerelease, also check all releases and pick the newest version
+                if allow_prerelease:
                     resp = await hc.get(
                         "https://api.github.com/repos/evangit2/guanaco/releases",
                         headers={"Accept": "application/vnd.github+json"}
                     )
                     if resp.status_code == 200 and resp.json():
-                        release_data = resp.json()[0]  # GitHub sorts newest-first
+                        def _ver_tuple(release):
+                            """Parse tag_name into comparable tuple, stripping '-rc.X' suffixes."""
+                            tag = release.get("tag_name", "").lstrip("v")
+                            # Handle pre-release suffixes like "0.4.0-rc.1"
+                            base = tag.split("-")[0]  # "0.4.0"
+                            try:
+                                return tuple(int(x) for x in base.split("."))
+                            except (ValueError, TypeError):
+                                return (0,)
+                        all_releases = resp.json()
+                        # Pick the release with the highest version (regardless of prerelease flag)
+                        newest = max(all_releases, key=_ver_tuple)
+                        # Compare: use prerelease if it's newer than the stable one
+                        if release_data is None or _ver_tuple(newest) > _ver_tuple(release_data):
+                            release_data = newest
+
                 if release_data:
                     tag = release_data.get("tag_name", "")
-                    # Strip leading 'v' if present
                     result["latest_version"] = tag.lstrip("v")
                     result["release_notes"] = release_data.get("body", "")[:500]
                     result["release_url"] = release_data.get("html_url", "")
@@ -823,10 +836,13 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
             result["error"] = str(e)
 
         if result["latest_version"]:
-            # Compare versions (simple semver comparison)
+            # Compare versions (strip pre-release suffixes like -rc.1 for comparison)
             try:
-                current_parts = [int(x) for x in current_version.split(".")]
-                latest_parts = [int(x) for x in result["latest_version"].split(".")]
+                def _parse_ver(v):
+                    base = v.split("-")[0]  # "0.4.0-rc.1" -> "0.4.0"
+                    return [int(x) for x in base.split(".")]
+                current_parts = _parse_ver(current_version)
+                latest_parts = _parse_ver(result["latest_version"])
                 # Pad to same length
                 while len(current_parts) < len(latest_parts):
                     current_parts.append(0)
