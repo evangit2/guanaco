@@ -48,6 +48,27 @@ class SearchConfig(BaseModel):
     summary_model: str = "qwen3.5:397b"     # Model used for summarization
 
 
+
+
+class HistoryConfig(BaseModel):
+    """Full request/response history logging settings."""
+    enabled: bool = False              # Opt-in — must be explicitly enabled
+    save_input: bool = True            # Save input text (prompts)
+    save_output: bool = True           # Save output text (responses)
+    retention_days: int = 30           # Auto-delete after this many days (0 = keep forever)
+    max_content_size: int = 100000     # Max chars to save per input/output (truncates if larger)
+    log_to_files: bool = False        # Also write plaintext log files (opt-in, separate from DB)
+    log_dir: str = ""                 # Directory for log files (default: <config_dir>/history_logs)
+
+    def get_log_dir(self, config_dir: Optional[Path] = None) -> Path:
+        """Resolve the log directory, creating it if needed."""
+        if self.log_dir:
+            p = Path(self.log_dir)
+        else:
+            p = (config_dir or get_default_config_dir()) / "history_logs"
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+
 class LLMConfig(BaseModel):
     """LLM model selection config."""
     reranker_model: str = "gpt-oss:120b"
@@ -79,11 +100,14 @@ class FallbackProviderConfig(BaseModel):
     model_map: dict[str, str] = Field(default_factory=dict)
     default_model: str = ""                  # Default model to use on the fallback provider
     timeout: float = 60.0                    # Request timeout in seconds (for fallback calls)
-    primary_timeout: float = 30.0           # Max seconds to wait for Ollama first chunk/response before trying fallback
+    primary_timeout: float = 120.0          # Max seconds to wait for Ollama first chunk/response before trying fallback
     stream_chunk_timeout: float = 180.0    # Max seconds between stream chunks (tolerates long reasoning pauses)
     max_tokens: int = 128000                 # Default max_tokens sent to fallback provider
     stream_fallback: bool = True              # Also fallback streaming requests
     supports_vision: bool = False             # Whether the fallback provider handles image/vision requests
+    max_concurrent_ollama: int = 8            # Max simultaneous Ollama requests (0 = unlimited)
+    max_429_retries: int = 2                  # How many times to retry Ollama on HTTP 429 before falling back
+    backoff_base: float = 1.0                 # Base backoff in seconds for 429 retry (doubles each attempt)
 
 
 class ProviderConfig(BaseModel):
@@ -138,6 +162,7 @@ class AppConfig(BaseModel):
     cache: CacheConfig = Field(default_factory=CacheConfig)
     usage: UsageConfig = Field(default_factory=UsageConfig)
     search: SearchConfig = Field(default_factory=SearchConfig)
+    history: HistoryConfig = Field(default_factory=HistoryConfig)
 
     @property
     def ollama_api_key_resolved(self) -> str:

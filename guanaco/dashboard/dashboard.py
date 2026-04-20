@@ -168,6 +168,15 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
     ):
         return analytics.get_status_events(limit=limit, level=level, source=source)
 
+    @router.get("/api/concurrency")
+    async def concurrency_stats():
+        """Return Ollama concurrency limiter stats."""
+        from guanaco.router.router import get_concurrency_limiter
+        limiter = get_concurrency_limiter()
+        if limiter:
+            return limiter.get_stats()
+        return {"max_concurrent": 0, "active_count": 0, "recent_429_rate": 0}
+
     @router.post("/api/status/log")
     async def log_status_event(request: Request):
         """Log a status event from the dashboard or external source."""
@@ -178,6 +187,127 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
         details = body.get("details")
         entry_id = analytics.log_status(level=level, source=source, message=message, details=details)
         return {"id": entry_id, "status": "logged"}
+
+
+    # ── History (Full Request/Response Logging) ──
+
+    @router.get("/api/history")
+    async def get_history(
+        request: Request,
+        limit: int = 50,
+        offset: int = 0,
+        model: Optional[str] = None,
+        provider: Optional[str] = None,
+        has_content: Optional[bool] = None,
+        errors_only: bool = False,
+        include_content: bool = False,
+    ):
+        """Get paginated request history."""
+        return analytics.get_history(
+            limit=limit,
+            offset=offset,
+            model_filter=model,
+            provider_filter=provider,
+            has_content=has_content,
+            errors_only=errors_only,
+            include_content=include_content,
+        )
+
+    @router.get("/api/history/stats")
+    async def get_history_stats(request: Request):
+        """Get statistics about history logging."""
+        return analytics.get_history_stats()
+
+    @router.get("/api/history/config")
+    async def get_history_config(request: Request):
+        """Get current history logging configuration."""
+        config = get_config()
+        return config.history.model_dump()
+
+    @router.post("/api/history/config")
+    async def save_history_config(request: Request):
+        """Update history logging configuration."""
+        body = await request.json()
+        config = get_config()
+        # Update history config fields
+        for key, value in body.items():
+            if hasattr(config.history, key):
+                setattr(config.history, key, value)
+        save_config(config)
+        # Clean up old log files based on retention_days
+        deleted = analytics.cleanup_old_log_files(config.history)
+        result = {"status": "ok", "history": config.history.model_dump()}
+        if deleted > 0:
+            result["files_deleted"] = deleted
+        return result
+
+    @router.get("/api/history/{request_id}")
+    async def get_history_detail(request_id: str, request: Request):
+        """Get full details of a single request including content."""
+        result = analytics.get_request_detail(request_id)
+        if result:
+            return result
+        return {"error": "Request not found"}
+
+
+    # ── History Log Files ──
+
+    @router.get("/api/history/logs")
+    async def list_history_logs(request: Request):
+        """List plaintext log files in the history_logs directory."""
+        config = get_config()
+        if not config.history.log_to_files:
+            return {"files": [], "log_dir": "", "enabled": False}
+        try:
+            log_dir = config.history.get_log_dir()
+            files = []
+            for f in sorted(log_dir.glob("*.log"), reverse=True):
+                stat = f.stat()
+                files.append({
+                    "name": f.name,
+                    "size": stat.st_size,
+                    "modified": stat.st_mtime,
+                    "modified_formatted": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stat.st_mtime)),
+                })
+            return {"files": files[:200], "log_dir": str(log_dir), "enabled": True, "total": len(files)}
+        except Exception as e:
+            return {"files": [], "error": str(e), "enabled": True}
+
+    @router.get("/api/history/logs/{filename}")
+    async def read_history_log(filename: str, request: Request):
+        """Read the contents of a specific log file."""
+        config = get_config()
+        if not config.history.log_to_files:
+            return {"error": "Log files not enabled"}
+        try:
+            log_dir = config.history.get_log_dir()
+            filepath = log_dir / filename
+            # Security: only allow reading from the log dir, no path traversal
+            if not filepath.resolve().parent == log_dir.resolve():
+                return {"error": "Invalid path"}
+            if not filepath.exists():
+                return {"error": "File not found"}
+            content = filepath.read_text(encoding="utf-8", errors="replace")
+            return {"filename": filename, "content": content, "size": len(content)}
+        except Exception as e:
+            return {"error": str(e)}
+
+    @router.delete("/api/history/logs/{filename}")
+    async def delete_history_log(filename: str, request: Request):
+        """Delete a specific log file."""
+        config = get_config()
+        if not config.history.log_to_files:
+            return {"error": "Log files not enabled"}
+        try:
+            log_dir = config.history.get_log_dir()
+            filepath = log_dir / filename
+            if not filepath.resolve().parent == log_dir.resolve():
+                return {"error": "Invalid path"}
+            if filepath.exists():
+                filepath.unlink()
+            return {"status": "ok", "deleted": filename}
+        except Exception as e:
+            return {"error": str(e)}
 
     # ── Config Management ──
 
@@ -426,6 +556,12 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
                 fb.stream_fallback = fb_updates["stream_fallback"]
             if "supports_vision" in fb_updates:
                 fb.supports_vision = fb_updates["supports_vision"]
+            if "max_concurrent_ollama" in fb_updates:
+                fb.max_concurrent_ollama = int(fb_updates["max_concurrent_ollama"])
+            if "max_429_retries" in fb_updates:
+                fb.max_429_retries = int(fb_updates["max_429_retries"])
+            if "backoff_base" in fb_updates:
+                fb.backoff_base = float(fb_updates["backoff_base"])
 
         save_config(config)
         return {"status": "ok", "config": {"llm": config.llm.model_dump(), "fallback": config.fallback.model_dump(), "search": config.search.model_dump()}}

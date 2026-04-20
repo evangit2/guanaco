@@ -157,6 +157,7 @@
         <div class="tab" onclick="showTab('models')">Models</div>
         <div class="tab" onclick="showTab('fallback')">Fallback</div>
         <div class="tab" onclick="showTab('analytics')">Analytics</div>
+        <div class="tab" onclick="showTab('history')">History</div>
         <div class="tab" onclick="showTab('status')">Status</div>
         <div class="tab" onclick="showTab('cache')">Cache</div>
         <div class="tab" onclick="showTab('keys')">API Keys</div>
@@ -338,13 +339,23 @@
             </div>
             <div class="config-row" style="flex-wrap:wrap;">
                 <label>Primary Timeout (sec)</label>
-                <input type="number" id="fb-primary-timeout" value="30" min="5" max="120" step="5" style="flex:1;">
-                <span style="font-size:11px;color:var(--text2);width:100%;margin-left:192px;">Max wait for first chunk before falling back</span>
+                <input type="number" id="fb-primary-timeout" value="120" min="5" max="300" step="5" style="flex:1;">
+                <span style="font-size:11px;color:var(--text2);width:100%;margin-left:192px;">Max wait for first chunk before falling back (120s recommended)</span>
             </div>
             <div class="config-row" style="flex-wrap:wrap;">
                 <label>Chunk Timeout (sec)</label>
                 <input type="number" id="fb-chunk-timeout" value="180" min="30" max="600" step="10" style="flex:1;">
                 <span style="font-size:11px;color:var(--text2);width:100%;margin-left:192px;">Max gap between stream chunks</span>
+            </div>
+            <div class="config-row" style="flex-wrap:wrap;">
+                <label>Max Concurrent</label>
+                <input type="number" id="fb-max-concurrent" value="8" min="0" max="50" step="1" style="flex:1;">
+                <span style="font-size:11px;color:var(--text2);width:100%;margin-left:192px;">Max simultaneous Ollama requests (0=unlimited)</span>
+            </div>
+            <div class="config-row" style="flex-wrap:wrap;">
+                <label>429 Retries</label>
+                <input type="number" id="fb-429-retries" value="2" min="0" max="10" step="1" style="flex:1;">
+                <span style="font-size:11px;color:var(--text2);width:100%;margin-left:192px;">Retries on HTTP 429 before falling back</span>
             </div>
             <div class="config-row" style="flex-wrap:wrap;">
                 <label>Max Tokens</label>
@@ -394,13 +405,13 @@
                 <div class="metric"><div class="metric-val" id="an-tps">0</div><div class="metric-label">Avg TPS</div></div>
                 <div class="metric"><div class="metric-val" id="an-ttft">0ms</div><div class="metric-label">Avg TTFT</div></div>
                 <div class="metric"><div class="metric-val" id="an-errors">0</div><div class="metric-label">Errors</div></div>
-                <div class="metric"><div class="metric-val" id="an-weekly">—</div><div class="metric-label">Ollama Weekly</div></div>
+                <div class="metric"><div class="metric-val" id="an-weekly">—</div><div class="metric-label">Fallback Rate</div></div>
             </div>
         </div>
 
         <div class="card">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-                <h2 style="margin:0;"><span class="emoji">🔢</span> Per-Model Stats</h2>
+                <h2 style="margin:0;"><span class="emoji">🔢</span> Per-Model Stats <span style="display:inline-block;cursor:help;position:relative;" onmouseenter="this.querySelector('.tip').style.display='block'" onmouseleave="this.querySelector('.tip').style.display='none'"><svg viewBox="0 0 16 16" style="width:14px;height:14px;vertical-align:middle;fill:var(--text2);"><path d="M8 1a7 7 0 110 14A7 7 0 018 1zm0 4.5a.75.75 0 110-1.5.75.75 0 010 1.5zM8 7a.75.75 0 00-.75.75v3.5a.75.75 0 001.5 0v-3.5A.75.75 0 008 7z"/></svg><span class="tip" style="display:none;position:absolute;bottom:130%;left:50%;transform:translateX(-50%);background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:8px 10px;font-size:11px;font-weight:400;color:var(--text);white-space:nowrap;z-index:10;box-shadow:0 2px 8px rgba(0,0,0,0.3);">Token counts estimated at 4 chars ≈ 1 token for consistency across tokenizers. Native usage data used when available.</span></span></h2>
                 <div>
                     <button class="refresh-btn" onclick="loadAnalytics()">🔄</button>
                     <button class="btn btn-sm btn-outline" onclick="clearAnalytics()" style="margin-left:4px;">Reset</button>
@@ -423,8 +434,79 @@
         </div>
     </div>
 
-    <!-- ─── Status Tab ─── -->
-    <div id="tab-status" class="hidden">
+    <!-- ─── History Tab ─── -->
+    <div id="tab-history" class="hidden">
+        <div class="card">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+                <h2 style="margin:0;"><span class="emoji">📜</span> Request History</h2>
+                <div style="display:flex;gap:8px;align-items:center;">
+                    <span id="history-stats" style="font-size:12px;color:var(--text2);"></span>
+                    <button class="refresh-btn" onclick="loadHistory()">🔄</button>
+                </div>
+            </div>
+            <div style="margin-bottom:16px;padding:12px;background:var(--surface2);border-radius:8px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+                    <div style="font-weight:600;">History Logging</div>
+                    <label class="toggle"><input type="checkbox" id="history-enabled" onchange="saveHistoryConfig()"><span class="slider"></span></label>
+                </div>
+                <div id="history-config-panel" style="display:none;">
+                    <div style="display:flex;gap:16px;margin-bottom:12px;">
+                        <div style="display:flex;align-items:center;gap:8px;">
+                            <input type="checkbox" id="history-save-input" onchange="saveHistoryConfig()">
+                            <span style="font-size:12px;">Save Input</span>
+                        </div>
+                        <div style="display:flex;align-items:center;gap:8px;">
+                            <input type="checkbox" id="history-save-output" onchange="saveHistoryConfig()">
+                            <span style="font-size:12px;">Save Output</span>
+                        </div>
+                    </div>
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+                        <div style="display:flex;align-items:center;gap:8px;">
+                            <input type="checkbox" id="history-log-to-files" onchange="saveHistoryConfig()">
+                            <span style="font-size:12px;">Log to Files</span>
+                            <span style="font-size:10px;color:var(--text2);">(plaintext .log files)</span>
+                        </div>
+                    </div>
+                    <div id="history-logdir-row" style="display:none;margin-bottom:12px;">
+                        <div class="config-row" style="margin-bottom:0;">
+                            <label style="font-size:12px;">Log Dir</label>
+                            <input type="text" id="history-log-dir" placeholder="Default: ~/.guanaco/history_logs" onchange="saveHistoryConfig()" style="width:260px;font-size:12px;">
+                        </div>
+                    </div>
+                    <div class="config-row" style="margin-bottom:0;">
+                        <label style="font-size:12px;">Retention (days)</label>
+                        <input type="number" id="history-retention" value="30" min="0" max="365" style="width:80px;">
+                    </div>
+                    <div style="font-size:11px;color:var(--orange);margin-top:8px;">⚠️ Saving input/output text uses more storage. Enable only if needed.</div>
+                </div>
+            </div>
+            <div style="display:flex;gap:8px;margin-bottom:12px;">
+                <select id="history-model-filter" onchange="loadHistory()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:6px;font-size:12px;">
+                    <option value="">All Models</option>
+                </select>
+                <select id="history-provider-filter" onchange="loadHistory()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:6px;font-size:12px;">
+                    <option value="">All Providers</option>
+                </select>
+                <select id="history-content-filter" onchange="loadHistory()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:6px;font-size:12px;">
+                    <option value="">All Requests</option>
+                    <option value="yes">Has Content</option>
+                    <option value="no">No Content</option>
+                    <option value="errors">Failed Only</option>
+                </select>
+            </div>
+            <div id="history-rows" style="max-height:500px;overflow-y:auto;"></div>
+            <div id="history-pagination" style="display:flex;justify-content:center;gap:8px;margin-top:12px;"></div>
+            <div id="history-logs-section" style="display:none;margin-top:16px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                    <h3 style="margin:0;font-size:14px;">📁 Log Files</h3>
+                    <button class="refresh-btn" onclick="loadHistoryLogs()">🔄</button>
+                </div>
+                <div id="history-log-files" style="max-height:300px;overflow-y:auto;"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ─── Status Tab ─── --><div id="tab-status" class="hidden">
         <div class="card">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
                 <h2 style="margin:0;"><span class="emoji">🩺</span> Guanaco Status</h2>
@@ -435,6 +517,14 @@
                 <div class="status-row"><span class="status-label">Models Available</span><span class="status-value" id="os-models">—</span></div>
                 <div class="status-row"><span class="status-label">Latency</span><span class="status-value" id="os-latency">—</span></div>
                 <div class="status-row"><span class="status-label">API Key</span><span class="status-value" id="os-apikey">—</span></div>
+            </div>
+            <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
+                <h3 style="margin:0 0 8px 0;font-size:13px;"><span class="emoji">🚦</span> Concurrency</h3>
+                <div class="status-check" id="concurrency-stats">
+                    <div class="status-row"><span class="status-label">Active Requests</span><span class="status-value" id="cc-active">—</span></div>
+                    <div class="status-row"><span class="status-label">Max Concurrent</span><span class="status-value" id="cc-max">—</span></div>
+                    <div class="status-row"><span class="status-label">429s (last 60s)</span><span class="status-value" id="cc-429s">—</span></div>
+                </div>
             </div>
         </div>
 
@@ -680,9 +770,12 @@ const FALLBACK = __FALLBACK__;
 
 function showTab(tab) {
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-    event.target.classList.add('active');
-    ['endpoints','search','models','fallback','analytics','status','cache','keys','system'].forEach(t => {
-        document.getElementById('tab-'+t).classList.toggle('hidden', t !== tab);
+    // Find the clicked tab element by matching onclick content (works with both inline onclick and programmatic calls)
+    const tabEl = document.querySelector(`.tab[onclick*="'${tab}'"]`) || document.querySelector(`.tab[onclick*='"${tab}"']`);
+    if (tabEl) tabEl.classList.add('active');
+    ['endpoints','search','models','fallback','analytics','history','status','cache','keys','system'].forEach(t => {
+        const el = document.getElementById('tab-'+t);
+        if (el) el.classList.toggle('hidden', t !== tab);
     });
     // Load data for tabs when switched
     if (tab === 'models') loadModels();
@@ -690,6 +783,7 @@ function showTab(tab) {
     if (tab === 'fallback') loadFallbackConfig();
     if (tab === 'cache') loadCacheStats();
     if (tab === 'analytics') loadAnalytics();
+    if (tab === 'history') { loadHistoryConfig(); loadHistory(); loadHistoryLogs(); }
     if (tab === 'status') { checkOllamaStatus(); loadUsageConfig(); checkUsage(); loadStatusLog(); }
     if (tab === 'system') { loadAutostart(); checkForUpdate(); }
 }
@@ -975,12 +1069,12 @@ function loadAnalytics() {
         document.getElementById('an-ttft').textContent = data.avg_ttft ? (data.avg_ttft * 1000).toFixed(0) + 'ms' : '—';
         document.getElementById('an-errors').textContent = (data.errors || 0).toLocaleString();
 
-        // Usage
-        const usageEl = document.getElementById('an-weekly');
-        if (data.usage && data.usage.weekly_pct !== null) {
-            usageEl.textContent = data.usage.weekly_pct + '%';
+        // Fallback rate (24h)
+        const fallbackEl = document.getElementById('an-weekly');
+        if (data.fallback_rate !== undefined && data.fallback_rate !== null) {
+            fallbackEl.textContent = data.fallback_rate + '%';
         } else {
-            usageEl.textContent = '—';
+            fallbackEl.textContent = '—';
         }
 
         // Model rows
@@ -1036,6 +1130,244 @@ function clearAnalytics() {
     fetch('/dashboard/api/analytics/clear', {method: 'POST'}).then(() => loadAnalytics());
 }
 
+
+// ─── History ───
+
+let historyOffset = 0;
+const HISTORY_LIMIT = 50;
+
+function loadHistoryConfig() {
+    fetch('/dashboard/api/history/config').then(r => r.json()).then(data => {
+        document.getElementById('history-enabled').checked = data.enabled || false;
+        document.getElementById('history-save-input').checked = data.save_input !== false;
+        document.getElementById('history-save-output').checked = data.save_output !== false;
+        document.getElementById('history-retention').value = data.retention_days || 30;
+        document.getElementById('history-log-to-files').checked = data.log_to_files || false;
+        document.getElementById('history-log-dir').value = data.log_dir || '';
+        document.getElementById('history-logdir-row').style.display = data.log_to_files ? 'flex' : 'none';
+        document.getElementById('history-config-panel').style.display = data.enabled ? 'block' : 'none';
+    });
+}
+
+function saveHistoryConfig() {
+    const enabled = document.getElementById('history-enabled').checked;
+    document.getElementById('history-config-panel').style.display = enabled ? 'block' : 'none';
+    const logToFiles = document.getElementById('history-log-to-files').checked;
+    document.getElementById('history-logdir-row').style.display = logToFiles ? 'flex' : 'none';
+    
+    const data = {
+        enabled: enabled,
+        save_input: document.getElementById('history-save-input').checked,
+        save_output: document.getElementById('history-save-output').checked,
+        retention_days: parseInt(document.getElementById('history-retention').value) || 30,
+        log_to_files: logToFiles,
+        log_dir: document.getElementById('history-log-dir').value.trim(),
+    };
+    
+    fetch('/dashboard/api/history/config', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(data)
+    }).then(r => r.json()).then(() => {
+        // Reload stats and log files
+        loadHistoryStats();
+        loadHistoryLogs();
+    });
+}
+
+function loadHistoryStats() {
+    fetch('/dashboard/api/history/stats').then(r => r.json()).then(data => {
+        const statsEl = document.getElementById('history-stats');
+        const errStr = data.error_count ? ` | <span style="color:var(--red);">${data.error_count} failed</span>` : '';
+        statsEl.innerHTML = `${data.total_requests.toLocaleString()} requests, ${data.requests_with_content.toLocaleString()} with content, ${data.content_size_mb}MB${errStr}`;
+    });
+}
+
+function loadHistory() {
+    const model = document.getElementById('history-model-filter').value;
+    const provider = document.getElementById('history-provider-filter').value;
+    const contentFilter = document.getElementById('history-content-filter').value;
+    
+    let url = `/dashboard/api/history?limit=${HISTORY_LIMIT}&offset=${historyOffset}`;
+    if (model) url += `&model=${encodeURIComponent(model)}`;
+    if (provider) url += `&provider=${encodeURIComponent(provider)}`;
+    if (contentFilter === 'yes') url += '&has_content=true';
+    if (contentFilter === 'no') url += '&has_content=false';
+    if (contentFilter === 'errors') url += '&errors_only=true';
+    
+    fetch(url).then(r => r.json()).then(data => {
+        const el = document.getElementById('history-rows');
+        if (!data || data.length === 0) {
+            el.innerHTML = '<div style="color:var(--text2);text-align:center;padding:20px;">No requests found</div>';
+            document.getElementById('history-pagination').innerHTML = '';
+            return;
+        }
+        
+        el.innerHTML = data.map(r => {
+            const isErr = !!r.error;
+            const borderColor = isErr ? 'var(--red)' : 'transparent';
+            const errSnippet = isErr ? `<div style="font-size:11px;color:var(--red);margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%;">⚠️ ${escapeHtml(r.error).substring(0, 120)}</div>` : '';
+            return `
+            <div class="history-entry" style="background:var(--surface2);border-radius:8px;padding:12px;margin-bottom:8px;cursor:pointer;border-left:3px solid ${borderColor};" onclick="showHistoryDetail('${r.id}')">
+                <div style="display:flex;justify-content:space-between;margin-bottom:6px;">
+                    <span style="font-weight:600;">${r.model || '—'}</span>
+                    <span style="font-size:11px;color:var(--text2);">${r.ts_formatted}</span>
+                </div>
+                <div style="display:flex;gap:16px;font-size:12px;color:var(--text2);">
+                    <span>📍 ${r.source_ip || '—'}:${r.source_port || ''}</span>
+                    <span>🏢 ${r.provider || 'ollama'}</span>
+                    <span>🔤 ${r.prompt_tokens || 0}/${r.completion_tokens || 0}</span>
+                    ${r.has_content ? '<span style="color:var(--green);">📝 content</span>' : ''}
+                    ${r.fallback_for ? `<span style="color:var(--orange);" title="${escapeHtml(r.fallback_reason || '')}">🔀 fallback</span>` : ''}
+                    ${isErr ? '<span style="color:var(--red);">❌ failed</span>' : ''}
+                </div>
+                ${errSnippet}
+                ${r.fallback_for && r.fallback_reason ? `<div style="font-size:11px;color:var(--orange);margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%;">🔀 ${escapeHtml(r.fallback_reason).substring(0, 120)}</div>` : ''}
+            </div>
+        `}).join('');
+        
+        // Pagination
+        const pagEl = document.getElementById('history-pagination');
+        if (historyOffset > 0 || data.length === HISTORY_LIMIT) {
+            pagEl.innerHTML = `
+                <button class="btn btn-sm" onclick="historyOffset = Math.max(0, historyOffset - HISTORY_LIMIT); loadHistory();" ${historyOffset === 0 ? 'disabled' : ''}>← Prev</button>
+                <span style="font-size:12px;color:var(--text2);">Row ${historyOffset + 1}+</span>
+                <button class="btn btn-sm" onclick="historyOffset += HISTORY_LIMIT; loadHistory();" ${data.length < HISTORY_LIMIT ? 'disabled' : ''}>Next →</button>
+            `;
+        } else {
+            pagEl.innerHTML = '';
+        }
+    });
+    
+    loadHistoryStats();
+}
+
+function showHistoryDetail(id) {
+    fetch(`/dashboard/api/history/${id}`).then(r => r.json()).then(data => {
+        if (data.error) {
+            alert('Request not found');
+            return;
+        }
+        
+        const hasContent = data.input_text || data.output_text;
+        const hasError = data.error;
+        
+        // Create modal
+        const modal = document.createElement('div');
+        modal.className = 'history-modal';
+        modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.8);z-index:1000;display:flex;align-items:center;justify-content:center;padding:20px;';
+        modal.innerHTML = `
+            <div style="background:var(--surface);border-radius:12px;max-width:900px;width:100%;max-height:90vh;overflow-y:auto;">
+                <div style="position:sticky;top:0;background:var(--surface);padding:16px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;">
+                    <h3 style="margin:0;">Request Detail</h3>
+                    <button onclick="this.closest('.history-modal').remove()" style="background:transparent;border:none;color:var(--text);font-size:20px;cursor:pointer;">✕</button>
+                </div>
+                <div style="padding:16px;">
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px;">
+                        <div><strong>Model:</strong> ${data.model || '—'}</div>
+                        <div><strong>Provider:</strong> ${data.provider || 'ollama'}</div>
+                        <div><strong>Time:</strong> ${data.ts_formatted}</div>
+                        <div><strong>Duration:</strong> ${data.total_duration_seconds ? data.total_duration_seconds.toFixed(2) + 's' : '—'}</div>
+                        <div><strong>Tokens:</strong> ${data.prompt_tokens || 0} in / ${data.completion_tokens || 0} out</div>
+                        <div><strong>TPS:</strong> ${data.tps ? data.tps.toFixed(2) : '—'}</div>
+                        <div><strong>Caller:</strong> ${data.source_ip || '—'}:${data.source_port || ''}</div>
+                        <div><strong>User Agent:</strong> ${data.user_agent || '—'}</div>
+                    </div>
+                    ${data.fallback_for ? `<div style="background:rgba(245,158,11,0.15);color:var(--orange);padding:8px 12px;border-radius:6px;margin-bottom:12px;">🔀 Fallback for: ${data.fallback_for}${data.fallback_reason ? `<div style="font-size:11px;margin-top:4px;opacity:0.85;">Reason: ${escapeHtml(data.fallback_reason)}</div>` : ''}</div>` : ''}
+                    ${data.error ? `<div style="background:rgba(239,68,68,0.15);padding:12px;border-radius:8px;margin-bottom:12px;">
+                        <div style="font-weight:600;color:var(--red);margin-bottom:6px;">❌ Error</div>
+                        <div style="font-family:monospace;font-size:11px;color:var(--red);white-space:pre-wrap;word-break:break-all;">${escapeHtml(data.error)}</div>
+                        ${data.provider ? `<div style="font-size:11px;color:var(--text2);margin-top:6px;">Provider: ${data.provider}${data.fallback_for ? ' (fallback also failed)' : ''}</div>` : ''}
+                    </div>` : ''}
+                    ${!hasContent && !hasError ? '<div style="background:rgba(245,158,11,0.12);color:var(--orange);padding:10px 12px;border-radius:6px;margin-bottom:12px;font-size:12px;">⚠️ Content not captured for this request. This usually happens when the request was handled by an instance running older code (before history was enabled), or the request had no input/output to save.</div>' : ''}
+                    ${data.input_text ? `
+                        <div style="margin-bottom:12px;">
+                            <div style="font-weight:600;margin-bottom:6px;">📥 Input (${(data.input_text.length).toLocaleString()} chars)</div>
+                            <pre style="background:var(--surface2);padding:12px;border-radius:8px;overflow-x:auto;font-size:12px;white-space:pre-wrap;word-break:break-all;max-height:300px;overflow-y:auto;">${escapeHtml(data.input_text)}</pre>
+                        </div>
+                    ` : ''}
+                    ${data.output_text ? `
+                        <div style="margin-bottom:12px;">
+                            <div style="font-weight:600;margin-bottom:6px;">📤 Output (${(data.output_text.length).toLocaleString()} chars)</div>
+                            <pre style="background:var(--surface2);padding:12px;border-radius:8px;overflow-x:auto;font-size:12px;white-space:pre-wrap;word-break:break-all;max-height:300px;overflow-y:auto;">${escapeHtml(data.output_text)}</pre>
+                        </div>
+                    ` : ''}
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) modal.remove();
+        });
+    });
+}
+
+function escapeHtml(text) {
+    if (!text) return '';
+    return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+// ─── History Log Files ───
+
+function loadHistoryLogs() {
+    fetch('/dashboard/api/history/logs').then(r => r.json()).then(data => {
+        const section = document.getElementById('history-logs-section');
+        const el = document.getElementById('history-log-files');
+        
+        if (!data.enabled) {
+            section.style.display = 'none';
+            return;
+        }
+        section.style.display = 'block';
+        
+        if (!data.files || data.files.length === 0) {
+            el.innerHTML = '<div style="color:var(--text2);text-align:center;padding:12px;">No log files yet</div>';
+            return;
+        }
+        
+        el.innerHTML = data.files.map(f => {
+            const sizeStr = f.size > 1024 ? (f.size / 1024).toFixed(1) + 'KB' : f.size + 'B';
+            return `<div style="background:var(--surface2);border-radius:6px;padding:8px 12px;margin-bottom:4px;display:flex;justify-content:space-between;align-items:center;">
+                <div style="cursor:pointer;flex:1;" onclick="viewLogFile('${f.name}')">
+                    <span style="font-weight:600;font-size:12px;">📄 ${f.name}</span>
+                    <span style="font-size:11px;color:var(--text2);margin-left:8px;">${sizeStr} · ${f.modified_formatted}</span>
+                </div>
+                <button class="btn btn-sm" onclick="event.stopPropagation();deleteLogFile('${f.name}')" style="font-size:10px;padding:2px 6px;">🗑</button>
+            </div>`;
+        }).join('');
+        
+        if (data.total > 200) {
+            el.innerHTML += `<div style="color:var(--text2);font-size:11px;text-align:center;padding:4px;">Showing 200 of ${data.total} files</div>`;
+        }
+    });
+}
+
+function viewLogFile(filename) {
+    fetch(`/dashboard/api/history/logs/${encodeURIComponent(filename)}`).then(r => r.json()).then(data => {
+        if (data.error) { alert(data.error); return; }
+        const modal = document.createElement('div');
+        modal.className = 'history-modal';
+        modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.8);z-index:1000;display:flex;align-items:center;justify-content:center;padding:20px;';
+        modal.innerHTML = `
+            <div style="background:var(--surface);border-radius:12px;max-width:900px;width:100%;max-height:90vh;overflow-y:auto;">
+                <div style="position:sticky;top:0;background:var(--surface);padding:12px 16px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;">
+                    <h3 style="margin:0;font-size:14px;">📄 ${escapeHtml(filename)}</h3>
+                    <button onclick="this.closest('.history-modal').remove()" style="background:transparent;border:none;color:var(--text);font-size:20px;cursor:pointer;">✕</button>
+                </div>
+                <pre style="padding:16px;font-size:12px;white-space:pre-wrap;word-break:break-all;">${escapeHtml(data.content)}</pre>
+            </div>`;
+        document.body.appendChild(modal);
+        modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
+    });
+}
+
+function deleteLogFile(filename) {
+    if (!confirm(`Delete ${filename}?`)) return;
+    fetch(`/dashboard/api/history/logs/${encodeURIComponent(filename)}`, {method: 'DELETE'}).then(r => r.json()).then(() => {
+        loadHistoryLogs();
+    });
+}
+
 // ─── Status ───
 
 function checkOllamaStatus() {
@@ -1067,6 +1399,21 @@ function checkOllamaStatus() {
         connEl.innerHTML = '<span class="status-err">❌ Unreachable</span>';
         dotEl.classList.add('error');
         textEl.textContent = 'Unreachable';
+    });
+
+    // Also load concurrency stats
+    loadConcurrencyStats();
+}
+
+function loadConcurrencyStats() {
+    fetch('/dashboard/api/concurrency').then(r => r.json()).then(data => {
+        document.getElementById('cc-active').textContent = data.active_count || 0;
+        document.getElementById('cc-max').textContent = data.max_concurrent || '∞';
+        document.getElementById('cc-429s').textContent = data.recent_429_rate || 0;
+    }).catch(() => {
+        document.getElementById('cc-active').textContent = '—';
+        document.getElementById('cc-max').textContent = '—';
+        document.getElementById('cc-429s').textContent = '—';
     });
 }
 
@@ -1317,9 +1664,11 @@ function loadFallbackConfig() {
     document.getElementById('fb-api-key').value = FALLBACK.api_key || '';
     document.getElementById('fb-default-model').value = FALLBACK.default_model || '';
     document.getElementById('fb-timeout').value = FALLBACK.timeout || 30;
-    document.getElementById('fb-primary-timeout').value = FALLBACK.primary_timeout || 30;
+    document.getElementById('fb-primary-timeout').value = FALLBACK.primary_timeout || 120;
     document.getElementById('fb-chunk-timeout').value = FALLBACK.stream_chunk_timeout || 180;
     document.getElementById('fb-max-tokens').value = FALLBACK.max_tokens || 128000;
+    document.getElementById('fb-max-concurrent').value = FALLBACK.max_concurrent_ollama || 8;
+    document.getElementById('fb-429-retries').value = FALLBACK.max_429_retries || 2;
     document.getElementById('fb-stream').checked = FALLBACK.stream_fallback !== false;
     document.getElementById('fb-vision').checked = FALLBACK.supports_vision || false;
     fallbackModelMap = FALLBACK.model_map || {};
@@ -1335,11 +1684,13 @@ function saveFallbackConfig() {
             api_key: document.getElementById('fb-api-key').value,
             default_model: document.getElementById('fb-default-model').value,
             timeout: parseFloat(document.getElementById('fb-timeout').value) || 30,
-            primary_timeout: parseFloat(document.getElementById('fb-primary-timeout').value) || 30,
+            primary_timeout: parseFloat(document.getElementById('fb-primary-timeout').value) || 120,
             stream_chunk_timeout: parseFloat(document.getElementById('fb-chunk-timeout').value) || 180,
             max_tokens: parseInt(document.getElementById('fb-max-tokens').value) || 128000,
             stream_fallback: document.getElementById('fb-stream').checked,
             supports_vision: document.getElementById('fb-vision').checked,
+            max_concurrent_ollama: parseInt(document.getElementById('fb-max-concurrent').value) || 8,
+            max_429_retries: parseInt(document.getElementById('fb-429-retries').value) || 2,
             model_map: fallbackModelMap,
         }
     };
@@ -1537,6 +1888,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Keys
     loadKeys();
+
+    // History
+    loadHistoryConfig();
+    loadHistory();
+    loadHistoryLogs();
 
     // Check connection
     checkOllamaStatus();

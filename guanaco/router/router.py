@@ -41,32 +41,61 @@ def _describe_error(exc: Exception) -> str:
     return f"{type(exc).__name__}: (no message)"
 
 
-async def _ollama_chat_with_primary_timeout(client, payload, fallback_config=None):
-    """Call Ollama Cloud chat completion with a primary timeout.
+async def _ollama_chat_with_primary_timeout(client, payload, fallback_config=None, limiter=None):
+    """Call Ollama Cloud chat completion with a primary timeout and optional concurrency limit.
 
     When fallback is configured, we use a shorter primary_timeout so that
     slow/unresponsive Ollama responses trigger fallback quickly instead of
     hanging for the full 120s client timeout.
+
+    Args:
+        client: OllamaClient instance
+        payload: Request payload
+        fallback_config: FallbackProviderConfig for timeout settings
+        limiter: Optional OllamaConcurrencyLimiter for concurrency control and 429 retry
     """
+    async def _do_call():
+        """Execute the actual Ollama call with 429 retry logic."""
+        # If no limiter, just call directly
+        if limiter is None:
+            return await client.chat_completion(payload)
+
+        # Retry loop for 429s
+        for attempt in range(limiter.max_429_retries + 1):
+            try:
+                return await client.chat_completion(payload)
+            except Exception as e:
+                if attempt < limiter.max_429_retries and limiter.should_retry_429(e):
+                    await limiter.backoff_and_retry(attempt)
+                    continue
+                raise
+
     if fallback_config and fallback_config.enabled and fallback_config.primary_timeout:
         try:
             return await asyncio.wait_for(
-                client.chat_completion(payload),
+                _do_call(),
                 timeout=fallback_config.primary_timeout,
             )
         except asyncio.TimeoutError:
             raise httpx.ReadTimeout(
                 f"Ollama did not respond within {fallback_config.primary_timeout}s primary timeout"
             )
-    return await client.chat_completion(payload)
+    return await _do_call()
 
 from guanaco.client import OllamaClient
 from guanaco.cache import CacheEngine
 from guanaco.analytics import _normalize_model_name
+from guanaco.concurrency import OllamaConcurrencyLimiter
 
 import logging
 
 log = logging.getLogger("guanaco.router")
+
+# Module-level reference to the active concurrency limiter (for dashboard/status API)
+_concurrency_limiter_instance: OllamaConcurrencyLimiter = None
+
+def get_concurrency_limiter() -> Optional[OllamaConcurrencyLimiter]:
+    return _concurrency_limiter_instance
 
 # ── Empty Response Retry ──
 MAX_EMPTY_RETRIES = 1  # How many times to retry on empty responses
@@ -330,6 +359,91 @@ def create_router(client: OllamaClient, analytics=None, config=None) -> APIRoute
     _config = config
     _cache = CacheEngine(config.cache) if config else None
 
+    # Concurrency limiter: prevents 429 "too many concurrent requests" from Ollama Cloud
+    _max_concurrent = getattr(config.fallback, 'max_concurrent_ollama', 0) if config and config.fallback else 0
+    _max_429_retries = getattr(config.fallback, 'max_429_retries', 2) if config and config.fallback else 2
+    _backoff_base = getattr(config.fallback, 'backoff_base', 1.0) if config and config.fallback else 1.0
+    _concurrency_limiter = OllamaConcurrencyLimiter(
+        max_concurrent=_max_concurrent,
+        max_429_retries=_max_429_retries,
+        base_backoff=_backoff_base,
+    )
+    # Expose for dashboard API (module-level reference)
+    global _concurrency_limiter_instance
+    _concurrency_limiter_instance = _concurrency_limiter
+
+    def _history_kwargs(request: Request, messages=None, output_text=None) -> dict:
+        """Build history-related kwargs for analytics.log_llm() based on config.
+        
+        Returns a dict with source_ip, source_port, user_agent, and
+        conditionally input_text/output_text if history logging is enabled.
+        """
+        kwargs = {}
+        # Always extract caller info
+        client_host = request.client
+        if client_host:
+            kwargs["source_ip"] = client_host.host
+            kwargs["source_port"] = client_host.port
+        kwargs["user_agent"] = request.headers.get("user-agent", "")
+        
+        # Only include content if history is enabled
+        hist = _config.history if _config else None
+        if hist and hist.enabled:
+            if messages and hist.save_input:
+                # Serialize the messages list to a JSON string
+                try:
+                    if hasattr(messages, '__iter__') and not isinstance(messages, (str, dict)):
+                        # It's a list or iterable of message objects
+                        msgs = []
+                        for m in messages:
+                            if hasattr(m, 'model_dump'):
+                                msgs.append(m.model_dump(exclude_none=True))
+                            elif isinstance(m, dict):
+                                msgs.append(m)
+                            else:
+                                msgs.append(str(m))
+                    elif isinstance(messages, str):
+                        msgs = messages
+                    else:
+                        msgs = str(messages)
+                    if isinstance(msgs, list):
+                        input_str = json.dumps(msgs, ensure_ascii=False)
+                    else:
+                        input_str = str(msgs)
+                    if len(input_str) > hist.max_content_size:
+                        input_str = input_str[:hist.max_content_size] + "\n...[truncated]"
+                    kwargs["input_text"] = input_str
+                    log.debug("History: captured input_text (%d chars)", len(input_str))
+                except Exception as e:
+                    log.warning("History: failed to capture input_text: %s", e)
+            if output_text and hist.save_output:
+                if len(output_text) > hist.max_content_size:
+                    output_text = output_text[:hist.max_content_size] + "\n...[truncated]"
+                kwargs["output_text"] = output_text
+        
+        return kwargs
+
+    def _extract_output_text(resp: dict) -> Optional[str]:
+        """Extract the text content from an OpenAI-format chat completion response."""
+        try:
+            choices = resp.get("choices", [])
+            if choices:
+                msg = choices[0].get("message", {})
+                if isinstance(msg, dict):
+                    parts = []
+                    content = msg.get("content", "")
+                    if content:
+                        parts.append(content)
+                    # Also capture reasoning/thinking content from GLM etc
+                    reasoning = msg.get("reasoning", "") or msg.get("reasoning_content", "")
+                    if reasoning:
+                        parts.append(f"<thinking>\n{reasoning}\n</thinking>")
+                    if parts:
+                        return "\n".join(parts)
+        except Exception:
+            pass
+        return None
+
     # ── OpenAI-compatible endpoints ──
 
     @router.get("/v1/models")
@@ -389,6 +503,7 @@ def create_router(client: OllamaClient, analytics=None, config=None) -> APIRoute
         """OpenAI-compatible chat completions endpoint with fallback and smart caching (beta)."""
         start = time.time()
         resolved_model = _resolve_model(body.model, _config) if _config else body.model
+        _hist = _history_kwargs(request, messages=body.messages)
         
         # Convert image URLs to base64 for Ollama Cloud compatibility
         if _has_vision_content(body.messages):
@@ -447,6 +562,8 @@ def create_router(client: OllamaClient, analytics=None, config=None) -> APIRoute
                                 total_duration_seconds=time.time() - start,
                                 provider=_config.fallback.name,
                                 fallback_for=_normalize_model_name(resolved_model),
+                                fallback_reason=f"Quota full (session={_config.usage.last_session_pct or 0:.0f}%, weekly={_config.usage.last_weekly_pct or 0:.0f}%)",
+                                **_hist,
                             )
                         return fallback_resp
                     except Exception as e:
@@ -460,7 +577,8 @@ def create_router(client: OllamaClient, analytics=None, config=None) -> APIRoute
                 try:
                     # ── Retry on empty response ──
                     for attempt in range(MAX_EMPTY_RETRIES + 1):
-                        resp = await _ollama_chat_with_primary_timeout(client, p, _config.fallback if _config else None)
+                        async with _concurrency_limiter:
+                            resp = await _ollama_chat_with_primary_timeout(client, p, _config.fallback if _config else None, _concurrency_limiter)
                         if not _is_empty_non_streaming_response(resp) or attempt == MAX_EMPTY_RETRIES:
                             break
                         log.warning("Empty cached-response from %s (attempt %d/%d), retrying...", resolved_model, attempt + 1, MAX_EMPTY_RETRIES + 1)
@@ -470,6 +588,12 @@ def create_router(client: OllamaClient, analytics=None, config=None) -> APIRoute
                     usage = resp.get("usage", {})
 
                     if _analytics:
+                        hist_kw = dict(_hist)
+                        out_txt = _extract_output_text(resp)
+                        if out_txt and _config and _config.history.enabled and _config.history.save_output:
+                            if len(out_txt) > _config.history.max_content_size:
+                                out_txt = out_txt[:_config.history.max_content_size] + "\n...[truncated]"
+                            hist_kw["output_text"] = out_txt
                         _analytics.log_llm(
                             model=resolved_model,
                             prompt_tokens=usage.get("prompt_tokens", metrics.get("prompt_eval_count", 0)),
@@ -481,6 +605,7 @@ def create_router(client: OllamaClient, analytics=None, config=None) -> APIRoute
                             total_duration_seconds=elapsed,
                             load_duration_seconds=metrics.get("load_duration_ns", 0) / 1e9 if metrics.get("load_duration_ns") else None,
                             provider="ollama",
+                            **hist_kw,
                         )
 
                     return resp
@@ -511,6 +636,8 @@ def create_router(client: OllamaClient, analytics=None, config=None) -> APIRoute
                                     total_duration_seconds=elapsed,
                                     provider=_config.fallback.name,
                                     fallback_for=_normalize_model_name(resolved_model),
+                                    fallback_reason=f"Ollama error: {_describe_error(ollama_error)}",
+                                    **_hist,
                                 )
 
                             fallback_resp["_oct_fallback"] = True
@@ -521,11 +648,11 @@ def create_router(client: OllamaClient, analytics=None, config=None) -> APIRoute
                         except Exception as fallback_err:
                             log.warning("Fallback to %s failed for model %s (cached path): %s", _config.fallback.name, resolved_model, _describe_error(fallback_err))
                             if _analytics:
-                                _analytics.log_llm(model=resolved_model, error=f"ollama: {_describe_error(ollama_error)}; fallback: {_describe_error(fallback_err)}", total_duration_seconds=time.time() - start)
+                                _analytics.log_llm(model=resolved_model, error=f"ollama: {_describe_error(ollama_error)}; fallback: {_describe_error(fallback_err)}", total_duration_seconds=time.time() - start, **_hist)
                             raise HTTPException(status_code=502, detail=f"Ollama Cloud error: {_describe_error(ollama_error)}; Fallback error: {_describe_error(fallback_err)}")
 
                     if _analytics:
-                        _analytics.log_llm(model=resolved_model, error=str(ollama_error), total_duration_seconds=time.time() - start)
+                        _analytics.log_llm(model=resolved_model, error=str(ollama_error), total_duration_seconds=time.time() - start, **_hist)
                     raise HTTPException(status_code=502, detail=f"Ollama Cloud error: {str(ollama_error)}")
 
             # Use cache for non-streaming
@@ -545,6 +672,7 @@ def create_router(client: OllamaClient, analytics=None, config=None) -> APIRoute
                         model=resolved_model,
                         total_duration_seconds=elapsed,
                         provider=f"cache:{response.get('_oct_cache_type', 'unknown')}",
+                        **_hist,
                     )
 
             return response
@@ -553,11 +681,12 @@ def create_router(client: OllamaClient, analytics=None, config=None) -> APIRoute
         # Try Ollama Cloud first
         try:
             if body.stream:
-                return await _stream_completion_openai(client, payload, resolved_model, _analytics, start, _config)
+                return await _stream_completion_openai(client, payload, resolved_model, _analytics, start, _config, history_kwargs=_hist, limiter=_concurrency_limiter)
 
             # ── Non-streaming: retry on empty response ──
             for attempt in range(MAX_EMPTY_RETRIES + 1):
-                resp = await _ollama_chat_with_primary_timeout(client, payload, _config.fallback if _config else None)
+                async with _concurrency_limiter:
+                    resp = await _ollama_chat_with_primary_timeout(client, payload, _config.fallback if _config else None, _concurrency_limiter)
                 if not _is_empty_non_streaming_response(resp) or attempt == MAX_EMPTY_RETRIES:
                     break
                 log.warning("Empty response from %s (attempt %d/%d), retrying...", resolved_model, attempt + 1, MAX_EMPTY_RETRIES + 1)
@@ -567,6 +696,12 @@ def create_router(client: OllamaClient, analytics=None, config=None) -> APIRoute
             usage = resp.get("usage", {})
 
             if _analytics:
+                hist_kw = dict(_hist)
+                out_txt = _extract_output_text(resp)
+                if out_txt and _config and _config.history.enabled and _config.history.save_output:
+                    if len(out_txt) > _config.history.max_content_size:
+                        out_txt = out_txt[:_config.history.max_content_size] + "\n...[truncated]"
+                    hist_kw["output_text"] = out_txt
                 _analytics.log_llm(
                     model=resolved_model,
                     prompt_tokens=usage.get("prompt_tokens", metrics.get("prompt_eval_count", 0)),
@@ -578,6 +713,7 @@ def create_router(client: OllamaClient, analytics=None, config=None) -> APIRoute
                     total_duration_seconds=elapsed,
                     load_duration_seconds=metrics.get("load_duration_ns", 0) / 1e9 if metrics.get("load_duration_ns") else None,
                     provider="ollama",
+                    **hist_kw,
                 )
 
             return resp
@@ -592,7 +728,7 @@ def create_router(client: OllamaClient, analytics=None, config=None) -> APIRoute
 
                 try:
                     if body.stream and _config.fallback.stream_fallback:
-                        return await _stream_fallback_openai(fallback_payload, _config, fallback_model, _analytics, start, "ollama_fallback")
+                        return await _stream_fallback_openai(fallback_payload, _config, fallback_model, _analytics, start, "ollama_fallback", history_kwargs=_hist, fallback_for=resolved_model, fallback_reason=f"Ollama error: {_describe_error(ollama_error)}")
 
                     fallback_resp = await _call_fallback_provider(fallback_payload, _config.fallback)
                     elapsed = time.time() - start
@@ -602,6 +738,8 @@ def create_router(client: OllamaClient, analytics=None, config=None) -> APIRoute
                             model=fallback_model,
                             total_duration_seconds=elapsed,
                             provider=_config.fallback.name, fallback_for=resolved_model,
+                            fallback_reason=f"Ollama error: {_describe_error(ollama_error)}",
+                            **_hist,
                         )
 
                     # Tag response so dashboard can show it came from fallback
@@ -613,11 +751,11 @@ def create_router(client: OllamaClient, analytics=None, config=None) -> APIRoute
                 except Exception as fallback_err:
                     log.warning("Fallback to %s failed for model %s: %s", _config.fallback.name, resolved_model, _describe_error(fallback_err))
                     if _analytics:
-                        _analytics.log_llm(model=resolved_model, error=f"ollama: {_describe_error(ollama_error)}; fallback: {_describe_error(fallback_err)}", total_duration_seconds=time.time() - start)
+                        _analytics.log_llm(model=resolved_model, error=f"ollama: {_describe_error(ollama_error)}; fallback: {_describe_error(fallback_err)}", total_duration_seconds=time.time() - start, **_hist)
                     raise HTTPException(status_code=502, detail=f"Ollama Cloud error: {_describe_error(ollama_error)}; Fallback error: {_describe_error(fallback_err)}")
 
             if _analytics:
-                _analytics.log_llm(model=resolved_model, error=_describe_error(ollama_error), total_duration_seconds=time.time() - start)
+                _analytics.log_llm(model=resolved_model, error=_describe_error(ollama_error), total_duration_seconds=time.time() - start, **_hist)
             raise HTTPException(status_code=502, detail=f"Ollama Cloud error: {_describe_error(ollama_error)}")
 
     @router.post("/v1/chat/completions/refresh_models")
@@ -670,6 +808,7 @@ def create_router(client: OllamaClient, analytics=None, config=None) -> APIRoute
         """Anthropic-compatible /v1/messages endpoint."""
         start = time.time()
         resolved_model = _resolve_model(body.model, _config) if _config else body.model
+        _hist = _history_kwargs(request, messages=body.messages)
 
         # Convert Anthropic format to OpenAI format
         openai_messages = []
@@ -744,14 +883,22 @@ def create_router(client: OllamaClient, analytics=None, config=None) -> APIRoute
 
         try:
             if body.stream:
-                return await _stream_completion_anthropic(client, openai_payload, resolved_model, body.max_tokens, _analytics, start)
+                return await _stream_completion_anthropic(client, openai_payload, resolved_model, body.max_tokens, _analytics, start, history_kwargs=_hist, config=_config)
 
             resp = await client.chat_completion(openai_payload)
             elapsed = time.time() - start
             metrics = resp.pop("_oct_metrics", {})
             usage = resp.get("usage", {})
 
+            # Extract output text for history logging before conversion
+            _out_text = _extract_output_text(resp)
+
             if _analytics:
+                hist_kw = dict(_hist)
+                if _out_text and _config and _config.history.enabled and _config.history.save_output:
+                    if len(_out_text) > _config.history.max_content_size:
+                        _out_text = _out_text[:_config.history.max_content_size] + "\n...[truncated]"
+                    hist_kw["output_text"] = _out_text
                 _analytics.log_llm(
                     model=resolved_model,
                     prompt_tokens=usage.get("prompt_tokens", metrics.get("prompt_eval_count", 0)),
@@ -761,6 +908,7 @@ def create_router(client: OllamaClient, analytics=None, config=None) -> APIRoute
                     ttft_seconds=metrics.get("ttft_seconds"),
                     total_duration_seconds=elapsed,
                     provider="ollama",
+                    **hist_kw,
                 )
 
             # Convert OpenAI response to Anthropic format
@@ -810,7 +958,7 @@ def create_router(client: OllamaClient, analytics=None, config=None) -> APIRoute
 
         except Exception as e:
             if _analytics:
-                _analytics.log_llm(model=resolved_model, error=str(e), total_duration_seconds=time.time() - start)
+                _analytics.log_llm(model=resolved_model, error=str(e), total_duration_seconds=time.time() - start, **_hist)
             raise HTTPException(status_code=502, detail=f"Ollama Cloud error: {str(e)}")
 
     # ── Model selection endpoint ──
@@ -1080,7 +1228,40 @@ async def _iter_stream_with_timeouts(aiter, first_chunk_timeout, inter_chunk_tim
     # If we never got any item, the aiter ended normally (empty stream)
 
 
-async def _stream_completion_openai(client, payload, model, analytics, start_time, config=None):
+def _extract_sse_content(chunk: str) -> str:
+    """Extract the content/reasoning text from an SSE data chunk for history logging."""
+    try:
+        if not chunk.startswith("data: ") or "__oct_metrics__" in chunk:
+            return ""
+        data_str = chunk[6:].strip()
+        if data_str == "[DONE]":
+            return ""
+        data = json.loads(data_str)
+        choices = data.get("choices", [])
+        if choices:
+            delta = choices[0].get("delta", {})
+            parts = []
+            if delta.get("content"):
+                parts.append(delta["content"])
+            reasoning = delta.get("reasoning", "") or delta.get("reasoning_content", "")
+            if reasoning:
+                parts.append(reasoning)
+            return "".join(parts)
+    except (json.JSONDecodeError, ValueError, KeyError, IndexError):
+        pass
+    return ""
+
+
+def _accumulate_history_output(accumulated: list, chunk: str, history_kwargs: dict, config=None):
+    """Extract text from an SSE chunk and append to the accumulator if history is enabled."""
+    if not history_kwargs or not config or not config.history.enabled or not config.history.save_output:
+        return
+    text = _extract_sse_content(chunk)
+    if text:
+        accumulated.append(text)
+
+
+async def _stream_completion_openai(client, payload, model, analytics, start_time, config=None, history_kwargs=None, limiter=None):
     """Stream OpenAI-format SSE responses, with fallback and timeout support.
 
     Key design: When fallback is configured with primary_timeout, we apply
@@ -1100,37 +1281,78 @@ async def _stream_completion_openai(client, payload, model, analytics, start_tim
         used_fallback = False
         fallback_model = None
         original_error = None
+        accumulated_content = []  # For history: collect output text from stream
         try:
             if use_timeouts:
                 chunk_timeout = fb.stream_chunk_timeout if fb.stream_chunk_timeout else 180.0
                 # ── Timed streaming: fail fast on first chunk, tolerate gaps after ──
-                ollama_stream = client.chat_completion_stream(payload)
+                # Acquire semaphore for the duration of the Ollama stream
+                sem_ctx = limiter.__aenter__() if limiter else None
+                if sem_ctx:
+                    await sem_ctx
+                ollama_stream = None
                 stream_closed = False
                 # Wait for the first chunk with a strict timeout (triggers fallback fast)
-                try:
-                    first_chunk = await asyncio.wait_for(
-                        ollama_stream.__anext__(), timeout=fb.primary_timeout
-                    )
-                except asyncio.TimeoutError:
-                    # First chunk timeout — no data sent to client yet, can still fallback
+                # Also retry on 429 with backoff
+                first_chunk = None
+                max_429 = limiter.max_429_retries if limiter else 0
+                for attempt in range(max_429 + 1):
                     try:
-                        await ollama_stream.aclose()
-                    except RuntimeError:
-                        pass  # Generator already cleaned up by cancellation
-                    stream_closed = True
-                    raise httpx.ReadTimeout(
-                        f"Ollama did not produce first stream chunk within {fb.primary_timeout}s"
-                    )
-                except StopAsyncIteration:
-                    # Empty stream — treat as error so fallback can handle it
-                    try:
-                        await ollama_stream.aclose()
-                    except RuntimeError:
-                        pass
-                    stream_closed = True
-                    raise httpx.ReadTimeout(
-                        f"Ollama stream ended before producing any chunks"
-                    )
+                        if ollama_stream is None:
+                            ollama_stream = client.chat_completion_stream(payload)
+                        first_chunk = await asyncio.wait_for(
+                            ollama_stream.__anext__(), timeout=fb.primary_timeout
+                        )
+                        break  # Got a chunk, exit retry loop
+                    except httpx.HTTPStatusError as e:
+                        if attempt < max_429 and limiter and limiter.should_retry_429(e):
+                            try:
+                                await ollama_stream.aclose()
+                            except (RuntimeError, Exception):
+                                pass
+                            ollama_stream = None
+                            await limiter.backoff_and_retry(attempt)
+                            continue
+                        # Not a 429 or out of retries — release semaphore and re-raise
+                        if sem_ctx:
+                            try:
+                                await limiter.__aexit__(None, None, None)
+                            except Exception:
+                                pass
+                            sem_ctx = None
+                        raise
+                    except asyncio.TimeoutError:
+                        # First chunk timeout — no data sent to client yet, can still fallback
+                        try:
+                            await ollama_stream.aclose()
+                        except RuntimeError:
+                            pass
+                        stream_closed = True
+                        if sem_ctx:
+                            try:
+                                await limiter.__aexit__(None, None, None)
+                            except Exception:
+                                pass
+                            sem_ctx = None
+                        raise httpx.ReadTimeout(
+                            f"Ollama did not produce first stream chunk within {fb.primary_timeout}s"
+                        )
+                    except StopAsyncIteration:
+                        # Empty stream — treat as error so fallback can handle it
+                        try:
+                            await ollama_stream.aclose()
+                        except RuntimeError:
+                            pass
+                        stream_closed = True
+                        if sem_ctx:
+                            try:
+                                await limiter.__aexit__(None, None, None)
+                            except Exception:
+                                pass
+                            sem_ctx = None
+                        raise httpx.ReadTimeout(
+                            f"Ollama stream ended before producing any chunks"
+                        )
 
                 # Got first chunk — process it (metrics chunks are internal, not yield)
                 if first_chunk.startswith("__oct_metrics__:"):
@@ -1140,6 +1362,7 @@ async def _stream_completion_openai(client, payload, model, analytics, start_tim
                         pass
                 else:
                     yield first_chunk
+                    _accumulate_history_output(accumulated_content, first_chunk, history_kwargs, config)
                 try:
                     while True:
                         try:
@@ -1153,6 +1376,7 @@ async def _stream_completion_openai(client, payload, model, analytics, start_tim
                                     pass
                                 continue
                             yield chunk
+                            _accumulate_history_output(accumulated_content, chunk, history_kwargs, config)
                         except StopAsyncIteration:
                             break
                         except asyncio.TimeoutError:
@@ -1170,6 +1394,12 @@ async def _stream_completion_openai(client, payload, model, analytics, start_tim
                             await ollama_stream.aclose()
                         except RuntimeError:
                             pass  # Already closed
+                    # Release concurrency semaphore
+                    if sem_ctx and limiter:
+                        try:
+                            await limiter.__aexit__(None, None, None)
+                        except Exception:
+                            pass
             else:
                 # ── No timeout wrapping: original buffered behavior ──
                 for attempt in range(MAX_EMPTY_RETRIES + 1):
@@ -1180,6 +1410,7 @@ async def _stream_completion_openai(client, payload, model, analytics, start_tim
 
                 for chunk in chunks:
                     yield chunk
+                    _accumulate_history_output(accumulated_content, chunk, history_kwargs, config)
 
         except Exception as e:
             original_error = _describe_error(e)
@@ -1193,6 +1424,7 @@ async def _stream_completion_openai(client, payload, model, analytics, start_tim
                     async for chunk in await _call_fallback_provider(fallback_payload, config.fallback, stream=True):
                         used_fallback = True
                         yield chunk
+                        _accumulate_history_output(accumulated_content, chunk, history_kwargs, config)
                 except Exception as fallback_err:
                     log.warning("Stream fallback to %s failed for model %s: %s", config.fallback.name, model, _describe_error(fallback_err))
                     error_data = json.dumps({"error": {"message": f"Ollama: {original_error}; Fallback: {_describe_error(fallback_err)}", "type": "server_error"}})
@@ -1204,6 +1436,13 @@ async def _stream_completion_openai(client, payload, model, analytics, start_tim
                 yield "data: [DONE]\n\n"
         finally:
             elapsed = time.time() - start_time
+            # Build history output from accumulated stream content
+            _hist_kw = dict(history_kwargs) if history_kwargs else {}
+            if accumulated_content and config and config.history.enabled and config.history.save_output:
+                output_text = "".join(accumulated_content)
+                if len(output_text) > config.history.max_content_size:
+                    output_text = output_text[:config.history.max_content_size] + "\n...[truncated]"
+                _hist_kw["output_text"] = output_text
             if analytics:
                 if used_fallback and fallback_model:
                     analytics.log_llm(
@@ -1215,6 +1454,8 @@ async def _stream_completion_openai(client, payload, model, analytics, start_tim
                         total_duration_seconds=stream_metrics.get("elapsed_seconds", elapsed),
                         provider=config.fallback.name if config else "fallback",
                         fallback_for=_normalize_model_name(model),
+                        fallback_reason=f"Ollama error: {original_error}" if original_error else "Ollama stream error",
+                        **_hist_kw,
                     )
                 elif original_error:
                     analytics.log_llm(
@@ -1222,6 +1463,7 @@ async def _stream_completion_openai(client, payload, model, analytics, start_tim
                         error=original_error,
                         total_duration_seconds=elapsed,
                         provider="ollama",
+                        **_hist_kw,
                     )
                 else:
                     analytics.log_llm(
@@ -1232,76 +1474,97 @@ async def _stream_completion_openai(client, payload, model, analytics, start_tim
                         ttft_seconds=stream_metrics.get("ttft_seconds"),
                         total_duration_seconds=stream_metrics.get("elapsed_seconds", elapsed),
                         provider="ollama",
+                        **_hist_kw,
                     )
 
     return StreamingResponse(generate(), media_type="text/event-stream")
 
 
-async def _stream_fallback_openai(payload, config, fallback_model, analytics, start_time, provider_tag="fallback"):
+async def _stream_fallback_openai(payload, config, fallback_model, analytics, start_time, provider_tag="fallback", history_kwargs=None, fallback_for=None, fallback_reason=None):
     """Stream from fallback provider in OpenAI format."""
     from fastapi.responses import StreamingResponse
 
     async def generate():
+        accumulated_content = []
         try:
             async for chunk in await _call_fallback_provider(payload, config.fallback, stream=True):
                 yield chunk
+                _accumulate_history_output(accumulated_content, chunk, history_kwargs, config)
         except Exception as e:
             error_data = json.dumps({"error": {"message": str(e), "type": "server_error"}})
             yield f"data: {error_data}\n\n"
             yield "data: [DONE]\n\n"
         finally:
             elapsed = time.time() - start_time
+            _hist_kw = dict(history_kwargs) if history_kwargs else {}
+            if accumulated_content and config and config.history.enabled and config.history.save_output:
+                output_text = "".join(accumulated_content)
+                if len(output_text) > config.history.max_content_size:
+                    output_text = output_text[:config.history.max_content_size] + "\n...[truncated]"
+                _hist_kw["output_text"] = output_text
             if analytics:
-                analytics.log_llm(model=_normalize_model_name(fallback_model), total_duration_seconds=elapsed, provider=provider_tag)
+                analytics.log_llm(model=_normalize_model_name(fallback_model), total_duration_seconds=elapsed, provider=provider_tag, fallback_for=_normalize_model_name(fallback_for) if fallback_for else None, fallback_reason=fallback_reason, **_hist_kw)
 
     return StreamingResponse(generate(), media_type="text/event-stream")
 
 
-async def _stream_completion_anthropic(client, payload, model, max_tokens, analytics, start_time):
+async def _stream_completion_anthropic(client, payload, model, max_tokens, analytics, start_time, history_kwargs=None, config=None):
     """Stream Anthropic-format SSE responses, translating from Ollama's OpenAI format."""
     from fastapi.responses import StreamingResponse
     msg_id = f"msg_{uuid.uuid4().hex[:24]}"
 
     async def generate():
+        accumulated_content = []
+        stream_metrics = {}
         yield f"event: message_start\ndata: {json.dumps({'type': 'message_start', 'message': {'id': msg_id, 'type': 'message', 'role': 'assistant', 'model': model, 'content': [], 'stop_reason': None, 'stop_sequence': None, 'usage': {'input_tokens': 0, 'output_tokens': 0}}})}\n\n"
 
         total_tokens = 0
         first_token_time = None
-        async for chunk in client.chat_completion_stream(payload):
-            # Capture metrics from stream
-            if chunk.startswith("__oct_metrics__:"):
-                stream_metrics_raw = chunk.split(":", 1)[1]
+        try:
+            async for chunk in client.chat_completion_stream(payload):
+                # Capture metrics from stream
+                if chunk.startswith("__oct_metrics__:"):
+                    stream_metrics_raw = chunk.split(":", 1)[1]
+                    try:
+                        stream_metrics = json.loads(stream_metrics_raw)
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+                    continue
                 try:
-                    stream_metrics = json.loads(stream_metrics_raw)
-                    # Log with streaming metrics
-                    if analytics:
-                        analytics.log_llm(
-                            model=model,
-                            completion_tokens=stream_metrics.get("eval_count", total_tokens),
-                            tps=stream_metrics.get("tps"),
-                            ttft_seconds=stream_metrics.get("ttft_seconds") or (round(first_token_time - start_time, 3) if first_token_time else None),
-                            total_duration_seconds=stream_metrics.get("elapsed_seconds", time.time() - start_time),
-                        )
-                except (json.JSONDecodeError, ValueError):
-                    pass
-                continue
-            try:
-                if "data: " in chunk:
-                    data_str = chunk[6:].strip()
-                    if data_str == "[DONE]":
-                        continue
-                    data = json.loads(data_str)
-                    choices = data.get("choices", [])
-                    for choice in choices:
-                        delta = choice.get("delta", {})
-                        content = delta.get("content", "")
-                        if content:
-                            if first_token_time is None:
-                                first_token_time = time.time()
-                            total_tokens += 1
-                            yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'text_delta', 'text': content}})}\n\n"
-            except (json.JSONDecodeError, KeyError):
-                continue
+                    if "data: " in chunk:
+                        data_str = chunk[6:].strip()
+                        if data_str == "[DONE]":
+                            continue
+                        data = json.loads(data_str)
+                        choices = data.get("choices", [])
+                        for choice in choices:
+                            delta = choice.get("delta", {})
+                            content = delta.get("content", "")
+                            if content:
+                                if first_token_time is None:
+                                    first_token_time = time.time()
+                                total_tokens += 1
+                                accumulated_content.append(content)
+                                yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'text_delta', 'text': content}})}\n\n"
+                except (json.JSONDecodeError, KeyError):
+                    continue
+        finally:
+            # Log with streaming metrics and history
+            _hist_kw = dict(history_kwargs) if history_kwargs else {}
+            if accumulated_content and config and config.history.enabled and config.history.save_output:
+                output_text = "".join(accumulated_content)
+                if len(output_text) > config.history.max_content_size:
+                    output_text = output_text[:config.history.max_content_size] + "\n...[truncated]"
+                _hist_kw["output_text"] = output_text
+            if analytics and stream_metrics:
+                analytics.log_llm(
+                    model=model,
+                    completion_tokens=stream_metrics.get("eval_count", total_tokens),
+                    tps=stream_metrics.get("tps"),
+                    ttft_seconds=stream_metrics.get("ttft_seconds") or (round(first_token_time - start_time, 3) if first_token_time else None),
+                    total_duration_seconds=stream_metrics.get("elapsed_seconds", time.time() - start_time),
+                    **_hist_kw,
+                )
 
         yield f"event: message_delta\ndata: {json.dumps({'type': 'message_delta', 'delta': {'stop_reason': 'end_turn', 'stop_sequence': None}, 'usage': {'output_tokens': total_tokens}})}\n\n"
         yield f"event: message_stop\ndata: {json.dumps({'type': 'message_stop'})}\n\n"
