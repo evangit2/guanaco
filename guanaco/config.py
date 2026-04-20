@@ -153,8 +153,23 @@ class UsageConfig(BaseModel):
     redirect_on_full: bool = False             # Route all requests to fallback when quota is near limit
 
 
+class OllamaAccount(BaseModel):
+    """A single Ollama Cloud account with its own API key and usage tracking."""
+    name: str                                      # Display name (unique, "ollama" is reserved for primary)
+    api_key: str = ""                              # API key for this account
+    session_cookie: str = ""                       # __Secure-session cookie for usage scraping
+    # Usage tracking (updated by background check)
+    last_session_pct: Optional[float] = None
+    last_weekly_pct: Optional[float] = None
+    last_plan: Optional[str] = None
+    last_session_reset: Optional[str] = None
+    last_weekly_reset: Optional[str] = None
+    last_checked: Optional[float] = None
+
+
 class AppConfig(BaseModel):
     ollama_api_key: str = ""
+    ollama_accounts: list[OllamaAccount] = Field(default_factory=list)
     router: RouterConfig = Field(default_factory=RouterConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
     fallback: FallbackProviderConfig = Field(default_factory=FallbackProviderConfig)
@@ -168,6 +183,20 @@ class AppConfig(BaseModel):
     def ollama_api_key_resolved(self) -> str:
         """Resolve API key from config or environment."""
         return self.ollama_api_key or os.environ.get("OLLAMA_API_KEY", "")
+
+    @property
+    def primary_account(self) -> "OllamaAccount":
+        """Get or create the primary 'ollama' account."""
+        for acc in self.ollama_accounts:
+            if acc.name == "ollama":
+                return acc
+        # Auto-create from legacy single-key config
+        return OllamaAccount(name="ollama", api_key=self.ollama_api_key)
+
+    @property
+    def active_accounts(self) -> list["OllamaAccount"]:
+        """All accounts that have a non-empty API key."""
+        return [a for a in self.ollama_accounts if a.api_key and a.api_key not in ("***", "REPLACE_ME")]
 
 
 _config: Optional[AppConfig] = None
