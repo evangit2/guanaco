@@ -339,13 +339,23 @@
             </div>
             <div class="config-row" style="flex-wrap:wrap;">
                 <label>Primary Timeout (sec)</label>
-                <input type="number" id="fb-primary-timeout" value="30" min="5" max="120" step="5" style="flex:1;">
-                <span style="font-size:11px;color:var(--text2);width:100%;margin-left:192px;">Max wait for first chunk before falling back</span>
+                <input type="number" id="fb-primary-timeout" value="120" min="5" max="300" step="5" style="flex:1;">
+                <span style="font-size:11px;color:var(--text2);width:100%;margin-left:192px;">Max wait for first chunk before falling back (120s recommended)</span>
             </div>
             <div class="config-row" style="flex-wrap:wrap;">
                 <label>Chunk Timeout (sec)</label>
                 <input type="number" id="fb-chunk-timeout" value="180" min="30" max="600" step="10" style="flex:1;">
                 <span style="font-size:11px;color:var(--text2);width:100%;margin-left:192px;">Max gap between stream chunks</span>
+            </div>
+            <div class="config-row" style="flex-wrap:wrap;">
+                <label>Max Concurrent</label>
+                <input type="number" id="fb-max-concurrent" value="8" min="0" max="50" step="1" style="flex:1;">
+                <span style="font-size:11px;color:var(--text2);width:100%;margin-left:192px;">Max simultaneous Ollama requests (0=unlimited)</span>
+            </div>
+            <div class="config-row" style="flex-wrap:wrap;">
+                <label>429 Retries</label>
+                <input type="number" id="fb-429-retries" value="2" min="0" max="10" step="1" style="flex:1;">
+                <span style="font-size:11px;color:var(--text2);width:100%;margin-left:192px;">Retries on HTTP 429 before falling back</span>
             </div>
             <div class="config-row" style="flex-wrap:wrap;">
                 <label>Max Tokens</label>
@@ -507,6 +517,14 @@
                 <div class="status-row"><span class="status-label">Models Available</span><span class="status-value" id="os-models">—</span></div>
                 <div class="status-row"><span class="status-label">Latency</span><span class="status-value" id="os-latency">—</span></div>
                 <div class="status-row"><span class="status-label">API Key</span><span class="status-value" id="os-apikey">—</span></div>
+            </div>
+            <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
+                <h3 style="margin:0 0 8px 0;font-size:13px;"><span class="emoji">🚦</span> Concurrency</h3>
+                <div class="status-check" id="concurrency-stats">
+                    <div class="status-row"><span class="status-label">Active Requests</span><span class="status-value" id="cc-active">—</span></div>
+                    <div class="status-row"><span class="status-label">Max Concurrent</span><span class="status-value" id="cc-max">—</span></div>
+                    <div class="status-row"><span class="status-label">429s (last 60s)</span><span class="status-value" id="cc-429s">—</span></div>
+                </div>
             </div>
         </div>
 
@@ -1382,6 +1400,21 @@ function checkOllamaStatus() {
         dotEl.classList.add('error');
         textEl.textContent = 'Unreachable';
     });
+
+    // Also load concurrency stats
+    loadConcurrencyStats();
+}
+
+function loadConcurrencyStats() {
+    fetch('/dashboard/api/concurrency').then(r => r.json()).then(data => {
+        document.getElementById('cc-active').textContent = data.active_count || 0;
+        document.getElementById('cc-max').textContent = data.max_concurrent || '∞';
+        document.getElementById('cc-429s').textContent = data.recent_429_rate || 0;
+    }).catch(() => {
+        document.getElementById('cc-active').textContent = '—';
+        document.getElementById('cc-max').textContent = '—';
+        document.getElementById('cc-429s').textContent = '—';
+    });
 }
 
 function checkUsage() {
@@ -1631,9 +1664,11 @@ function loadFallbackConfig() {
     document.getElementById('fb-api-key').value = FALLBACK.api_key || '';
     document.getElementById('fb-default-model').value = FALLBACK.default_model || '';
     document.getElementById('fb-timeout').value = FALLBACK.timeout || 30;
-    document.getElementById('fb-primary-timeout').value = FALLBACK.primary_timeout || 30;
+    document.getElementById('fb-primary-timeout').value = FALLBACK.primary_timeout || 120;
     document.getElementById('fb-chunk-timeout').value = FALLBACK.stream_chunk_timeout || 180;
     document.getElementById('fb-max-tokens').value = FALLBACK.max_tokens || 128000;
+    document.getElementById('fb-max-concurrent').value = FALLBACK.max_concurrent_ollama || 8;
+    document.getElementById('fb-429-retries').value = FALLBACK.max_429_retries || 2;
     document.getElementById('fb-stream').checked = FALLBACK.stream_fallback !== false;
     document.getElementById('fb-vision').checked = FALLBACK.supports_vision || false;
     fallbackModelMap = FALLBACK.model_map || {};
@@ -1649,11 +1684,13 @@ function saveFallbackConfig() {
             api_key: document.getElementById('fb-api-key').value,
             default_model: document.getElementById('fb-default-model').value,
             timeout: parseFloat(document.getElementById('fb-timeout').value) || 30,
-            primary_timeout: parseFloat(document.getElementById('fb-primary-timeout').value) || 30,
+            primary_timeout: parseFloat(document.getElementById('fb-primary-timeout').value) || 120,
             stream_chunk_timeout: parseFloat(document.getElementById('fb-chunk-timeout').value) || 180,
             max_tokens: parseInt(document.getElementById('fb-max-tokens').value) || 128000,
             stream_fallback: document.getElementById('fb-stream').checked,
             supports_vision: document.getElementById('fb-vision').checked,
+            max_concurrent_ollama: parseInt(document.getElementById('fb-max-concurrent').value) || 8,
+            max_429_retries: parseInt(document.getElementById('fb-429-retries').value) || 2,
             model_map: fallbackModelMap,
         }
     };

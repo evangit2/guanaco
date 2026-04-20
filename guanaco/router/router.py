@@ -41,32 +41,61 @@ def _describe_error(exc: Exception) -> str:
     return f"{type(exc).__name__}: (no message)"
 
 
-async def _ollama_chat_with_primary_timeout(client, payload, fallback_config=None):
-    """Call Ollama Cloud chat completion with a primary timeout.
+async def _ollama_chat_with_primary_timeout(client, payload, fallback_config=None, limiter=None):
+    """Call Ollama Cloud chat completion with a primary timeout and optional concurrency limit.
 
     When fallback is configured, we use a shorter primary_timeout so that
     slow/unresponsive Ollama responses trigger fallback quickly instead of
     hanging for the full 120s client timeout.
+
+    Args:
+        client: OllamaClient instance
+        payload: Request payload
+        fallback_config: FallbackProviderConfig for timeout settings
+        limiter: Optional OllamaConcurrencyLimiter for concurrency control and 429 retry
     """
+    async def _do_call():
+        """Execute the actual Ollama call with 429 retry logic."""
+        # If no limiter, just call directly
+        if limiter is None:
+            return await client.chat_completion(payload)
+
+        # Retry loop for 429s
+        for attempt in range(limiter.max_429_retries + 1):
+            try:
+                return await client.chat_completion(payload)
+            except Exception as e:
+                if attempt < limiter.max_429_retries and limiter.should_retry_429(e):
+                    await limiter.backoff_and_retry(attempt)
+                    continue
+                raise
+
     if fallback_config and fallback_config.enabled and fallback_config.primary_timeout:
         try:
             return await asyncio.wait_for(
-                client.chat_completion(payload),
+                _do_call(),
                 timeout=fallback_config.primary_timeout,
             )
         except asyncio.TimeoutError:
             raise httpx.ReadTimeout(
                 f"Ollama did not respond within {fallback_config.primary_timeout}s primary timeout"
             )
-    return await client.chat_completion(payload)
+    return await _do_call()
 
 from guanaco.client import OllamaClient
 from guanaco.cache import CacheEngine
 from guanaco.analytics import _normalize_model_name
+from guanaco.concurrency import OllamaConcurrencyLimiter
 
 import logging
 
 log = logging.getLogger("guanaco.router")
+
+# Module-level reference to the active concurrency limiter (for dashboard/status API)
+_concurrency_limiter_instance: OllamaConcurrencyLimiter = None
+
+def get_concurrency_limiter() -> Optional[OllamaConcurrencyLimiter]:
+    return _concurrency_limiter_instance
 
 # ── Empty Response Retry ──
 MAX_EMPTY_RETRIES = 1  # How many times to retry on empty responses
@@ -330,6 +359,19 @@ def create_router(client: OllamaClient, analytics=None, config=None) -> APIRoute
     _config = config
     _cache = CacheEngine(config.cache) if config else None
 
+    # Concurrency limiter: prevents 429 "too many concurrent requests" from Ollama Cloud
+    _max_concurrent = getattr(config.fallback, 'max_concurrent_ollama', 0) if config and config.fallback else 0
+    _max_429_retries = getattr(config.fallback, 'max_429_retries', 2) if config and config.fallback else 2
+    _backoff_base = getattr(config.fallback, 'backoff_base', 1.0) if config and config.fallback else 1.0
+    _concurrency_limiter = OllamaConcurrencyLimiter(
+        max_concurrent=_max_concurrent,
+        max_429_retries=_max_429_retries,
+        base_backoff=_backoff_base,
+    )
+    # Expose for dashboard API (module-level reference)
+    global _concurrency_limiter_instance
+    _concurrency_limiter_instance = _concurrency_limiter
+
     def _history_kwargs(request: Request, messages=None, output_text=None) -> dict:
         """Build history-related kwargs for analytics.log_llm() based on config.
         
@@ -535,7 +577,8 @@ def create_router(client: OllamaClient, analytics=None, config=None) -> APIRoute
                 try:
                     # ── Retry on empty response ──
                     for attempt in range(MAX_EMPTY_RETRIES + 1):
-                        resp = await _ollama_chat_with_primary_timeout(client, p, _config.fallback if _config else None)
+                        async with _concurrency_limiter:
+                            resp = await _ollama_chat_with_primary_timeout(client, p, _config.fallback if _config else None, _concurrency_limiter)
                         if not _is_empty_non_streaming_response(resp) or attempt == MAX_EMPTY_RETRIES:
                             break
                         log.warning("Empty cached-response from %s (attempt %d/%d), retrying...", resolved_model, attempt + 1, MAX_EMPTY_RETRIES + 1)
@@ -638,11 +681,12 @@ def create_router(client: OllamaClient, analytics=None, config=None) -> APIRoute
         # Try Ollama Cloud first
         try:
             if body.stream:
-                return await _stream_completion_openai(client, payload, resolved_model, _analytics, start, _config, history_kwargs=_hist)
+                return await _stream_completion_openai(client, payload, resolved_model, _analytics, start, _config, history_kwargs=_hist, limiter=_concurrency_limiter)
 
             # ── Non-streaming: retry on empty response ──
             for attempt in range(MAX_EMPTY_RETRIES + 1):
-                resp = await _ollama_chat_with_primary_timeout(client, payload, _config.fallback if _config else None)
+                async with _concurrency_limiter:
+                    resp = await _ollama_chat_with_primary_timeout(client, payload, _config.fallback if _config else None, _concurrency_limiter)
                 if not _is_empty_non_streaming_response(resp) or attempt == MAX_EMPTY_RETRIES:
                     break
                 log.warning("Empty response from %s (attempt %d/%d), retrying...", resolved_model, attempt + 1, MAX_EMPTY_RETRIES + 1)
@@ -1217,7 +1261,7 @@ def _accumulate_history_output(accumulated: list, chunk: str, history_kwargs: di
         accumulated.append(text)
 
 
-async def _stream_completion_openai(client, payload, model, analytics, start_time, config=None, history_kwargs=None):
+async def _stream_completion_openai(client, payload, model, analytics, start_time, config=None, history_kwargs=None, limiter=None):
     """Stream OpenAI-format SSE responses, with fallback and timeout support.
 
     Key design: When fallback is configured with primary_timeout, we apply
@@ -1242,33 +1286,73 @@ async def _stream_completion_openai(client, payload, model, analytics, start_tim
             if use_timeouts:
                 chunk_timeout = fb.stream_chunk_timeout if fb.stream_chunk_timeout else 180.0
                 # ── Timed streaming: fail fast on first chunk, tolerate gaps after ──
-                ollama_stream = client.chat_completion_stream(payload)
+                # Acquire semaphore for the duration of the Ollama stream
+                sem_ctx = limiter.__aenter__() if limiter else None
+                if sem_ctx:
+                    await sem_ctx
+                ollama_stream = None
                 stream_closed = False
                 # Wait for the first chunk with a strict timeout (triggers fallback fast)
-                try:
-                    first_chunk = await asyncio.wait_for(
-                        ollama_stream.__anext__(), timeout=fb.primary_timeout
-                    )
-                except asyncio.TimeoutError:
-                    # First chunk timeout — no data sent to client yet, can still fallback
+                # Also retry on 429 with backoff
+                first_chunk = None
+                max_429 = limiter.max_429_retries if limiter else 0
+                for attempt in range(max_429 + 1):
                     try:
-                        await ollama_stream.aclose()
-                    except RuntimeError:
-                        pass  # Generator already cleaned up by cancellation
-                    stream_closed = True
-                    raise httpx.ReadTimeout(
-                        f"Ollama did not produce first stream chunk within {fb.primary_timeout}s"
-                    )
-                except StopAsyncIteration:
-                    # Empty stream — treat as error so fallback can handle it
-                    try:
-                        await ollama_stream.aclose()
-                    except RuntimeError:
-                        pass
-                    stream_closed = True
-                    raise httpx.ReadTimeout(
-                        f"Ollama stream ended before producing any chunks"
-                    )
+                        if ollama_stream is None:
+                            ollama_stream = client.chat_completion_stream(payload)
+                        first_chunk = await asyncio.wait_for(
+                            ollama_stream.__anext__(), timeout=fb.primary_timeout
+                        )
+                        break  # Got a chunk, exit retry loop
+                    except httpx.HTTPStatusError as e:
+                        if attempt < max_429 and limiter and limiter.should_retry_429(e):
+                            try:
+                                await ollama_stream.aclose()
+                            except (RuntimeError, Exception):
+                                pass
+                            ollama_stream = None
+                            await limiter.backoff_and_retry(attempt)
+                            continue
+                        # Not a 429 or out of retries — release semaphore and re-raise
+                        if sem_ctx:
+                            try:
+                                await limiter.__aexit__(None, None, None)
+                            except Exception:
+                                pass
+                            sem_ctx = None
+                        raise
+                    except asyncio.TimeoutError:
+                        # First chunk timeout — no data sent to client yet, can still fallback
+                        try:
+                            await ollama_stream.aclose()
+                        except RuntimeError:
+                            pass
+                        stream_closed = True
+                        if sem_ctx:
+                            try:
+                                await limiter.__aexit__(None, None, None)
+                            except Exception:
+                                pass
+                            sem_ctx = None
+                        raise httpx.ReadTimeout(
+                            f"Ollama did not produce first stream chunk within {fb.primary_timeout}s"
+                        )
+                    except StopAsyncIteration:
+                        # Empty stream — treat as error so fallback can handle it
+                        try:
+                            await ollama_stream.aclose()
+                        except RuntimeError:
+                            pass
+                        stream_closed = True
+                        if sem_ctx:
+                            try:
+                                await limiter.__aexit__(None, None, None)
+                            except Exception:
+                                pass
+                            sem_ctx = None
+                        raise httpx.ReadTimeout(
+                            f"Ollama stream ended before producing any chunks"
+                        )
 
                 # Got first chunk — process it (metrics chunks are internal, not yield)
                 if first_chunk.startswith("__oct_metrics__:"):
@@ -1310,6 +1394,12 @@ async def _stream_completion_openai(client, payload, model, analytics, start_tim
                             await ollama_stream.aclose()
                         except RuntimeError:
                             pass  # Already closed
+                    # Release concurrency semaphore
+                    if sem_ctx and limiter:
+                        try:
+                            await limiter.__aexit__(None, None, None)
+                        except Exception:
+                            pass
             else:
                 # ── No timeout wrapping: original buffered behavior ──
                 for attempt in range(MAX_EMPTY_RETRIES + 1):

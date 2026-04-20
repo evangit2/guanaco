@@ -100,11 +100,14 @@ class FallbackProviderConfig(BaseModel):
     model_map: dict[str, str] = Field(default_factory=dict)
     default_model: str = ""                  # Default model to use on the fallback provider
     timeout: float = 60.0                    # Request timeout in seconds (for fallback calls)
-    primary_timeout: float = 30.0           # Max seconds to wait for Ollama first chunk/response before trying fallback
+    primary_timeout: float = 120.0          # Max seconds to wait for Ollama first chunk/response before trying fallback
     stream_chunk_timeout: float = 180.0    # Max seconds between stream chunks (tolerates long reasoning pauses)
     max_tokens: int = 128000                 # Default max_tokens sent to fallback provider
     stream_fallback: bool = True              # Also fallback streaming requests
     supports_vision: bool = False             # Whether the fallback provider handles image/vision requests
+    max_concurrent_ollama: int = 8            # Max simultaneous Ollama requests (0 = unlimited)
+    max_429_retries: int = 2                  # How many times to retry Ollama on HTTP 429 before falling back
+    backoff_base: float = 1.0                 # Base backoff in seconds for 429 retry (doubles each attempt)
 
 
 class ProviderConfig(BaseModel):

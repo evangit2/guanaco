@@ -168,6 +168,15 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
     ):
         return analytics.get_status_events(limit=limit, level=level, source=source)
 
+    @router.get("/api/concurrency")
+    async def concurrency_stats():
+        """Return Ollama concurrency limiter stats."""
+        from guanaco.router.router import get_concurrency_limiter
+        limiter = get_concurrency_limiter()
+        if limiter:
+            return limiter.get_stats()
+        return {"max_concurrent": 0, "active_count": 0, "recent_429_rate": 0}
+
     @router.post("/api/status/log")
     async def log_status_event(request: Request):
         """Log a status event from the dashboard or external source."""
@@ -547,6 +556,12 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
                 fb.stream_fallback = fb_updates["stream_fallback"]
             if "supports_vision" in fb_updates:
                 fb.supports_vision = fb_updates["supports_vision"]
+            if "max_concurrent_ollama" in fb_updates:
+                fb.max_concurrent_ollama = int(fb_updates["max_concurrent_ollama"])
+            if "max_429_retries" in fb_updates:
+                fb.max_429_retries = int(fb_updates["max_429_retries"])
+            if "backoff_base" in fb_updates:
+                fb.backoff_base = float(fb_updates["backoff_base"])
 
         save_config(config)
         return {"status": "ok", "config": {"llm": config.llm.model_dump(), "fallback": config.fallback.model_dump(), "search": config.search.model_dump()}}
