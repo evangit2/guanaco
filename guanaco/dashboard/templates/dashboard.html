@@ -161,6 +161,7 @@
         <div class="tab" onclick="showTab('status')">Status</div>
         <div class="tab" onclick="showTab('cache')">Cache</div>
         <div class="tab" onclick="showTab('keys')">API Keys</div>
+        <div class="tab" onclick="showTab('accounts')">Accounts</div>
         <div class="tab" onclick="showTab('system')">System</div>
     </div>
 
@@ -699,6 +700,31 @@
         </div>
     </div>
 
+    <!-- ─── Accounts Tab ─── -->
+    <div id="tab-accounts" class="hidden">
+        <div class="card">
+            <h2><span class="emoji">👤</span> Ollama Accounts</h2>
+            <p style="font-size:13px;color:var(--text2);margin-bottom:16px;">Manage multiple Ollama Cloud accounts for load-balanced rotation. The primary account (<strong>ollama</strong>) uses the API key from your config. Add additional accounts with their own keys — requests will be distributed based on availability.</p>
+            <div id="accounts-list"></div>
+        </div>
+
+        <div class="card" style="margin-top:16px;">
+            <h2><span class="emoji">➕</span> Add Account</h2>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;">
+                <div style="flex:1;min-width:140px;">
+                    <label style="font-size:12px;color:var(--text2);display:block;margin-bottom:4px;">Account Name</label>
+                    <input type="text" id="new-account-name" placeholder="e.g. ollama-backup" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg2);color:var(--text);font-size:14px;">
+                </div>
+                <div style="flex:2;min-width:200px;">
+                    <label style="font-size:12px;color:var(--text2);display:block;margin-bottom:4px;">API Key</label>
+                    <input type="text" id="new-account-key" placeholder="Paste Ollama Cloud API key" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg2);color:var(--text);font-size:14px;">
+                </div>
+                <button class="btn" onclick="addAccount()" id="add-account-btn" style="white-space:nowrap;">Add & Test</button>
+            </div>
+            <div id="add-account-result" style="margin-top:8px;font-size:13px;"></div>
+        </div>
+    </div>
+
     <!-- ─── System Tab ─── -->
     <div id="tab-system" class="hidden">
         <div class="card">
@@ -773,7 +799,7 @@ function showTab(tab) {
     // Find the clicked tab element by matching onclick content (works with both inline onclick and programmatic calls)
     const tabEl = document.querySelector(`.tab[onclick*="'${tab}'"]`) || document.querySelector(`.tab[onclick*='"${tab}"']`);
     if (tabEl) tabEl.classList.add('active');
-    ['endpoints','search','models','fallback','analytics','history','status','cache','keys','system'].forEach(t => {
+    ['endpoints','search','models','fallback','analytics','history','status','cache','keys','accounts','system'].forEach(t => {
         const el = document.getElementById('tab-'+t);
         if (el) el.classList.toggle('hidden', t !== tab);
     });
@@ -785,6 +811,7 @@ function showTab(tab) {
     if (tab === 'analytics') loadAnalytics();
     if (tab === 'history') { loadHistoryConfig(); loadHistory(); loadHistoryLogs(); }
     if (tab === 'status') { checkOllamaStatus(); loadUsageConfig(); checkUsage(); loadStatusLog(); }
+    if (tab === 'accounts') { loadAccounts(); checkAllAccountUsage(); }
     if (tab === 'system') { loadAutostart(); checkForUpdate(); }
 }
 
@@ -943,6 +970,222 @@ function loadKeys() {
                 <button class="revoke-btn" onclick="revokeKey('${k.prefix}')">Revoke</button>
             </div>
         `).join('');
+    });
+}
+
+// ─── Accounts ───
+
+function loadAccounts() {
+    fetch('/dashboard/api/accounts').then(r => r.json()).then(data => {
+        const accounts = data.accounts || [];
+        const container = document.getElementById('accounts-list');
+        if (!accounts.length) {
+            container.innerHTML = '<div style="color:var(--text2);font-size:13px;text-align:center;padding:20px;">No accounts configured</div>';
+            return;
+        }
+        container.innerHTML = accounts.map((a, i) => {
+            const isPrimary = a.name === 'ollama';
+            const usageBar = a.last_session_pct !== null ? `
+                <div style="margin-top:8px;">
+                    <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text2);margin-bottom:4px;">
+                        <span>Session: ${a.last_session_pct !== null ? a.last_session_pct + '%' : '—'}</span>
+                        <span>Weekly: ${a.last_weekly_pct !== null ? a.last_weekly_pct + '%' : '—'}</span>
+                    </div>
+                    <div style="background:var(--surface2);border-radius:4px;height:8px;overflow:hidden;">
+                        <div style="background:${(a.last_session_pct || 0) > 80 ? '#ef4444' : (a.last_session_pct || 0) > 50 ? '#f59e0b' : 'var(--accent)'};height:100%;width:${Math.min(a.last_session_pct || 0, 100)}%;border-radius:4px;transition:width 0.3s;"></div>
+                    </div>
+                    ${a.last_plan ? `<div style="font-size:11px;color:var(--text2);margin-top:4px;">Plan: ${a.last_plan}${a.last_plan && a.last_plan.toLowerCase() === 'free' ? ' <span style="background:#f59e0b22;color:#f59e0b;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:600;">⚠ Premium models (kimi-k2.6, glm-5.1) unavailable</span>' : ''}</div>` : ''}
+                </div>
+            ` : '';
+            const cookieBadge = a.has_session_cookie
+                ? '<span style="background:var(--accent);color:#000;padding:2px 6px;border-radius:4px;font-size:10px;font-weight:600;margin-left:8px;">Cookie set</span>'
+                : '<span style="background:var(--surface2);color:var(--text2);padding:2px 6px;border-radius:4px;font-size:10px;margin-left:8px;">No cookie</span>';
+            return `
+            <div style="background:var(--surface2);border-radius:12px;padding:16px;margin-bottom:12px;border:1px solid var(--border);">
+                <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+                    <div style="display:flex;align-items:center;gap:8px;">
+                        <span style="font-weight:600;font-size:15px;">${isPrimary ? '🔑' : '👤'} ${a.name}</span>
+                        ${isPrimary ? '<span style="background:var(--accent);color:#000;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;">Primary</span>' : ''}
+                        ${cookieBadge}
+                    </div>
+                    <div style="display:flex;gap:8px;align-items:center;">
+                        <span style="font-size:12px;color:var(--text2);font-family:monospace;">${a.api_key_masked}</span>
+                        ${isPrimary ? `<button class="btn" style="font-size:12px;padding:4px 12px;" onclick="showEditKey('${a.name}')">Change Key</button>` : `
+                            <button class="btn" style="font-size:12px;padding:4px 12px;" onclick="testAccount('${a.name}')">Test</button>
+                            <button class="btn" style="font-size:12px;padding:4px 12px;background:#ef4444;color:#fff;border:none;" onclick="removeAccount('${a.name}')">Remove</button>
+                        `}
+                    </div>
+                </div>
+                ${usageBar}
+                <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">
+                    <button class="btn" style="font-size:11px;padding:2px 8px;" onclick="setSessionCookie('${a.name}')">Set Session Cookie</button>
+                    <button class="btn" style="font-size:11px;padding:2px 8px;" onclick="checkAccountUsage('${a.name}')">Check Usage</button>
+                </div>
+            </div>`;
+        }).join('');
+
+        // Append "Set Cookie" for primary if needed
+        if (accounts.some(a => a.name === 'ollama')) {
+            const primaryCard = container.querySelector('div');
+            // Already inline with primary
+        }
+    });
+}
+
+function showEditKey(name) {
+    const key = prompt('Enter new API key for "' + name + '":');
+    if (!key || !key.trim()) return;
+    const resultEl = document.getElementById('add-account-result');
+    resultEl.textContent = 'Updating key...';
+    resultEl.style.color = 'var(--text2)';
+    fetch('/dashboard/api/accounts/update-key', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({name: name, api_key: key.trim()})
+    }).then(r => r.json()).then(data => {
+        if (data.status === 'ok') {
+            resultEl.textContent = '✅ ' + data.message;
+            resultEl.style.color = 'var(--accent)';
+            loadAccounts();
+        } else {
+            resultEl.textContent = '❌ ' + data.message;
+            resultEl.style.color = '#ef4444';
+        }
+    });
+}
+
+function addAccount() {
+    const name = document.getElementById('new-account-name').value.trim();
+    const key = document.getElementById('new-account-key').value.trim();
+    const resultEl = document.getElementById('add-account-result');
+    const btn = document.getElementById('add-account-btn');
+
+    if (!name) { resultEl.textContent = '❌ Account name is required'; resultEl.style.color = '#ef4444'; return; }
+    if (!key) { resultEl.textContent = '❌ API key is required'; resultEl.style.color = '#ef4444'; return; }
+
+    btn.disabled = true;
+    btn.textContent = 'Adding...';
+    resultEl.textContent = 'Testing key...';
+    resultEl.style.color = 'var(--text2)';
+
+    fetch('/dashboard/api/accounts/add', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({name: name, api_key: key})
+    }).then(r => r.json()).then(data => {
+        btn.disabled = false;
+        btn.textContent = 'Add & Test';
+        if (data.status === 'ok') {
+            resultEl.textContent = '✅ ' + data.message;
+            resultEl.style.color = 'var(--accent)';
+            document.getElementById('new-account-name').value = '';
+            document.getElementById('new-account-key').value = '';
+            loadAccounts();
+        } else {
+            resultEl.textContent = '❌ ' + data.message;
+            resultEl.style.color = '#ef4444';
+        }
+    }).catch(err => {
+        btn.disabled = false;
+        btn.textContent = 'Add & Test';
+        resultEl.textContent = '❌ ' + err.message;
+        resultEl.style.color = '#ef4444';
+    });
+}
+
+function removeAccount(name) {
+    if (!confirm('Remove account "' + name + '"?')) return;
+    fetch('/dashboard/api/accounts/remove', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({name: name})
+    }).then(r => r.json()).then(data => {
+        if (data.status === 'ok') {
+            loadAccounts();
+        } else {
+            alert(data.message);
+        }
+    });
+}
+
+function testAccount(name) {
+    const resultEl = document.getElementById('add-account-result');
+    resultEl.textContent = 'Testing "' + name + '"...';
+    resultEl.style.color = 'var(--text2)';
+    fetch('/dashboard/api/accounts/test', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({name: name})
+    }).then(r => r.json()).then(data => {
+        if (data.ok) {
+            resultEl.textContent = '✅ "' + name + '" key works! ' + (data.model_count || 0) + ' models available';
+            resultEl.style.color = 'var(--accent)';
+        } else {
+            resultEl.textContent = '❌ "' + name + '" key failed: ' + data.error;
+            resultEl.style.color = '#ef4444';
+        }
+    });
+}
+
+function setSessionCookie(name) {
+    const cookie = prompt('Paste the __Secure-session cookie for "' + name + '":\n\n(From browser DevTools \u2192 Application \u2192 Cookies \u2192 ollama.com)');
+    if (!cookie || !cookie.trim()) return;
+    fetch('/dashboard/api/accounts/session-cookie', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({name: name, cookie: cookie.trim()})
+    }).then(r => r.json()).then(data => {
+        if (data.status === 'ok') {
+            document.getElementById('add-account-result').textContent = '\u2705 Session cookie set for "' + name + '"';
+            document.getElementById('add-account-result').style.color = 'var(--accent)';
+            loadAccounts();
+        } else {
+            document.getElementById('add-account-result').textContent = '\u274c ' + data.message;
+            document.getElementById('add-account-result').style.color = '#ef4444';
+        }
+    });
+}
+
+function checkAccountUsage(name) {
+    const resultEl = document.getElementById('add-account-result');
+    resultEl.textContent = 'Checking usage for "' + name + '"...';
+    resultEl.style.color = 'var(--text2)';
+    fetch('/dashboard/api/accounts/check-usage', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({name: name})
+    }).then(r => r.json()).then(data => {
+        if (data.source === 'unavailable' || data.source === 'error') {
+            resultEl.textContent = '\u274c ' + (data.error || 'Usage unavailable');
+            resultEl.style.color = '#ef4444';
+        } else {
+            const pct = data.session_pct != null ? data.session_pct + '%' : '?';
+            const plan = data.plan || 'unknown';
+            resultEl.textContent = '\u2705 "' + name + '": ' + plan + ' plan, session ' + pct;
+            resultEl.style.color = 'var(--accent)';
+            loadAccounts();
+        }
+    });
+}
+
+function checkAllAccountUsage() {
+    fetch('/dashboard/api/accounts').then(r => r.json()).then(data => {
+        const accounts = data.accounts || [];
+        const withCookies = accounts.filter(a => a.has_session_cookie && a.name !== 'ollama');
+        // Fire off checks for all secondary accounts with cookies (primary handled by checkUsage)
+        withCookies.forEach(a => {
+            fetch('/dashboard/api/accounts/check-usage', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({name: a.name})
+            }).then(r => r.json()).then(() => {
+                // Silently refresh accounts tab if visible
+                const tabEl = document.getElementById('tab-accounts');
+                if (tabEl && !tabEl.classList.contains('hidden')) {
+                    loadAccounts();
+                }
+            }).catch(() => {});
+        });
     });
 }
 
@@ -1601,7 +1844,7 @@ function startUsageAutoRefresh(intervalSec) {
         return;
     }
     statusEl.textContent = 'every ' + formatInterval(intervalSec);
-    _usageAutoTimer = setInterval(() => { checkUsage(); }, intervalSec * 1000);
+    _usageAutoTimer = setInterval(() => { checkUsage(); checkAllAccountUsage(); }, intervalSec * 1000);
 }
 
 function formatInterval(sec) {

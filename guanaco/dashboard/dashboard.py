@@ -11,7 +11,7 @@ from fastapi import APIRouter, Request, BackgroundTasks
 from fastapi.responses import HTMLResponse, FileResponse
 import httpx
 
-from guanaco.config import get_config, get_base_url, get_tailscale_ip, save_config, load_config
+from guanaco.config import get_config, get_base_url, get_tailscale_ip, save_config, load_config, OllamaAccount
 from guanaco.utils.api_keys import ApiKeyManager
 from guanaco.analytics import AnalyticsLogger
 from guanaco.client import OllamaClient
@@ -60,8 +60,9 @@ WantedBy=multi-user.target
 """
 
 
-def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogger, client=None) -> APIRouter:
+def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogger, client=None, account_pool=None) -> APIRouter:
     router = APIRouter(tags=["Dashboard"])
+    _account_pool = account_pool
 
     @router.get("/logo.png")
     async def logo():
@@ -771,7 +772,19 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
                 config.usage.last_session_reset = usage_data.get("session_reset")
                 config.usage.last_weekly_reset = usage_data.get("weekly_reset")
                 config.usage.last_checked = time.time()
+                # Also sync to primary account in ollama_accounts if present
+                for acc in config.ollama_accounts:
+                    if acc.name == "ollama":
+                        acc.last_session_pct = usage_data.get("session_pct")
+                        acc.last_weekly_pct = usage_data.get("weekly_pct")
+                        acc.last_plan = usage_data.get("plan")
+                        acc.last_session_reset = usage_data.get("session_reset")
+                        acc.last_weekly_reset = usage_data.get("weekly_reset")
+                        acc.last_checked = time.time()
+                        break
                 save_config(config)
+                if _account_pool:
+                    _account_pool.update_accounts(config.ollama_accounts)
             return usage_data
         except Exception as e:
             return {"source": "error", "error": str(e)}
@@ -962,5 +975,257 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
         config.router.auto_update = bool(body.get("enabled", False))
         save_config(config)
         return {"status": "ok", "auto_update": config.router.auto_update}
+
+    # ── Accounts ──
+
+    @router.get("/api/accounts")
+    async def list_accounts(request: Request):
+        """List all Ollama accounts with usage data (API keys masked). Always includes primary 'ollama' account."""
+        config = get_config()
+        # Always ensure primary account is in the list
+        primary = config.primary_account
+        accounts_in_config = config.ollama_accounts
+        has_primary = any(a.name == "ollama" for a in accounts_in_config)
+
+        if has_primary:
+            all_accounts = accounts_in_config
+        else:
+            all_accounts = [primary] + accounts_in_config
+
+        # Merge legacy usage data into primary if it's missing
+        usage = config.usage
+        for acc in all_accounts:
+            if acc.name == "ollama":
+                if not acc.session_cookie and usage.session_cookie:
+                    acc.session_cookie = usage.session_cookie
+                if acc.last_session_pct is None and usage.last_session_pct is not None:
+                    acc.last_session_pct = usage.last_session_pct
+                if acc.last_weekly_pct is None and usage.last_weekly_pct is not None:
+                    acc.last_weekly_pct = usage.last_weekly_pct
+                if acc.last_plan is None and usage.last_plan is not None:
+                    acc.last_plan = usage.last_plan
+                if acc.last_session_reset is None and usage.last_session_reset is not None:
+                    acc.last_session_reset = usage.last_session_reset
+                if acc.last_weekly_reset is None and usage.last_weekly_reset is not None:
+                    acc.last_weekly_reset = usage.last_weekly_reset
+                if acc.last_checked is None and usage.last_checked is not None:
+                    acc.last_checked = usage.last_checked
+
+        accounts = []
+        for acc in all_accounts:
+            accounts.append({
+                "name": acc.name,
+                "api_key_masked": acc.api_key[:8] + "..." + acc.api_key[-4:] if len(acc.api_key) > 12 else ("***" if acc.api_key else ""),
+                "has_session_cookie": bool(acc.session_cookie),
+                "last_session_pct": acc.last_session_pct,
+                "last_weekly_pct": acc.last_weekly_pct,
+                "last_plan": acc.last_plan,
+                "last_session_reset": acc.last_session_reset,
+                "last_weekly_reset": acc.last_weekly_reset,
+                "last_checked": acc.last_checked,
+            })
+        return {"accounts": accounts}
+
+    @router.post("/api/accounts/add")
+    async def add_account(request: Request):
+        """Add a new Ollama account."""
+        body = await request.json()
+        name = body.get("name", "").strip()
+        api_key = body.get("api_key", "").strip()
+
+        if not name:
+            return {"status": "error", "message": "Account name is required"}
+        if not api_key:
+            return {"status": "error", "message": "API key is required"}
+
+        config = get_config()
+
+        # Reserved names
+        if name.lower() in ("ollama", "primary", "default"):
+            return {"status": "error", "message": f"'{name}' is a reserved account name"}
+
+        # Check duplicate
+        if any(a.name == name for a in config.ollama_accounts):
+            return {"status": "error", "message": f"Account '{name}' already exists"}
+
+        # Max 10 accounts
+        if len(config.ollama_accounts) >= 10:
+            return {"status": "error", "message": "Maximum of 10 accounts reached"}
+
+        # Test the key first
+        if client:
+            result = await client.test_key(api_key)
+            if not result["ok"]:
+                return {"status": "error", "message": f"API key test failed: {result['error']}"}
+
+        # Add the account
+        new_account = OllamaAccount(name=name, api_key=api_key)
+        config.ollama_accounts.append(new_account)
+        save_config(config)
+
+        # Update the account pool if available
+        if _account_pool:
+            _account_pool.update_accounts(config.ollama_accounts)
+
+        return {"status": "ok", "message": f"Account '{name}' added successfully"}
+
+    @router.post("/api/accounts/remove")
+    async def remove_account(request: Request):
+        """Remove an Ollama account (cannot remove 'ollama' primary)."""
+        body = await request.json()
+        name = body.get("name", "").strip()
+
+        if not name:
+            return {"status": "error", "message": "Account name is required"}
+        if name.lower() == "ollama":
+            return {"status": "error", "message": "Cannot remove the primary account"}
+
+        config = get_config()
+        before = len(config.ollama_accounts)
+        config.ollama_accounts = [a for a in config.ollama_accounts if a.name != name]
+
+        if len(config.ollama_accounts) == before:
+            return {"status": "error", "message": f"Account '{name}' not found"}
+
+        save_config(config)
+
+        if _account_pool:
+            _account_pool.update_accounts(config.ollama_accounts)
+
+        return {"status": "ok", "message": f"Account '{name}' removed"}
+
+    @router.post("/api/accounts/test")
+    async def test_account(request: Request):
+        """Test an API key (existing account by name, or a raw key)."""
+        body = await request.json()
+        name = body.get("name", "")
+        api_key = body.get("api_key", "")
+
+        # If name given, look up key from config
+        if name and not api_key:
+            config = get_config()
+            acc = next((a for a in config.ollama_accounts if a.name == name), None)
+            if not acc:
+                return {"ok": False, "error": f"Account '{name}' not found"}
+            api_key = acc.api_key
+
+        if not api_key:
+            return {"ok": False, "error": "No API key to test"}
+
+        if client:
+            result = await client.test_key(api_key)
+            return result
+        return {"ok": False, "error": "No OllamaClient available"}
+
+    @router.post("/api/accounts/session-cookie")
+    async def set_session_cookie(request: Request):
+        """Set the session cookie for an account (for usage scraping)."""
+        body = await request.json()
+        name = body.get("name", "ollama")
+        cookie = body.get("cookie", "").strip()
+
+        config = get_config()
+
+        # For primary account, also update the legacy usage config
+        if name == "ollama":
+            config.usage.session_cookie = cookie
+
+        # Update in ollama_accounts list (may need to create entry for primary)
+        acc = next((a for a in config.ollama_accounts if a.name == name), None)
+        if acc:
+            acc.session_cookie = cookie
+        elif name == "ollama":
+            # Primary not in accounts list — set via usage config (already done above)
+            pass
+        else:
+            return {"status": "error", "message": f"Account '{name}' not found"}
+
+        save_config(config)
+
+        if _account_pool:
+            _account_pool.update_accounts(config.ollama_accounts)
+
+        return {"status": "ok", "message": f"Session cookie set for '{name}'"}
+
+    @router.post("/api/accounts/update-key")
+    async def update_account_key(request: Request):
+        """Update the API key for an existing account (including primary)."""
+        body = await request.json()
+        name = body.get("name", "").strip()
+        api_key = body.get("api_key", "").strip()
+
+        if not name or not api_key:
+            return {"status": "error", "message": "Name and API key are required"}
+
+        config = get_config()
+
+        if name == "ollama":
+            # Primary account — update the main config key
+            config.ollama_api_key = api_key
+            save_config(config)
+            # Also update the running client if available
+            if client and hasattr(client, '_api_key'):
+                client._api_key = api_key
+            return {"status": "ok", "message": "Primary API key updated"}
+
+        # Secondary account
+        acc = next((a for a in config.ollama_accounts if a.name == name), None)
+        if not acc:
+            return {"status": "error", "message": f"Account '{name}' not found"}
+        acc.api_key = api_key
+        save_config(config)
+
+        if _account_pool:
+            _account_pool.update_accounts(config.ollama_accounts)
+
+        return {"status": "ok", "message": f"Key updated for '{name}'"}
+
+    @router.post("/api/accounts/check-usage")
+    async def check_account_usage(request: Request):
+        """Check usage/quota for a specific account using its session cookie."""
+        body = await request.json()
+        name = body.get("name", "")
+        if not name:
+            return {"source": "unavailable", "error": "Account name required"}
+
+        config = get_config()
+
+        # Find the account — check ollama_accounts first, then legacy config for primary
+        acc = next((a for a in config.ollama_accounts if a.name == name), None)
+        if acc:
+            cookie = acc.session_cookie
+        elif name == "ollama":
+            cookie = config.usage.session_cookie
+        else:
+            return {"source": "unavailable", "error": f"Account '{name}' not found"}
+
+        if not cookie:
+            return {"source": "unavailable", "error": f"No session cookie set for '{name}'. Set it in the Accounts tab."}
+
+        try:
+            usage_data = await client.get_usage(session_cookie=cookie)
+            if usage_data.get("source") != "unavailable":
+                # Update the account in config
+                if acc:
+                    acc.last_session_pct = usage_data.get("session_pct")
+                    acc.last_weekly_pct = usage_data.get("weekly_pct")
+                    acc.last_plan = usage_data.get("plan")
+                    acc.last_session_reset = usage_data.get("session_reset")
+                    acc.last_weekly_reset = usage_data.get("weekly_reset")
+                    acc.last_checked = time.time()
+                elif name == "ollama":
+                    # Sync to legacy usage config too
+                    config.usage.last_session_pct = usage_data.get("session_pct")
+                    config.usage.last_weekly_pct = usage_data.get("weekly_pct")
+                    config.usage.last_plan = usage_data.get("plan")
+                    config.usage.last_session_reset = usage_data.get("session_reset")
+                    config.usage.last_weekly_reset = usage_data.get("weekly_reset")
+                    config.usage.last_checked = time.time()
+                save_config(config)
+                if _account_pool:
+                    _account_pool.update_accounts(config.ollama_accounts)
+            return usage_data
+        except Exception as e:
+            return {"source": "error", "error": str(e)}
 
     return router

@@ -68,10 +68,26 @@ class OllamaClient:
         self._models_cache_time: float = 0
         self._models_cache_ttl: float = 300.0  # 5 minutes
 
-    async def _get_client(self) -> httpx.AsyncClient:
+    async def _get_client(self, api_key_override: Optional[str] = None) -> httpx.AsyncClient:
+        """Get or create the httpx client, optionally with a different API key.
+
+        When api_key_override is provided and differs from the default key,
+        creates a temporary client that must be closed by the caller.
+        Returns (client, is_temp) tuple so callers know whether to close it.
+        """
+        key = api_key_override or self.api_key
+        use_temp = api_key_override is not None and api_key_override != self.api_key
+
+        if use_temp:
+            # Per-request key override — create a temporary client
+            headers = {"Content-Type": "application/json"}
+            if key and key not in ("***", "REPLACE_ME", "your_api_key_here"):
+                headers["Authorization"] = f"Bearer {key}"
+            return httpx.AsyncClient(timeout=self.timeout, headers=headers)
+
+        # Default behavior — cached singleton client
         if self._client is None or self._client.is_closed:
             headers = {"Content-Type": "application/json"}
-            # Only send Authorization if we have a real API key (not empty, placeholder, or masked)
             if self.api_key and self.api_key not in ("***", "REPLACE_ME", "your_api_key_here"):
                 headers["Authorization"] = f"Bearer {self.api_key}"
             self._client = httpx.AsyncClient(
@@ -82,35 +98,46 @@ class OllamaClient:
 
     # ── Search & Fetch ──
 
-    async def search(self, query: str, max_results: int = 10) -> dict:
+    async def search(self, query: str, max_results: int = 10, api_key: Optional[str] = None) -> dict:
         """Search the web using Ollama's web_search API."""
-        client = await self._get_client()
-        payload = {"query": query, "max_results": max(min(max_results, 10), 1)}
-        resp = await client.post(OLLAMA_SEARCH_URL, json=payload)
-        resp.raise_for_status()
-        return resp.json()
+        client = await self._get_client(api_key_override=api_key)
+        is_temp = api_key is not None and api_key != self.api_key
+        try:
+            payload = {"query": query, "max_results": max(min(max_results, 10), 1)}
+            resp = await client.post(OLLAMA_SEARCH_URL, json=payload)
+            resp.raise_for_status()
+            return resp.json()
+        finally:
+            if is_temp and not client.is_closed:
+                await client.aclose()
 
-    async def fetch(self, url: str) -> dict:
+    async def fetch(self, url: str, api_key: Optional[str] = None) -> dict:
         """Fetch/scrape a URL using Ollama's web_fetch API."""
-        client = await self._get_client()
-        payload = {"url": url}
-        resp = await client.post(OLLAMA_FETCH_URL, json=payload)
-        resp.raise_for_status()
-        return resp.json()
+        client = await self._get_client(api_key_override=api_key)
+        is_temp = api_key is not None and api_key != self.api_key
+        try:
+            payload = {"url": url}
+            resp = await client.post(OLLAMA_FETCH_URL, json=payload)
+            resp.raise_for_status()
+            return resp.json()
+        finally:
+            if is_temp and not client.is_closed:
+                await client.aclose()
 
     # ── Models ──
 
-    async def list_models(self, force_refresh: bool = False) -> list[dict]:
+    async def list_models(self, force_refresh: bool = False, api_key: Optional[str] = None) -> list[dict]:
         """List available Ollama Cloud models, with caching.
 
         Uses the OpenAI-compatible /v1/models endpoint which returns
         model IDs in standard format (e.g. 'gemma4:31b', 'qwen3.5:397b').
         """
         now = time.time()
-        if not force_refresh and self._models_cache and (now - self._models_cache_time) < self._models_cache_ttl:
+        if not force_refresh and not api_key and self._models_cache and (now - self._models_cache_time) < self._models_cache_ttl:
             return self._models_cache
 
-        client = await self._get_client()
+        client = await self._get_client(api_key_override=api_key)
+        is_temp = api_key is not None and api_key != self.api_key
         try:
             resp = await client.get(OLLAMA_MODELS_URL)
             if resp.status_code == 401:
@@ -143,6 +170,9 @@ class OllamaClient:
         except Exception as e:
             logger.error(f"Error fetching models: {e}")
             raise
+        finally:
+            if is_temp and not client.is_closed:
+                await client.aclose()
 
     async def check_model_available(self, model_name: str) -> bool:
         """Check if a specific model is available on Ollama Cloud."""
@@ -322,11 +352,16 @@ class OllamaClient:
 
     # ── Chat Completions ──
 
-    async def chat_completion(self, payload: dict) -> dict:
+    async def chat_completion(self, payload: dict, api_key: Optional[str] = None) -> dict:
         """Send a chat completion to Ollama Cloud (OpenAI-compatible format)."""
-        client = await self._get_client()
+        client = await self._get_client(api_key_override=api_key)
+        is_temp = api_key is not None and api_key != self.api_key
         start = time.time()
-        resp = await client.post(OLLAMA_CHAT_URL, json=payload)
+        try:
+            resp = await client.post(OLLAMA_CHAT_URL, json=payload)
+        finally:
+            if is_temp and not client.is_closed:
+                await client.aclose()
         elapsed = time.time() - start
         resp.raise_for_status()
         data = resp.json()
@@ -371,9 +406,10 @@ class OllamaClient:
         data["_oct_metrics"] = metrics
         return data
 
-    async def chat_completion_stream(self, payload: dict):
+    async def chat_completion_stream(self, payload: dict, api_key: Optional[str] = None):
         """Stream chat completion responses from Ollama Cloud, yielding metrics via _oct_stream_metrics."""
-        client = await self._get_client()
+        client = await self._get_client(api_key_override=api_key)
+        is_temp = api_key is not None and api_key != self.api_key
         payload_copy = dict(payload)
         payload_copy["stream"] = True
 
@@ -384,79 +420,99 @@ class OllamaClient:
         completion_tokens = 0   # from usage data if available
         start = time.time()
 
-        async with client.stream("POST", OLLAMA_CHAT_URL, json=payload_copy) as resp:
-            resp.raise_for_status()
-            async for line in resp.aiter_lines():
-                if line.startswith("data: "):
-                    data = line[6:]
-                    if data.strip() == "[DONE]":
-                        # Estimate tokens from character count (4 chars ≈ 1 token)
-                        estimated_content_tokens = max(1, content_chars // 4) if content_chars else 0
-                        estimated_reasoning_tokens = max(1, reasoning_chars // 4) if reasoning_chars else 0
-                        # Use API-provided completion_tokens if available, otherwise estimated content tokens
-                        final_tokens = completion_tokens or estimated_content_tokens
-                        elapsed = time.time() - start
-                        ttft = (first_token_time - start) if first_token_time else None
-                        generation_time = (elapsed - ttft) if ttft and elapsed > ttft else elapsed
+        try:
+            async with client.stream("POST", OLLAMA_CHAT_URL, json=payload_copy) as resp:
+                resp.raise_for_status()
+                async for line in resp.aiter_lines():
+                    if line.startswith("data: "):
+                        data = line[6:]
+                        if data.strip() == "[DONE]":
+                            # Estimate tokens from character count (4 chars ≈ 1 token)
+                            estimated_content_tokens = max(1, content_chars // 4) if content_chars else 0
+                            estimated_reasoning_tokens = max(1, reasoning_chars // 4) if reasoning_chars else 0
+                            # Use API-provided completion_tokens if available, otherwise estimated content tokens
+                            final_tokens = completion_tokens or estimated_content_tokens
+                            elapsed = time.time() - start
+                            ttft = (first_token_time - start) if first_token_time else None
+                            generation_time = (elapsed - ttft) if ttft and elapsed > ttft else elapsed
 
-                        metrics = {
-                            "eval_count": final_tokens,
-                            "prompt_eval_count": prompt_tokens,
-                            "reasoning_tokens": estimated_reasoning_tokens,
-                            "elapsed_seconds": round(elapsed, 3),
-                            "ttft_seconds": round(ttft, 3) if ttft else None,
-                        }
-                        if final_tokens and generation_time > 0:
-                            metrics["tps"] = round(final_tokens / generation_time, 2)
-                        if prompt_tokens:
-                            metrics["prompt_eval_count"] = prompt_tokens
-                        yield f"data: [DONE]\n\n"
-                        # Store metrics on the response for analytics
-                        yield f"__oct_metrics__:{json.dumps(metrics)}\n\n"
-                        return  # Exit generator, don't yield another [DONE]
-                    try:
-                        chunk_data = json.loads(data)
-                        # Accumulate character counts for token estimation
-                        for choice in chunk_data.get("choices", []):
-                            delta = choice.get("delta", {})
-                            content = delta.get("content", "")
-                            reasoning = delta.get("reasoning", "") or delta.get("reasoning_content", "")
-                            if content or reasoning:
-                                if first_token_time is None:
-                                    first_token_time = time.time()
-                                content_chars += len(content)
-                                reasoning_chars += len(reasoning)
-                        # Capture usage data from final streaming chunk (Ollama/OpenAI format)
-                        usage = chunk_data.get("usage")
-                        if usage:
-                            if usage.get("prompt_tokens"):
-                                prompt_tokens = usage["prompt_tokens"]
-                            if usage.get("completion_tokens"):
-                                completion_tokens = usage["completion_tokens"]
-                    except (json.JSONDecodeError, KeyError):
-                        pass
-                    yield f"data: {data}\n\n"
-                elif line.strip():
-                    yield f"data: {line}\n\n"
-            # If we get here without seeing [DONE], the stream ended unexpectedly
-            # Estimate tokens and yield [DONE] + metrics anyway
-            estimated_content_tokens = max(1, content_chars // 4) if content_chars else 0
-            estimated_reasoning_tokens = max(1, reasoning_chars // 4) if reasoning_chars else 0
-            final_tokens = completion_tokens or estimated_content_tokens
-            elapsed = time.time() - start
-            ttft = (first_token_time - start) if first_token_time else None
-            generation_time = (elapsed - ttft) if ttft and elapsed > ttft else elapsed
-            metrics = {
-                "eval_count": final_tokens,
-                "prompt_eval_count": prompt_tokens,
-                "reasoning_tokens": estimated_reasoning_tokens,
-                "elapsed_seconds": round(elapsed, 3),
-                "ttft_seconds": round(ttft, 3) if ttft else None,
-            }
-            if final_tokens and generation_time > 0:
-                metrics["tps"] = round(final_tokens / generation_time, 2)
-            yield "data: [DONE]\n\n"
-            yield f"__oct_metrics__:{json.dumps(metrics)}\n\n"
+                            metrics = {
+                                "eval_count": final_tokens,
+                                "prompt_eval_count": prompt_tokens,
+                                "reasoning_tokens": estimated_reasoning_tokens,
+                                "elapsed_seconds": round(elapsed, 3),
+                                "ttft_seconds": round(ttft, 3) if ttft else None,
+                            }
+                            if final_tokens and generation_time > 0:
+                                metrics["tps"] = round(final_tokens / generation_time, 2)
+                            if prompt_tokens:
+                                metrics["prompt_eval_count"] = prompt_tokens
+                            yield f"data: [DONE]\n\n"
+                            # Store metrics on the response for analytics
+                            yield f"__oct_metrics__:{json.dumps(metrics)}\n\n"
+                            return  # Exit generator, don't yield another [DONE]
+                        try:
+                            chunk_data = json.loads(data)
+                            # Accumulate character counts for token estimation
+                            for choice in chunk_data.get("choices", []):
+                                delta = choice.get("delta", {})
+                                content = delta.get("content", "")
+                                reasoning = delta.get("reasoning", "") or delta.get("reasoning_content", "")
+                                if content or reasoning:
+                                    if first_token_time is None:
+                                        first_token_time = time.time()
+                                    content_chars += len(content)
+                                    reasoning_chars += len(reasoning)
+                            # Capture usage data from final streaming chunk (Ollama/OpenAI format)
+                            usage = chunk_data.get("usage")
+                            if usage:
+                                if usage.get("prompt_tokens"):
+                                    prompt_tokens = usage["prompt_tokens"]
+                                if usage.get("completion_tokens"):
+                                    completion_tokens = usage["completion_tokens"]
+                        except (json.JSONDecodeError, KeyError):
+                            pass
+                        yield f"data: {data}\n\n"
+                    elif line.strip():
+                        yield f"data: {line}\n\n"
+                # If we get here without seeing [DONE], the stream ended unexpectedly
+                # Estimate tokens and yield [DONE] + metrics anyway
+                estimated_content_tokens = max(1, content_chars // 4) if content_chars else 0
+                estimated_reasoning_tokens = max(1, reasoning_chars // 4) if reasoning_chars else 0
+                final_tokens = completion_tokens or estimated_content_tokens
+                elapsed = time.time() - start
+                ttft = (first_token_time - start) if first_token_time else None
+                generation_time = (elapsed - ttft) if ttft and elapsed > ttft else elapsed
+                metrics = {
+                    "eval_count": final_tokens,
+                    "prompt_eval_count": prompt_tokens,
+                    "reasoning_tokens": estimated_reasoning_tokens,
+                    "elapsed_seconds": round(elapsed, 3),
+                    "ttft_seconds": round(ttft, 3) if ttft else None,
+                }
+                if final_tokens and generation_time > 0:
+                    metrics["tps"] = round(final_tokens / generation_time, 2)
+                yield "data: [DONE]\n\n"
+                yield f"__oct_metrics__:{json.dumps(metrics)}\n\n"
+        finally:
+            if is_temp and not client.is_closed:
+                await client.aclose()
+
+    async def test_key(self, test_api_key: str) -> dict:
+        """Test if an Ollama API key works by listing models. Returns {ok: bool, error: str|None}."""
+        client = await self._get_client(api_key_override=test_api_key)
+        try:
+            resp = await client.get(OLLAMA_MODELS_URL, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                model_count = len(data.get("data", data.get("models", [])))
+                return {"ok": True, "error": None, "model_count": model_count}
+            return {"ok": False, "error": f"HTTP {resp.status_code}"}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        finally:
+            if not client.is_closed:
+                await client.aclose()
 
     async def close(self):
         if self._client and not self._client.is_closed:
