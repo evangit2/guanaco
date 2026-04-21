@@ -11,7 +11,7 @@ from fastapi import APIRouter, Request, BackgroundTasks
 from fastapi.responses import HTMLResponse, FileResponse
 import httpx
 
-from guanaco.config import get_config, get_base_url, get_tailscale_ip, save_config, load_config
+from guanaco.config import get_config, get_base_url, get_tailscale_ip, save_config, load_config, OllamaAccount
 from guanaco.utils.api_keys import ApiKeyManager
 from guanaco.analytics import AnalyticsLogger
 from guanaco.client import OllamaClient
@@ -60,8 +60,9 @@ WantedBy=multi-user.target
 """
 
 
-def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogger, client=None) -> APIRouter:
+def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogger, client=None, account_pool=None) -> APIRouter:
     router = APIRouter(tags=["Dashboard"])
+    _account_pool = account_pool
 
     @router.get("/logo.png")
     async def logo():

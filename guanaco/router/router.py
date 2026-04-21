@@ -353,10 +353,11 @@ async def _call_fallback_provider(payload: dict, fallback_config, stream: bool =
 
 # ── Provider creation ──
 
-def create_router(client: OllamaClient, analytics=None, config=None) -> APIRouter:
+def create_router(client: OllamaClient, analytics=None, config=None, account_pool=None) -> APIRouter:
     router = APIRouter(tags=["LLM Router"])
     _analytics = analytics
     _config = config
+    _account_pool = account_pool
     _cache = CacheEngine(config.cache) if config else None
 
     # Concurrency limiter: prevents 429 "too many concurrent requests" from Ollama Cloud

@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from guanaco.config import load_config, get_config, AppConfig, get_base_url, get_tailscale_ip
 from guanaco.client import OllamaClient
+from guanaco.accounts import AccountPool
 __version__ = "0.4.1"
 from guanaco.router.router import create_router as create_llm_router
 from guanaco.search.providers import ALL_PROVIDERS
@@ -31,6 +32,13 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         print("Warning: OLLAMA_API_KEY not set. Set it with 'guanaco setup' or export OLLAMA_API_KEY.")
 
     client = OllamaClient(api_key=resolved_key, session_cookie=config.usage.session_cookie)
+
+    # Ensure primary account exists in the accounts list
+    if not config.ollama_accounts:
+        config.ollama_accounts = [config.primary_account]
+    elif not any(a.name == "ollama" for a in config.ollama_accounts):
+        config.ollama_accounts.insert(0, config.primary_account)
+    account_pool = AccountPool(config.ollama_accounts)
 
     from guanaco.config import get_default_config_dir
     key_manager = ApiKeyManager(get_default_config_dir())
@@ -129,7 +137,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         return {"status": "ok", "version": __version__}
 
     # ── LLM Router ──
-    app.include_router(create_llm_router(client, analytics=analytics, config=config))
+    app.include_router(create_llm_router(client, analytics=analytics, config=config, account_pool=account_pool))
 
     # ── Search Providers ──
     for provider_cls in ALL_PROVIDERS:
@@ -259,7 +267,10 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         print(f"   [WARN] Firecrawl SDK compat routes not loaded: {e}")
 
     # ── Dashboard ──
-    app.include_router(create_dashboard_router(key_manager, analytics, client), prefix="/dashboard")
+    app.include_router(create_dashboard_router(key_manager, analytics, client, account_pool=account_pool), prefix="/dashboard")
+
+    # Store account_pool on app state for dashboard access
+    app.state.account_pool = account_pool
 
     # ── Ollama status & models (top-level API) ──
 
