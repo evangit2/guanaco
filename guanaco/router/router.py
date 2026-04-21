@@ -41,7 +41,7 @@ def _describe_error(exc: Exception) -> str:
     return f"{type(exc).__name__}: (no message)"
 
 
-async def _ollama_chat_with_primary_timeout(client, payload, fallback_config=None, limiter=None):
+async def _ollama_chat_with_primary_timeout(client, payload, fallback_config=None, limiter=None, api_key=None, account_name=None, account_pool=None):
     """Call Ollama Cloud chat completion with a primary timeout and optional concurrency limit.
 
     When fallback is configured, we use a shorter primary_timeout so that
@@ -53,19 +53,25 @@ async def _ollama_chat_with_primary_timeout(client, payload, fallback_config=Non
         payload: Request payload
         fallback_config: FallbackProviderConfig for timeout settings
         limiter: Optional OllamaConcurrencyLimiter for concurrency control and 429 retry
+        api_key: Optional API key override for multi-account rotation
+        account_name: Optional account name for analytics logging
+        account_pool: Optional AccountPool for marking 429s against specific accounts
     """
     async def _do_call():
         """Execute the actual Ollama call with 429 retry logic."""
         # If no limiter, just call directly
         if limiter is None:
-            return await client.chat_completion(payload)
+            return await client.chat_completion(payload, api_key=api_key)
 
         # Retry loop for 429s
         for attempt in range(limiter.max_429_retries + 1):
             try:
-                return await client.chat_completion(payload)
+                return await client.chat_completion(payload, api_key=api_key)
             except Exception as e:
                 if attempt < limiter.max_429_retries and limiter.should_retry_429(e):
+                    # Mark account as 429'd if we have an account pool
+                    if account_name and account_pool:
+                        account_pool.mark_429(account_name)
                     await limiter.backoff_and_retry(attempt)
                     continue
                 raise
@@ -373,6 +379,17 @@ def create_router(client: OllamaClient, analytics=None, config=None, account_poo
     global _concurrency_limiter_instance
     _concurrency_limiter_instance = _concurrency_limiter
 
+    def _select_account(model: str = None):
+        """Select the best Ollama account for the next request.
+
+        Returns (api_key, account_name) tuple. api_key is None for the primary account
+        (uses the default client key). account_name is 'ollama' for the primary account.
+        """
+        if not _account_pool or len(_account_pool.accounts) <= 1:
+            return None, "ollama"
+        account = _account_pool.get_account(model=model)
+        return account.api_key, account.name
+
     def _history_kwargs(request: Request, messages=None, output_text=None) -> dict:
         """Build history-related kwargs for analytics.log_llm() based on config.
         
@@ -505,6 +522,10 @@ def create_router(client: OllamaClient, analytics=None, config=None, account_poo
         start = time.time()
         resolved_model = _resolve_model(body.model, _config) if _config else body.model
         _hist = _history_kwargs(request, messages=body.messages)
+        _request_key, _account_name = _select_account(model=resolved_model)
+        _ollama_provider = f"ollama:{_account_name}" if _account_name != "ollama" else "ollama"
+        # Include account_name in all analytics logging
+        _hist["account_name"] = _account_name
         
         # Convert image URLs to base64 for Ollama Cloud compatibility
         if _has_vision_content(body.messages):
@@ -579,7 +600,7 @@ def create_router(client: OllamaClient, analytics=None, config=None, account_poo
                     # ── Retry on empty response ──
                     for attempt in range(MAX_EMPTY_RETRIES + 1):
                         async with _concurrency_limiter:
-                            resp = await _ollama_chat_with_primary_timeout(client, p, _config.fallback if _config else None, _concurrency_limiter)
+                            resp = await _ollama_chat_with_primary_timeout(client, p, _config.fallback if _config else None, _concurrency_limiter, api_key=_request_key, account_name=_account_name, account_pool=_account_pool)
                         if not _is_empty_non_streaming_response(resp) or attempt == MAX_EMPTY_RETRIES:
                             break
                         log.warning("Empty cached-response from %s (attempt %d/%d), retrying...", resolved_model, attempt + 1, MAX_EMPTY_RETRIES + 1)
@@ -605,7 +626,7 @@ def create_router(client: OllamaClient, analytics=None, config=None, account_poo
                             ttft_seconds=metrics.get("ttft_seconds"),
                             total_duration_seconds=elapsed,
                             load_duration_seconds=metrics.get("load_duration_ns", 0) / 1e9 if metrics.get("load_duration_ns") else None,
-                            provider="ollama",
+                            provider=_ollama_provider,
                             **hist_kw,
                         )
 
@@ -662,7 +683,7 @@ def create_router(client: OllamaClient, analytics=None, config=None, account_poo
                 messages=[m.model_dump(exclude_none=True) for m in body.messages],
                 params=payload,
                 fetch_fn=_fetch_from_upstream,
-                provider="ollama",
+                provider=_ollama_provider,
             )
 
             # Log cache metadata in analytics
@@ -682,12 +703,12 @@ def create_router(client: OllamaClient, analytics=None, config=None, account_poo
         # Try Ollama Cloud first
         try:
             if body.stream:
-                return await _stream_completion_openai(client, payload, resolved_model, _analytics, start, _config, history_kwargs=_hist, limiter=_concurrency_limiter)
+                return await _stream_completion_openai(client, payload, resolved_model, _analytics, start, _config, history_kwargs=_hist, limiter=_concurrency_limiter, api_key=_request_key, account_name=_account_name, account_pool=_account_pool)
 
             # ── Non-streaming: retry on empty response ──
             for attempt in range(MAX_EMPTY_RETRIES + 1):
                 async with _concurrency_limiter:
-                    resp = await _ollama_chat_with_primary_timeout(client, payload, _config.fallback if _config else None, _concurrency_limiter)
+                    resp = await _ollama_chat_with_primary_timeout(client, payload, _config.fallback if _config else None, _concurrency_limiter, api_key=_request_key, account_name=_account_name, account_pool=_account_pool)
                 if not _is_empty_non_streaming_response(resp) or attempt == MAX_EMPTY_RETRIES:
                     break
                 log.warning("Empty response from %s (attempt %d/%d), retrying...", resolved_model, attempt + 1, MAX_EMPTY_RETRIES + 1)
@@ -713,7 +734,7 @@ def create_router(client: OllamaClient, analytics=None, config=None, account_poo
                     ttft_seconds=metrics.get("ttft_seconds"),
                     total_duration_seconds=elapsed,
                     load_duration_seconds=metrics.get("load_duration_ns", 0) / 1e9 if metrics.get("load_duration_ns") else None,
-                    provider="ollama",
+                    provider=_ollama_provider,
                     **hist_kw,
                 )
 
@@ -1262,7 +1283,7 @@ def _accumulate_history_output(accumulated: list, chunk: str, history_kwargs: di
         accumulated.append(text)
 
 
-async def _stream_completion_openai(client, payload, model, analytics, start_time, config=None, history_kwargs=None, limiter=None):
+async def _stream_completion_openai(client, payload, model, analytics, start_time, config=None, history_kwargs=None, limiter=None, api_key=None, account_name=None, account_pool=None):
     """Stream OpenAI-format SSE responses, with fallback and timeout support.
 
     Key design: When fallback is configured with primary_timeout, we apply
@@ -1276,6 +1297,9 @@ async def _stream_completion_openai(client, payload, model, analytics, start_tim
     fb = config.fallback if config else None
     use_timeouts = (fb and fb.enabled and fb.base_url and fb.primary_timeout
                     and fb.primary_timeout > 0)
+
+    # Build account-aware provider name for analytics
+    _provider_name = f"ollama:{account_name}" if account_name and account_name != "ollama" else "ollama"
 
     async def generate():
         stream_metrics = {}
@@ -1300,13 +1324,15 @@ async def _stream_completion_openai(client, payload, model, analytics, start_tim
                 for attempt in range(max_429 + 1):
                     try:
                         if ollama_stream is None:
-                            ollama_stream = client.chat_completion_stream(payload)
+                            ollama_stream = client.chat_completion_stream(payload, api_key=api_key)
                         first_chunk = await asyncio.wait_for(
                             ollama_stream.__anext__(), timeout=fb.primary_timeout
                         )
                         break  # Got a chunk, exit retry loop
                     except httpx.HTTPStatusError as e:
                         if attempt < max_429 and limiter and limiter.should_retry_429(e):
+                            if account_name and account_pool:
+                                account_pool.mark_429(account_name)
                             try:
                                 await ollama_stream.aclose()
                             except (RuntimeError, Exception):
@@ -1463,7 +1489,7 @@ async def _stream_completion_openai(client, payload, model, analytics, start_tim
                         model=_normalize_model_name(model),
                         error=original_error,
                         total_duration_seconds=elapsed,
-                        provider="ollama",
+                        provider=_provider_name,
                         **_hist_kw,
                     )
                 else:
@@ -1474,7 +1500,7 @@ async def _stream_completion_openai(client, payload, model, analytics, start_tim
                         tps=stream_metrics.get("tps"),
                         ttft_seconds=stream_metrics.get("ttft_seconds"),
                         total_duration_seconds=stream_metrics.get("elapsed_seconds", elapsed),
-                        provider="ollama",
+                        provider=_provider_name,
                         **_hist_kw,
                     )
 

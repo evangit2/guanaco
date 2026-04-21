@@ -83,6 +83,11 @@ class AnalyticsLogger:
                 conn.execute("ALTER TABLE request_log ADD COLUMN fallback_reason TEXT")
             except sqlite3.OperationalError:
                 pass
+            # Migration: add account_name column for multi-account rotation
+            try:
+                conn.execute("ALTER TABLE request_log ADD COLUMN account_name TEXT")
+            except sqlite3.OperationalError:
+                pass
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS status_events (
                     id TEXT PRIMARY KEY,
@@ -148,6 +153,7 @@ class AnalyticsLogger:
         input_text: Optional[str] = None,
         output_text: Optional[str] = None,
         fallback_reason: Optional[str] = None,
+        account_name: Optional[str] = None,
     ) -> str:
         """Log an LLM request. Returns the log entry ID."""
         # Normalize model name so glm-5.1:cloud and glm-5.1 are grouped together
@@ -160,12 +166,12 @@ class AnalyticsLogger:
                    (id, ts, type, model, prompt_tokens, completion_tokens, total_tokens,
                     tps, prompt_tps, ttft_seconds, total_duration_seconds,
                     load_duration_seconds, error, request_id, provider, fallback_for,
-                    source_ip, source_port, user_agent, input_text, output_text, fallback_reason)
-                   VALUES (?, ?, 'llm', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    source_ip, source_port, user_agent, input_text, output_text, fallback_reason, account_name)
+                   VALUES (?, ?, 'llm', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (entry_id, time.time(), model, prompt_tokens, completion_tokens,
                  total_tokens, tps, prompt_tps, ttft_seconds, total_duration_seconds,
                  load_duration_seconds, error, request_id, provider, fallback_for,
-                 source_ip, source_port, user_agent, input_text, output_text, fallback_reason),
+                 source_ip, source_port, user_agent, input_text, output_text, fallback_reason, account_name),
             )
         
         # Write plaintext log file if configured

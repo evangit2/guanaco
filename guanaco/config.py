@@ -190,8 +190,18 @@ class AppConfig(BaseModel):
         for acc in self.ollama_accounts:
             if acc.name == "ollama":
                 return acc
-        # Auto-create from legacy single-key config
-        return OllamaAccount(name="ollama", api_key=self.ollama_api_key)
+        # Auto-create from legacy single-key config, merging usage cookie/data
+        return OllamaAccount(
+            name="ollama",
+            api_key=self.ollama_api_key,
+            session_cookie=self.usage.session_cookie if hasattr(self, 'usage') else "",
+            last_session_pct=self.usage.last_session_pct if hasattr(self, 'usage') else None,
+            last_weekly_pct=self.usage.last_weekly_pct if hasattr(self, 'usage') else None,
+            last_plan=self.usage.last_plan if hasattr(self, 'usage') else None,
+            last_session_reset=self.usage.last_session_reset if hasattr(self, 'usage') else None,
+            last_weekly_reset=self.usage.last_weekly_reset if hasattr(self, 'usage') else None,
+            last_checked=self.usage.last_checked if hasattr(self, 'usage') else None,
+        )
 
     @property
     def active_accounts(self) -> list["OllamaAccount"]:
@@ -213,6 +223,21 @@ def load_config(path: Optional[Path] = None) -> AppConfig:
         _config = AppConfig(**data)
     else:
         _config = AppConfig()
+
+    # Ensure the primary "ollama" account is always in the accounts list
+    if not any(a.name == "ollama" for a in _config.ollama_accounts):
+        # Create primary from the legacy single-key config + usage data
+        _config.ollama_accounts.insert(0, OllamaAccount(
+            name="ollama",
+            api_key=_config.ollama_api_key,
+            session_cookie=_config.usage.session_cookie if hasattr(_config, 'usage') else "",
+            last_session_pct=_config.usage.last_session_pct if hasattr(_config, 'usage') else None,
+            last_weekly_pct=_config.usage.last_weekly_pct if hasattr(_config, 'usage') else None,
+            last_plan=_config.usage.last_plan if hasattr(_config, 'usage') else None,
+            last_session_reset=_config.usage.last_session_reset if hasattr(_config, 'usage') else None,
+            last_weekly_reset=_config.usage.last_weekly_reset if hasattr(_config, 'usage') else None,
+            last_checked=_config.usage.last_checked if hasattr(_config, 'usage') else None,
+        ))
 
     return _config
 
