@@ -71,17 +71,18 @@ class HistoryConfig(BaseModel):
 
 class LLMConfig(BaseModel):
     """LLM model selection config."""
-    reranker_model: str = "gpt-oss:120b"
-    scraper_model: str = "gemma4:31b"
-    summary_model: str = "qwen3.5:397b"
-    default_model: str = "gemma4:31b"
+    reranker_model: str = "nemotron-3-nano:30b"
+    scraper_model: str = "nemotron-3-nano:30b"
+    summary_model: str = "nemotron-3-nano:30b"
+    default_model: str = "nemotron-3-nano:30b"
     available_models: list[str] = Field(default_factory=lambda: [
         "qwen3.5:397b", "qwen3-coder:480b", "qwen3-vl:235b", "qwen3-next:80b",
         "gpt-oss:120b", "gpt-oss:20b", "deepseek-v3.1:671b", "deepseek-v3.2",
         "gemma4:31b", "gemma3:27b", "glm-5.1", "glm-5",
         "minimax-m2.7", "minimax-m2.5", "minimax-m2.1",
         "devstral-small-2:24b", "devstral-2:123b", "nemotron-3-super",
-        "cogito-2.1:671b", "mistral-large-3:675b", "kimi-k2.5", "ministral-3:14b",
+        "nemotron-3-nano:30b",
+        "cogito-2.1:671b", "mistral-large-3:675b", "kimi-k2.5", "kimi-k2.6", "ministral-3:14b",
     ])
     emulate_anthropic: bool = True
     emulate_openai: bool = True
@@ -191,9 +192,10 @@ class AppConfig(BaseModel):
             if acc.name == "ollama":
                 return acc
         # Auto-create from legacy single-key config, merging usage cookie/data
+        # Use ollama_api_key_resolved so env-var-only setups get a working key
         return OllamaAccount(
             name="ollama",
-            api_key=self.ollama_api_key,
+            api_key=self.ollama_api_key_resolved,
             session_cookie=self.usage.session_cookie if hasattr(self, 'usage') else "",
             last_session_pct=self.usage.last_session_pct if hasattr(self, 'usage') else None,
             last_weekly_pct=self.usage.last_weekly_pct if hasattr(self, 'usage') else None,
@@ -227,9 +229,10 @@ def load_config(path: Optional[Path] = None) -> AppConfig:
     # Ensure the primary "ollama" account is always in the accounts list
     if not any(a.name == "ollama" for a in _config.ollama_accounts):
         # Create primary from the legacy single-key config + usage data
+        # Use ollama_api_key_resolved so env-var-only setups get a working key
         _config.ollama_accounts.insert(0, OllamaAccount(
             name="ollama",
-            api_key=_config.ollama_api_key,
+            api_key=_config.ollama_api_key_resolved,
             session_cookie=_config.usage.session_cookie if hasattr(_config, 'usage') else "",
             last_session_pct=_config.usage.last_session_pct if hasattr(_config, 'usage') else None,
             last_weekly_pct=_config.usage.last_weekly_pct if hasattr(_config, 'usage') else None,

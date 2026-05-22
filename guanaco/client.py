@@ -47,6 +47,7 @@ KNOWN_CLOUD_MODELS = {
     "nemotron-3-nano": {"sizes": ["30b"], "family": "nemotron", "capabilities": ["tools", "thinking", "cloud"]},
     "mistral-large-3": {"sizes": ["675b"], "family": "mistral", "capabilities": ["tools", "thinking", "cloud"]},
     "ministral-3": {"sizes": ["3b", "8b", "14b"], "family": "mistral", "capabilities": ["tools", "cloud"]},
+    "kimi-k2.6": {"sizes": [], "family": "kimi", "capabilities": ["vision", "tools", "thinking", "cloud"]},
     "kimi-k2.5": {"sizes": [], "family": "kimi", "capabilities": ["vision", "tools", "thinking", "cloud"]},
     "kimi-k2-thinking": {"sizes": [], "family": "kimi", "capabilities": ["thinking", "cloud"]},
     "kimi-k2": {"sizes": ["1t"], "family": "kimi", "capabilities": ["tools", "thinking", "cloud"]},
@@ -430,8 +431,8 @@ class OllamaClient:
                             # Estimate tokens from character count (4 chars ≈ 1 token)
                             estimated_content_tokens = max(1, content_chars // 4) if content_chars else 0
                             estimated_reasoning_tokens = max(1, reasoning_chars // 4) if reasoning_chars else 0
-                            # Use API-provided completion_tokens if available, otherwise estimated content tokens
-                            final_tokens = completion_tokens or estimated_content_tokens
+                            # Prefer API-provided completion_tokens; otherwise estimate from chars (content + reasoning)
+                            final_tokens = completion_tokens or (estimated_content_tokens + estimated_reasoning_tokens)
                             elapsed = time.time() - start
                             ttft = (first_token_time - start) if first_token_time else None
                             generation_time = (elapsed - ttft) if ttft and elapsed > ttft else elapsed
@@ -479,7 +480,7 @@ class OllamaClient:
                 # Estimate tokens and yield [DONE] + metrics anyway
                 estimated_content_tokens = max(1, content_chars // 4) if content_chars else 0
                 estimated_reasoning_tokens = max(1, reasoning_chars // 4) if reasoning_chars else 0
-                final_tokens = completion_tokens or estimated_content_tokens
+                final_tokens = completion_tokens or (estimated_content_tokens + estimated_reasoning_tokens)
                 elapsed = time.time() - start
                 ttft = (first_token_time - start) if first_token_time else None
                 generation_time = (elapsed - ttft) if ttft and elapsed > ttft else elapsed

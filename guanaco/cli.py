@@ -159,10 +159,10 @@ def _run_setup():
     print("\n📡 LLM Configuration")
     print("   Available Ollama Cloud models: qwen3:480b, gpt-oss:120b, deepseek-v3.1, oss120b")
     print("   Also: qwen3.5:122b, glm-5.1, minimax-m2.7, llama4:109b, etc.")
-    reranker = input("Reranker model [oss120b]: ").strip() or "oss120b"
-    scraper = input("Scraper model [qwen3:480b]: ").strip() or "qwen3:480b"
-    summary = input("Summary model [qwen3:480b]: ").strip() or "qwen3:480b"
-    default_model = input("Default chat model [qwen3:480b]: ").strip() or "qwen3:480b"
+    reranker = input("Reranker model [nemotron-3-nano:30b]: ").strip() or "nemotron-3-nano:30b"
+    scraper = input("Scraper model [nemotron-3-nano:30b]: ").strip() or "nemotron-3-nano:30b"
+    summary = input("Summary model [nemotron-3-nano:30b]: ").strip() or "nemotron-3-nano:30b"
+    default_model = input("Default chat model [nemotron-3-nano:30b]: ").strip() or "nemotron-3-nano:30b"
     emulate_anthropic = input("Enable Anthropic /v1/messages emulation? [Y/n]: ").strip().lower() != "n"
     emulate_openai = input("Enable OpenAI /v1/chat/completions? [Y/n]: ").strip().lower() != "n"
 
