@@ -87,4 +87,4 @@ dmypy.json
 Thumbs.db
 
 # Project-specific
-.oct/
+.oct/.venv-test/

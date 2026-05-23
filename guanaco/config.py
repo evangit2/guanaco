@@ -147,6 +147,12 @@ class UsageConfig(BaseModel):
     check_interval: int = 0                   # Auto-check interval in seconds (0 = disabled)
     last_session_pct: Optional[float] = None  # Last known session usage %
     last_weekly_pct: Optional[float] = None   # Last known weekly usage %
+    # v0.4.3+ fields — added for multi-account migration
+    last_plan: Optional[str] = None           # Last known plan (free/pro/max)
+    last_session_reset: Optional[str] = None  # Human-readable time until session resets
+    last_weekly_reset: Optional[str] = None  # Human-readable time until weekly resets
+    last_checked: Optional[float] = None      # Unix timestamp of last successful check
+    redirect_on_full: bool = False            # Route to fallback when quota near limit
 
 class ROIConfig(BaseModel):
     """Experimental: subscription value comparison vs OpenRouter pay-as-you-go."""
@@ -222,16 +228,43 @@ _config: Optional[AppConfig] = None
 
 
 def load_config(path: Optional[Path] = None) -> AppConfig:
-    """Load configuration from YAML file, falling back to defaults."""
+    """Load configuration from YAML file, falling back to defaults.
+
+    Includes migration for backward compatibility:
+    - v0.4.2 configs missing UsageConfig fields get auto-populated with defaults.
+    """
     global _config
     path = path or get_default_config_path()
 
     if path.exists():
         with open(path) as f:
             data = yaml.safe_load(f) or {}
-        _config = AppConfig(**data)
     else:
-        _config = AppConfig()
+        data = {}
+
+    # ── Config migration ──
+    # v0.4.2 → v0.4.3+: UsageConfig gained last_plan, redirect_on_full, etc.
+    usage = data.setdefault("usage", {})
+    for field, default in (
+        ("last_plan", None),
+        ("last_session_reset", None),
+        ("last_weekly_reset", None),
+        ("last_checked", None),
+        ("redirect_on_full", False),
+    ):
+        if field not in usage:
+            usage[field] = default
+
+    # v0.4.1 → v0.4.2+: RouterConfig gained auto_update, allow_prerelease
+    router = data.setdefault("router", {})
+    for field, default in (
+        ("auto_update", False),
+        ("allow_prerelease", False),
+    ):
+        if field not in router:
+            router[field] = default
+
+    _config = AppConfig(**data)
 
     # Ensure the primary "ollama" account is always in the accounts list
     if not any(a.name == "ollama" for a in _config.ollama_accounts):

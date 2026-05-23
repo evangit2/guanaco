@@ -188,6 +188,26 @@ echo ""
 
 prompt OLLAMA_API_KEY "Enter your Ollama API key" ""
 
+if [ -n "$OLLAMA_API_KEY" ]; then
+    info "Validating API key with Ollama Cloud..."
+    VALIDATE_RESPONSE=$(curl -s -w "\n%{http_code}" "https://api.ollama.com/v1/models" \
+        -H "Authorization: Bearer ${OLLAMA_API_KEY}" \
+        -H "Accept: application/json" \
+        --max-time 10 2>/dev/null || echo "timeout")
+    HTTP_CODE=$(echo "$VALIDATE_RESPONSE" | tail -1)
+    if [ "$HTTP_CODE" = "200" ]; then
+        success "API key validated (models endpoint responds OK)"
+    elif [ "$HTTP_CODE" = "401" ]; then
+        warn "API key returned 401 Unauthorized from Ollama Cloud"
+        warn "Key may be invalid or expired. Guanaco will still install but inference will fail."
+        warn "Fix with: guanaco setup  (after install)"
+    elif [ "$HTTP_CODE" = "timeout" ]; then
+        warn "Could not reach Ollama Cloud (timeout). Skipping validation."
+    else
+        warn "API key validation returned HTTP $HTTP_CODE — key may not work"
+    fi
+fi
+
 if [ -z "$OLLAMA_API_KEY" ]; then
     echo ""
     warn "No API key provided. You can set it later with: guanaco setup"
@@ -418,6 +438,8 @@ WorkingDirectory=${INSTALL_DIR}
 ExecStart=${VENV_DIR}/bin/python -m uvicorn guanaco.app:create_app --factory --host ${BIND_HOST} --port ${PORT} --log-level info
 Restart=on-failure
 RestartSec=5
+Environment=GUANACO_CONFIG_DIR=${CONFIG_DIR}
+WorkingDirectory=${INSTALL_DIR}/repo
 
 [Install]
 WantedBy=multi-user.target
