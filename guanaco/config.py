@@ -77,8 +77,8 @@ class LLMConfig(BaseModel):
     default_model: str = "nemotron-3-nano:30b"
     available_models: list[str] = Field(default_factory=lambda: [
         "qwen3.5:397b", "qwen3-coder:480b", "qwen3-vl:235b", "qwen3-next:80b",
-        "gpt-oss:120b", "gpt-oss:20b", "deepseek-v3.1:671b", "deepseek-v3.2",
-        "gemma4:31b", "gemma3:27b", "glm-5.1", "glm-5",
+        "gpt-oss:120b", "gpt-oss:20b", "deepseek-v3.1:671b", "deepseek-v3.2", "deepseek-v4-pro", "deepseek-v4-flash",
+        "gemma4:31b", "gemma3:27b", "glm-5.1", "glm-5", "gemini-3-flash-preview",
         "minimax-m2.7", "minimax-m2.5", "minimax-m2.1",
         "devstral-small-2:24b", "devstral-2:123b", "nemotron-3-super",
         "nemotron-3-nano:30b",

@@ -22,38 +22,42 @@ OLLAMA_SETTINGS_URL = f"{OLLAMA_BASE}/api/account/settings"
 
 # Known cloud models (fallback + display info)
 # Names must match /v1/models response (e.g. "gemma4:31b", "qwen3.5:397b")
+# usage_multiplier: relative GPU cost tier (0.25, 0.50, 0.75, 1.00) pulled from
+# ollama.com model pages — used for weighted analytics + visual cost badges.
 KNOWN_CLOUD_MODELS = {
-    "gemma4": {"sizes": ["31b"], "family": "gemma", "capabilities": ["vision", "tools", "thinking", "cloud"]},
-    "gemma3": {"sizes": ["4b", "12b", "27b"], "family": "gemma", "capabilities": ["vision", "tools", "thinking", "cloud"]},
-    "qwen3.5": {"sizes": ["397b"], "family": "qwen", "capabilities": ["vision", "tools", "thinking", "cloud"]},
-    "qwen3-vl": {"sizes": ["235b", "235b-instruct"], "family": "qwen", "capabilities": ["vision", "tools", "thinking", "cloud"]},
-    "qwen3-coder": {"sizes": ["480b"], "family": "qwen", "capabilities": ["tools", "cloud"]},
-    "qwen3-coder-next": {"sizes": [], "family": "qwen", "capabilities": ["tools", "cloud"]},
-    "qwen3-next": {"sizes": ["80b"], "family": "qwen", "capabilities": ["tools", "thinking", "cloud"]},
-    "minimax-m2": {"sizes": [], "family": "minimax", "capabilities": ["tools", "thinking", "cloud"]},
-    "minimax-m2.7": {"sizes": [], "family": "minimax", "capabilities": ["tools", "thinking", "cloud"]},
-    "minimax-m2.5": {"sizes": [], "family": "minimax", "capabilities": ["tools", "thinking", "cloud"]},
-    "minimax-m2.1": {"sizes": [], "family": "minimax", "capabilities": ["tools", "thinking", "cloud"]},
-    "glm-5.1": {"sizes": [], "family": "glm", "capabilities": ["tools", "thinking", "cloud"]},
-    "glm-5": {"sizes": [], "family": "glm", "capabilities": ["tools", "thinking", "cloud"]},
-    "glm-4.7": {"sizes": [], "family": "glm", "capabilities": ["tools", "thinking", "cloud"]},
-    "glm-4.6": {"sizes": [], "family": "glm", "capabilities": ["tools", "thinking", "cloud"]},
-    "gpt-oss": {"sizes": ["20b", "120b"], "family": "gpt-oss", "capabilities": ["tools", "thinking", "cloud"]},
-    "deepseek-v3.1": {"sizes": ["671b"], "family": "deepseek", "capabilities": ["thinking", "cloud"]},
-    "deepseek-v3.2": {"sizes": [], "family": "deepseek", "capabilities": ["thinking", "cloud"]},
-    "devstral-small-2": {"sizes": ["24b"], "family": "devstral", "capabilities": ["tools", "cloud"]},
-    "devstral-2": {"sizes": ["123b"], "family": "devstral", "capabilities": ["tools", "cloud"]},
-    "nemotron-3-super": {"sizes": [], "family": "nemotron", "capabilities": ["tools", "thinking", "cloud"]},
-    "nemotron-3-nano": {"sizes": ["30b"], "family": "nemotron", "capabilities": ["tools", "thinking", "cloud"]},
-    "mistral-large-3": {"sizes": ["675b"], "family": "mistral", "capabilities": ["tools", "thinking", "cloud"]},
-    "ministral-3": {"sizes": ["3b", "8b", "14b"], "family": "mistral", "capabilities": ["tools", "cloud"]},
-    "kimi-k2.6": {"sizes": [], "family": "kimi", "capabilities": ["vision", "tools", "thinking", "cloud"]},
-    "kimi-k2.5": {"sizes": [], "family": "kimi", "capabilities": ["vision", "tools", "thinking", "cloud"]},
-    "kimi-k2-thinking": {"sizes": [], "family": "kimi", "capabilities": ["thinking", "cloud"]},
-    "kimi-k2": {"sizes": ["1t"], "family": "kimi", "capabilities": ["tools", "thinking", "cloud"]},
-    "cogito-2.1": {"sizes": ["671b"], "family": "cogito", "capabilities": ["thinking", "cloud"]},
-    "gemini-3-flash-preview": {"sizes": [], "family": "gemini", "capabilities": ["vision", "tools", "thinking", "cloud"]},
-    "rnj-1": {"sizes": ["8b"], "family": "rnj", "capabilities": ["tools", "cloud"]},
+    "gemma4": {"sizes": ["31b"], "family": "gemma", "capabilities": ["vision", "tools", "thinking", "cloud"], "usage_multiplier": 0.50},
+    "gemma3": {"sizes": ["4b", "12b", "27b"], "family": "gemma", "capabilities": ["vision", "tools", "thinking", "cloud"], "usage_multiplier": 0.50},
+    "qwen3.5": {"sizes": ["397b"], "family": "qwen", "capabilities": ["vision", "tools", "thinking", "cloud"], "usage_multiplier": 1.00},
+    "qwen3-vl": {"sizes": ["235b", "235b-instruct"], "family": "qwen", "capabilities": ["vision", "tools", "thinking", "cloud"], "usage_multiplier": 0.75},
+    "qwen3-coder": {"sizes": ["480b"], "family": "qwen", "capabilities": ["tools", "cloud"], "usage_multiplier": 0.75},
+    "qwen3-coder-next": {"sizes": [], "family": "qwen", "capabilities": ["tools", "cloud"], "usage_multiplier": 0.75},
+    "qwen3-next": {"sizes": ["80b"], "family": "qwen", "capabilities": ["tools", "thinking", "cloud"], "usage_multiplier": 0.75},
+    "minimax-m2": {"sizes": [], "family": "minimax", "capabilities": ["tools", "thinking", "cloud"], "usage_multiplier": 0.50},
+    "minimax-m2.7": {"sizes": [], "family": "minimax", "capabilities": ["tools", "thinking", "cloud"], "usage_multiplier": 0.50},
+    "minimax-m2.5": {"sizes": [], "family": "minimax", "capabilities": ["tools", "thinking", "cloud"], "usage_multiplier": 0.50},
+    "minimax-m2.1": {"sizes": [], "family": "minimax", "capabilities": ["tools", "thinking", "cloud"], "usage_multiplier": 0.50},
+    "glm-5.1": {"sizes": [], "family": "glm", "capabilities": ["tools", "thinking", "cloud"], "usage_multiplier": 0.75},
+    "glm-5": {"sizes": [], "family": "glm", "capabilities": ["tools", "thinking", "cloud"], "usage_multiplier": 0.75},
+    "glm-4.7": {"sizes": [], "family": "glm", "capabilities": ["tools", "thinking", "cloud"], "usage_multiplier": 0.50},
+    "glm-4.6": {"sizes": [], "family": "glm", "capabilities": ["tools", "thinking", "cloud"], "usage_multiplier": 0.50},
+    "gpt-oss": {"sizes": ["20b", "120b"], "family": "gpt-oss", "capabilities": ["tools", "thinking", "cloud"], "usage_multiplier": 0.50},
+    "deepseek-v3.1": {"sizes": ["671b"], "family": "deepseek", "capabilities": ["thinking", "cloud"], "usage_multiplier": 1.00},
+    "deepseek-v3.2": {"sizes": [], "family": "deepseek", "capabilities": ["thinking", "cloud"], "usage_multiplier": 1.00},
+    "deepseek-v4-pro": {"sizes": [], "family": "deepseek", "capabilities": ["vision", "tools", "thinking", "cloud"], "usage_multiplier": 1.00},
+    "deepseek-v4-flash": {"sizes": [], "family": "deepseek", "capabilities": ["vision", "tools", "thinking", "cloud"], "usage_multiplier": 0.50},
+    "devstral-small-2": {"sizes": ["24b"], "family": "devstral", "capabilities": ["tools", "cloud"], "usage_multiplier": 0.50},
+    "devstral-2": {"sizes": ["123b"], "family": "devstral", "capabilities": ["tools", "cloud"], "usage_multiplier": 0.75},
+    "nemotron-3-super": {"sizes": [], "family": "nemotron", "capabilities": ["tools", "thinking", "cloud"], "usage_multiplier": 0.50},
+    "nemotron-3-nano": {"sizes": ["30b"], "family": "nemotron", "capabilities": ["tools", "thinking", "cloud"], "usage_multiplier": 0.25},
+    "mistral-large-3": {"sizes": ["675b"], "family": "mistral", "capabilities": ["tools", "thinking", "cloud"], "usage_multiplier": 1.00},
+    "ministral-3": {"sizes": ["3b", "8b", "14b"], "family": "mistral", "capabilities": ["tools", "cloud"], "usage_multiplier": 0.25},
+    "kimi-k2.6": {"sizes": [], "family": "kimi", "capabilities": ["vision", "tools", "thinking", "cloud"], "usage_multiplier": 0.75},
+    "kimi-k2.5": {"sizes": [], "family": "kimi", "capabilities": ["vision", "tools", "thinking", "cloud"], "usage_multiplier": 0.75},
+    "kimi-k2-thinking": {"sizes": [], "family": "kimi", "capabilities": ["thinking", "cloud"], "usage_multiplier": 0.75},
+    "kimi-k2": {"sizes": ["1t"], "family": "kimi", "capabilities": ["tools", "thinking", "cloud"], "usage_multiplier": 1.00},
+    "cogito-2.1": {"sizes": ["671b"], "family": "cogito", "capabilities": ["thinking", "cloud"], "usage_multiplier": 1.00},
+    "gemini-3-flash-preview": {"sizes": [], "family": "gemini", "capabilities": ["vision", "tools", "thinking", "cloud"], "usage_multiplier": 0.50},
+    "rnj-1": {"sizes": ["8b"], "family": "rnj", "capabilities": ["tools", "cloud"], "usage_multiplier": 0.25},
 }
 
 
@@ -203,6 +207,7 @@ class OllamaClient:
                 "family": family,
                 "quantization": quant,
                 "capabilities": self._get_model_capabilities(name),
+                "usage_multiplier": self._get_model_multiplier(name),
                 "modified_at": m.get("modified_at", ""),
                 "digest": m.get("digest", "")[:12] if m.get("digest") else "",
             })
@@ -215,6 +220,13 @@ class OllamaClient:
             return KNOWN_CLOUD_MODELS[base_name].get("capabilities", ["cloud"])
         # Default capabilities for unknown models
         return ["cloud"]
+
+    def _get_model_multiplier(self, model_name: str) -> float:
+        """Get usage multiplier (cost tier) for a model name. 0.25, 0.50, 0.75, 1.00."""
+        base_name = model_name.split(":")[0].replace("-cloud", "")
+        if base_name in KNOWN_CLOUD_MODELS:
+            return KNOWN_CLOUD_MODELS[base_name].get("usage_multiplier", 1.00)
+        return 1.00
 
     # ── Usage / Quota ──
 

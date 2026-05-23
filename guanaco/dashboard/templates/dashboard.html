@@ -64,6 +64,11 @@
     .cap.vision { background: rgba(6,182,212,0.15); color: var(--cyan); }
     .cap.tools { background: rgba(124,58,237,0.15); color: var(--accent); }
     .cap.thinking { background: rgba(245,158,11,0.15); color: var(--orange); }
+    /* Usage multiplier bars */
+    .usage-bar { display: flex; align-items: center; gap: 3px; margin-top: 6px; }
+    .usage-slot { display: inline-block; height: 3px; width: 10px; border-radius: 2px; background: var(--border); }
+    .usage-slot.usage-active { background: var(--accent); }
+    .usage-label { font-size: 10px; color: var(--text2); margin-left: 3px; }
     .model-select-btn { background: var(--accent); color: white; border: none; padding: 4px 10px; border-radius: 6px; cursor: pointer; font-size: 11px; font-weight: 600; margin-top: 8px; }
     .model-select-btn:hover { opacity: 0.9; }
 
@@ -102,7 +107,7 @@
     .metric .metric-val { font-size: 22px; font-weight: 700; color: var(--accent); }
     .metric .metric-label { font-size: 10px; color: var(--text2); text-transform: uppercase; letter-spacing: 0.5px; margin-top: 4px; }
 
-    .usage-row { display: grid; grid-template-columns: 2fr 1fr 1fr 1fr 1fr 1fr; padding: 10px 14px; background: var(--surface2); border-radius: 8px; margin-bottom: 6px; font-size: 12px; }
+    .usage-row { display: grid; grid-template-columns: 2fr 0.7fr 0.6fr 1fr 1fr 1fr 0.8fr 0.8fr; padding: 10px 14px; background: var(--surface2); border-radius: 8px; margin-bottom: 6px; font-size: 12px; }
     .usage-row.header { font-weight: 600; color: var(--text2); }
     .usage-bar-track { width: 100%; height: 8px; background: var(--surface2); border-radius: 4px; overflow: hidden; border: 1px solid var(--border); }
     .usage-bar-fill { height: 100%; border-radius: 4px; transition: width 0.5s ease, background 0.3s ease; }
@@ -408,6 +413,12 @@
                 <div class="metric"><div class="metric-val" id="an-errors">0</div><div class="metric-label">Errors</div></div>
                 <div class="metric"><div class="metric-val" id="an-weekly">—</div><div class="metric-label">Fallback Rate</div></div>
             </div>
+            <div class="metric-grid" style="margin-top:8px;">
+                <div class="metric"><div class="metric-val" id="an-wptokens" style="color:var(--accent)">0</div><div class="metric-label">Weighted Prompt</div></div>
+                <div class="metric"><div class="metric-val" id="an-wctokens" style="color:var(--accent)">0</div><div class="metric-label">Weighted Comp</div></div>
+                <div class="metric"><div class="metric-val" id="an-wtokens" style="color:var(--accent)">0</div><div class="metric-label">Weighted Total</div></div>
+                <div class="metric"><div class="metric-val" id="an-mult">1.0x</div><div class="metric-label">Avg Multiplier</div></div>
+            </div>
         </div>
 
         <div class="card">
@@ -419,7 +430,7 @@
                 </div>
             </div>
             <div class="usage-row header">
-                <div>Model</div><div>Requests</div><div>Prompt Tok</div><div>Comp Tok</div><div>Avg TPS</div><div>Avg TTFT</div>
+                <div>Model</div><div>Reqs</div><div>Mul</div><div>Prompt</div><div>Comp</div><div>W-Total</div><div>Avg TPS</div><div>Avg TTFT</div>
             </div>
             <div id="model-rows"></div>
         </div>
@@ -1208,7 +1219,7 @@ function loadModels() {
         // Fallback to config model list when API is down
         const cfg = CONFIG.llm || {};
         const names = cfg.available_models || [];
-        const fallbackModels = names.map(n => ({name: n, model: n, id: n, capabilities: _getCapabilities(n)}));
+        const fallbackModels = names.map(n => ({name: n, model: n, id: n, capabilities: _getCapabilities(n), usage_multiplier: _getMultiplier(n)}));
         availableModels = fallbackModels;
         document.getElementById('models-loading').style.display = 'none';
         document.getElementById('models-loading').textContent = '';
@@ -1237,6 +1248,9 @@ function renderModels(models) {
         const paramSize = details.parameter_size || '';
         const quant = details.quantization_level || '';
         const caps = m.capabilities || ['cloud'];
+        const mult = typeof m.usage_multiplier === 'number' ? m.usage_multiplier : (m.usage_multiplier || 0.75);
+        const filled = Math.round(mult * 4); // 4 slots, 0.25 = 1 filled, 1.00 = 4 filled
+        const slots = [0,1,2,3].map(i => `<span class="usage-slot ${i < filled ? 'usage-active' : ''}"></span>`).join('');
         const capHtml = caps.map(c => `<span class="cap ${c}">${c}</span>`).join('');
         return `<div class="model-card">
             <div class="model-name">${display}</div>
@@ -1246,6 +1260,7 @@ function renderModels(models) {
                 ${quant ? `<span>⚡ ${quant}</span>` : ''}
             </div>
             <div class="model-caps">${capHtml}</div>
+            <div class="usage-bar" title="Usage cost multiplier: ${mult.toFixed(2)}x">${slots}<span class="usage-label">${mult.toFixed(2)}x</span></div>
         </div>`;
     }).join('');
 }
@@ -1308,6 +1323,14 @@ function loadAnalytics() {
         document.getElementById('an-search').textContent = (data.search_calls || 0).toLocaleString();
         document.getElementById('an-ptokens').textContent = (data.prompt_tokens || 0).toLocaleString();
         document.getElementById('an-ctokens').textContent = (data.completion_tokens || 0).toLocaleString();
+        document.getElementById('an-wptokens').textContent = (data.weighted_prompt || 0).toLocaleString();
+        document.getElementById('an-wctokens').textContent = (data.weighted_completion || 0).toLocaleString();
+        document.getElementById('an-wtokens').textContent = (data.weighted_total || 0).toLocaleString();
+        // Compute average multiplier from raw vs weighted totals (avoid divide by zero)
+        const rawTotal = (data.prompt_tokens || 0) + (data.completion_tokens || 0);
+        const wTotal = (data.weighted_total || 0);
+        const avgMult = rawTotal > 0 ? (wTotal / rawTotal).toFixed(2) + 'x' : '1.0x';
+        document.getElementById('an-mult').textContent = avgMult;
         document.getElementById('an-tps').textContent = data.avg_tps || 0;
         document.getElementById('an-ttft').textContent = data.avg_ttft ? (data.avg_ttft * 1000).toFixed(0) + 'ms' : '—';
         document.getElementById('an-errors').textContent = (data.errors || 0).toLocaleString();
@@ -1330,8 +1353,10 @@ function loadAnalytics() {
                 <div class="usage-row">
                     <div>${m.model}</div>
                     <div>${m.requests}</div>
+                    <div>${(m.usage_multiplier || 1.0).toFixed(2)}x</div>
                     <div>${(m.prompt_tokens || 0).toLocaleString()}</div>
                     <div>${(m.completion_tokens || 0).toLocaleString()}</div>
+                    <div>${Math.round((m.prompt_tokens || 0) * (m.usage_multiplier || 1.0) + (m.completion_tokens || 0) * (m.usage_multiplier || 1.0)).toLocaleString()}</div>
                     <div>${m.avg_tps || '—'}</div>
                     <div>${m.avg_ttft ? (m.avg_ttft * 1000).toFixed(0) + 'ms' : '—'}</div>
                 </div>
@@ -1359,9 +1384,10 @@ function loadAnalytics() {
             </div>
         `).join('') : '<div style="color:var(--text2);text-align:center;padding:20px;">No errors 🎉</div>';
 
-        // Top stats
+        // Top stats — show weighted tokens as primary count
         document.getElementById('stat-requests').textContent = (data.total_requests || 0).toLocaleString();
-        document.getElementById('stat-tokens').textContent = ((data.prompt_tokens || 0) + (data.completion_tokens || 0)).toLocaleString();
+        document.getElementById('stat-tokens').textContent = (data.weighted_total || 0).toLocaleString();
+        document.getElementById('stat-tokens').nextElementSibling.textContent = 'Weighted Tokens';
         document.getElementById('stat-tps').textContent = data.avg_tps || 0;
         document.getElementById('stat-ttft').textContent = data.avg_ttft ? (data.avg_ttft * 1000).toFixed(0) + 'ms' : '—';
         document.getElementById('stat-keys').textContent = KEYS.length;
@@ -2035,6 +2061,9 @@ function _getCapabilities(modelName) {
         'gpt-oss': ['cloud','tools','thinking'],
         'deepseek-v3.1': ['cloud','thinking'],
         'deepseek-v3.2': ['cloud','thinking'],
+        'deepseek-v4-pro': ['cloud','tools','thinking','vision'],
+        'deepseek-v4-flash': ['cloud','tools','thinking','vision'],
+        'gemini-3-flash-preview': ['cloud','tools','thinking','vision'],
         'glm-5.1': ['cloud','tools','thinking'],
         'glm-5': ['cloud','tools','thinking'],
         'minimax-m2.7': ['cloud','tools','thinking'],
@@ -2051,6 +2080,22 @@ function _getCapabilities(modelName) {
         'cogito-2.1': ['cloud','thinking'],
     };
     return known[base] || ['cloud'];
+}
+
+function _getMultiplier(modelName) {
+    const mults = {
+        'nemotron-3-nano': 0.25, 'ministral-3': 0.25, 'rnj-1': 0.25,
+        'gemma4': 0.50, 'gemma3': 0.50, 'minimax-m2.7': 0.50, 'minimax-m2.5': 0.50, 'minimax-m2.1': 0.50, 'minimax-m2': 0.50,
+        'gpt-oss': 0.50, 'devstral-small-2': 0.50, 'nemotron-3-super': 0.50, 'gemini-3-flash-preview': 0.50,
+        'glm-4.7': 0.50, 'glm-4.6': 0.50,
+        'qwen3-vl': 0.75, 'qwen3-coder': 0.75, 'qwen3-next': 0.75, 'devstral-2': 0.75,
+        'glm-5.1': 0.75, 'glm-5': 0.75,
+        'kimi-k2.6': 0.75, 'kimi-k2.5': 0.75, 'kimi-k2-thinking': 0.75,
+        'qwen3.5': 1.00, 'deepseek-v3.1': 1.00, 'deepseek-v3.2': 1.00, 'deepseek-v4-pro': 1.00,
+        'mistral-large-3': 1.00, 'cogito-2.1': 1.00, 'kimi-k2': 1.00,
+        'deepseek-v4-flash': 0.50, 'gemini-3-flash-preview': 0.50,
+    };
+    return mults[modelName.split(':')[0]] || 0.75;
 }
 
 // ─── Init ───

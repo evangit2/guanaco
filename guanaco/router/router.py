@@ -552,10 +552,45 @@ def create_router(client: OllamaClient, analytics=None, config=None, account_poo
                 payload_fb["model"] = fallback_model
                 if body.stream:
                     if _config.fallback.stream_fallback:
-                        fallback_payload = dict(payload)
-                        fallback_payload["model"] = fallback_model
+                        fallback_payload2 = dict(payload)
+                        fallback_payload2["model"] = fallback_model
+
+                        async def _quota_fallback_stream():
+                            acc_content = []
+                            fb_start = time.time()
+                            fb_first = None
+                            try:
+                                async for fb_chunk in await _call_fallback_provider(fallback_payload2, _config.fallback, stream=True):
+                                    yield fb_chunk
+                                    txt = _extract_sse_content(fb_chunk)
+                                    if txt:
+                                        if fb_first is None:
+                                            fb_first = time.time()
+                                        acc_content.append(txt)
+                            finally:
+                                if _analytics:
+                                    _hist_kw2 = dict(_hist)
+                                    if acc_content and _config and _config.history.enabled and _config.history.save_output:
+                                        out_text = "".join(acc_content)
+                                        if len(out_text) > _config.history.max_content_size:
+                                            out_text = out_text[:_config.history.max_content_size] + "\n...[truncated]"
+                                        _hist_kw2["output_text"] = out_text
+                                    fb_chars = len("".join(acc_content))
+                                    fb_tokens = max(1, fb_chars // 4) if fb_chars else 0
+                                    fb_elapsed = time.time() - fb_start
+                                    _analytics.log_llm(
+                                        model=_normalize_model_name(fallback_model),
+                                        prompt_tokens=0,
+                                        completion_tokens=fb_tokens,
+                                        total_duration_seconds=fb_elapsed,
+                                        provider=_config.fallback.name,
+                                        fallback_for=_normalize_model_name(resolved_model),
+                                        fallback_reason=f"Quota full (session={_config.usage.last_session_pct or 0:.0f}%, weekly={_config.usage.last_weekly_pct or 0:.0f}%)",
+                                        **_hist_kw2,
+                                    )
+
                         return StreamingResponse(
-                            await _call_fallback_provider(fallback_payload, _config.fallback, stream=True),
+                            _quota_fallback_stream(),
                             media_type="text/event-stream",
                         )
                     # Can't stream from fallback — do non-streaming
@@ -578,9 +613,16 @@ def create_router(client: OllamaClient, analytics=None, config=None, account_poo
                         fallback_resp["_oct_fallback_provider"] = _config.fallback.name
                         fallback_resp["_oct_original_model"] = _normalize_model_name(resolved_model)
                         fallback_resp["_oct_quota_redirect"] = True
+                        # Extract usage from fallback response when available
+                        fb_usage = fallback_resp.get("usage", {})
+                        fb_prompt = fb_usage.get("prompt_tokens", 0)
+                        fb_completion = fb_usage.get("completion_tokens", 0)
                         if _analytics:
                             _analytics.log_llm(
                                 model=_normalize_model_name(fallback_model),
+                                prompt_tokens=fb_prompt,
+                                completion_tokens=fb_completion,
+                                total_tokens=fb_usage.get("total_tokens", fb_prompt + fb_completion),
                                 total_duration_seconds=time.time() - start,
                                 provider=_config.fallback.name,
                                 fallback_for=_normalize_model_name(resolved_model),
@@ -755,9 +797,16 @@ def create_router(client: OllamaClient, analytics=None, config=None, account_poo
                     fallback_resp = await _call_fallback_provider(fallback_payload, _config.fallback)
                     elapsed = time.time() - start
 
+                    # Extract usage from fallback response when available
+                    fb_usage2 = fallback_resp.get("usage", {})
+                    fb_prompt2 = fb_usage2.get("prompt_tokens", 0)
+                    fb_completion2 = fb_usage2.get("completion_tokens", 0)
                     if _analytics:
                         _analytics.log_llm(
                             model=fallback_model,
+                            prompt_tokens=fb_prompt2,
+                            completion_tokens=fb_completion2,
+                            total_tokens=fb_usage2.get("total_tokens", fb_prompt2 + fb_completion2),
                             total_duration_seconds=elapsed,
                             provider=_config.fallback.name, fallback_for=resolved_model,
                             fallback_reason=f"Ollama error: {_describe_error(ollama_error)}",
@@ -1472,13 +1521,20 @@ async def _stream_completion_openai(client, payload, model, analytics, start_tim
                 _hist_kw["output_text"] = output_text
             if analytics:
                 if used_fallback and fallback_model:
+                    # Fallback providers don't emit __oct_metrics__ — estimate from accumulated content
+                    fb_stream_metrics = dict(stream_metrics)
+                    if not fb_stream_metrics.get("eval_count") and accumulated_content:
+                        fb_chars = len("".join(accumulated_content))
+                        fb_tokens = max(1, fb_chars // 4) if fb_chars else 0
+                        fb_stream_metrics["eval_count"] = fb_tokens
+                        fb_stream_metrics.setdefault("elapsed_seconds", elapsed)
                     analytics.log_llm(
                         model=_normalize_model_name(fallback_model),
-                        prompt_tokens=stream_metrics.get("prompt_eval_count", 0),
-                        completion_tokens=stream_metrics.get("eval_count"),
-                        tps=stream_metrics.get("tps"),
-                        ttft_seconds=stream_metrics.get("ttft_seconds"),
-                        total_duration_seconds=stream_metrics.get("elapsed_seconds", elapsed),
+                        prompt_tokens=fb_stream_metrics.get("prompt_eval_count", 0),
+                        completion_tokens=fb_stream_metrics.get("eval_count"),
+                        tps=fb_stream_metrics.get("tps"),
+                        ttft_seconds=fb_stream_metrics.get("ttft_seconds"),
+                        total_duration_seconds=fb_stream_metrics.get("elapsed_seconds", elapsed),
                         provider=config.fallback.name if config else "fallback",
                         fallback_for=_normalize_model_name(model),
                         fallback_reason=f"Ollama error: {original_error}" if original_error else "Ollama stream error",
@@ -1530,9 +1586,18 @@ async def _stream_fallback_openai(payload, config, fallback_model, analytics, st
                     output_text = output_text[:config.history.max_content_size] + "\n...[truncated]"
                 _hist_kw["output_text"] = output_text
             if analytics:
-                analytics.log_llm(model=_normalize_model_name(fallback_model), total_duration_seconds=elapsed, provider=provider_tag, fallback_for=_normalize_model_name(fallback_for) if fallback_for else None, fallback_reason=fallback_reason, **_hist_kw)
-
-    return StreamingResponse(generate(), media_type="text/event-stream")
+                # Estimate tokens from accumulated content (fallbacks don't emit __oct_metrics__)
+                fb_chars = len("".join(accumulated_content))
+                fb_tokens = max(1, fb_chars // 4) if fb_chars else 0
+                analytics.log_llm(
+                    model=_normalize_model_name(fallback_model),
+                    completion_tokens=fb_tokens,
+                    total_duration_seconds=elapsed,
+                    provider=provider_tag,
+                    fallback_for=_normalize_model_name(fallback_for) if fallback_for else None,
+                    fallback_reason=fallback_reason,
+                    **_hist_kw,
+                )
 
 
 async def _stream_completion_anthropic(client, payload, model, max_tokens, analytics, start_time, history_kwargs=None, config=None):
