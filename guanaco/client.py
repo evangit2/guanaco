@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import time
 import logging
+import re
 from typing import Optional
 
 import httpx
@@ -19,6 +20,11 @@ OLLAMA_SEARCH_URL = f"{OLLAMA_BASE}/api/web_search"
 OLLAMA_FETCH_URL = f"{OLLAMA_BASE}/api/web_fetch"
 OLLAMA_USAGE_URL = f"{OLLAMA_BASE}/api/account/usage"
 OLLAMA_SETTINGS_URL = f"{OLLAMA_BASE}/api/account/settings"
+
+# Usage-level cache: maps model name → level (1-4)
+_USAGE_LEVEL_CACHE: dict[str, int] = {}
+_USAGE_LEVEL_CACHE_TIME: float = 0
+_USAGE_LEVEL_CACHE_TTL: float = 3600  # 1 hour
 
 # Known cloud models (fallback + display info)
 # Names must match /v1/models response (e.g. "gemma4:31b", "qwen3.5:397b")
@@ -74,6 +80,100 @@ class OllamaClient:
         self._models_cache: Optional[list[dict]] = None
         self._models_cache_time: float = 0
         self._models_cache_ttl: float = 300.0  # 5 minutes
+
+    @staticmethod
+    def _fetch_usage_level_sync(model_name: str) -> int:
+        """Scrape Ollama.com library page to count usage slots (1-4).
+
+        Handles both top-level model badges and per-tag listings.
+        Returns 0 if the model page can't be found.
+        """
+        import urllib.request
+        base = model_name.split(":")[0]
+        tag = model_name.split(":")[1] if ":" in model_name else None
+        url = f"https://ollama.com/library/{base}"
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Guanaco/1.0"})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                html = resp.read().decode("utf-8", errors="replace")
+
+            # 1) Top-level model badge (unified tier models)
+            top_active = len(re.findall(r'x-test-model-cost-slot-active', html))
+            if top_active > 0:
+                return min(top_active, 4)
+
+            # 2) Per-tag listing — parse each tag's usage slots
+            # The page shows tags in order; split by cost containers and
+            # match each cost section with the preceding tag name.
+            tag_levels: dict[str, int] = {}
+            sections = re.split(r'x-test-model-tag-cost', html)
+            for i in range(len(sections) - 1):
+                # Tag name is in the current section (last command input)
+                inputs = re.findall(r'value="' + re.escape(base) + r':([^"]+)"', sections[i])
+                if not inputs:
+                    continue
+                tag = inputs[-1].replace("-cloud", "")
+                # Cost slots are in the next section, before the next tag name
+                cost_part = re.split(r'value="' + re.escape(base) + r':', sections[i + 1])[0]
+                active = cost_part.count('x-test-model-tag-usage-slot-active')
+                if active > 0:
+                    tag_levels[tag] = active
+
+            # If we were asked for a specific tag, return its level
+            if tag and tag in tag_levels:
+                return min(tag_levels[tag], 4)
+
+            # Otherwise return the max level across all tags (model's highest tier)
+            if tag_levels:
+                return min(max(tag_levels.values()), 4)
+
+            # 3) Raw fallback: count all tag slots
+            raw_active = len(re.findall(r'x-test-model-tag-usage-slot-active', html))
+            return min(raw_active, 4) if raw_active > 0 else 0
+        except Exception:
+            return 0
+
+    async def fetch_usage_levels(self, model_names: list[str]) -> dict[str, int]:
+        """Fetch usage levels for multiple models in parallel.
+
+        Results are cached globally for _USAGE_LEVEL_CACHE_TTL seconds.
+        Returns dict {model_name: level} where level is 1-4 (0 = unknown).
+        """
+        global _USAGE_LEVEL_CACHE, _USAGE_LEVEL_CACHE_TIME
+        now = time.time()
+        # Refresh cache if stale
+        if now - _USAGE_LEVEL_CACHE_TIME > _USAGE_LEVEL_CACHE_TTL:
+            _USAGE_LEVEL_CACHE.clear()
+            _USAGE_LEVEL_CACHE_TIME = now
+
+        # Deduplicate base names
+        to_fetch = []
+        results: dict[str, int] = {}
+        for name in model_names:
+            base = name.split(":")[0]
+            if base in _USAGE_LEVEL_CACHE:
+                results[name] = _USAGE_LEVEL_CACHE[base]
+            elif base not in to_fetch:
+                to_fetch.append(base)
+
+        if to_fetch:
+            import asyncio
+            loop = asyncio.get_event_loop()
+            # Run blocking scrapes in thread pool
+            tasks = [loop.run_in_executor(None, self._fetch_usage_level_sync, m) for m in to_fetch]
+            levels = await asyncio.gather(*tasks, return_exceptions=True)
+            for base, raw in zip(to_fetch, levels):
+                if isinstance(raw, Exception):
+                    _USAGE_LEVEL_CACHE[base] = 0
+                else:
+                    _USAGE_LEVEL_CACHE[base] = raw  # type: ignore[reportArgumentType]
+
+        # Fill in results for all requested names
+        for name in model_names:
+            if name not in results:
+                base = name.split(":")[0]
+                results[name] = _USAGE_LEVEL_CACHE.get(base, 0)
+        return results
 
     async def _get_client(self, api_key_override: Optional[str] = None) -> httpx.AsyncClient:
         """Get or create the httpx client, optionally with a different API key.
@@ -189,27 +289,33 @@ class OllamaClient:
         return model_name in available_names or f"{model_name}-cloud" in available_names
 
     async def get_cloud_models(self) -> list[dict]:
-        """Get list of cloud-capable models with metadata."""
+        """Get list of cloud-capable models with metadata.
+
+        Fetches real usage levels from ollama.com library pages and includes
+        them as usage_multiplier (0.25-1.00) alongside capabilities.
+        """
         models = await self.list_models()
+        # Fetch real usage levels from ollama.com
+        model_names = [m.get("name", m.get("model", "")) for m in models]
+        usage_levels = await self.fetch_usage_levels(model_names)
+
         cloud_models = []
         for m in models:
             name = m.get("name", m.get("model", ""))
             details = m.get("details", {})
-            # Check if model has cloud capability (or is available via cloud API)
-            is_cloud = True  # All models from /api/tags with auth are cloud-available
-            size_info = details.get("parameter_size", "")
-            family = details.get("family", "")
-            quant = details.get("quantization_level", "")
+            level = usage_levels.get(name, 0)
+            multiplier = level * 0.25 if level else self._get_model_multiplier(name)
 
             cloud_models.append({
                 "name": name,
                 "display_name": name.replace("-cloud", ""),
                 "size_bytes": m.get("size", 0),
-                "parameter_size": size_info,
-                "family": family,
-                "quantization": quant,
+                "parameter_size": details.get("parameter_size", ""),
+                "family": details.get("family", ""),
+                "quantization": details.get("quantization_level", ""),
                 "capabilities": self._get_model_capabilities(name),
-                "usage_multiplier": self._get_model_multiplier(name),
+                "usage_multiplier": multiplier,
+                "usage_level": level,  # 1-4, 0 = unknown
                 "modified_at": m.get("modified_at", ""),
                 "digest": m.get("digest", "")[:12] if m.get("digest") else "",
             })

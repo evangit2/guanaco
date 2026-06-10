@@ -469,11 +469,17 @@ def create_router(client: OllamaClient, analytics=None, config=None, account_poo
         """List available models by querying Ollama Cloud dynamically."""
         try:
             models = await client.list_models()
+            # Fetch real usage levels from ollama.com library pages
+            model_names = [m.get("name", m.get("model", "")) for m in models]
+            usage_levels = await client.fetch_usage_levels(model_names)
+
             data = []
             for m in models:
                 name = m.get("name", m.get("model", ""))
                 display_name = name.replace("-cloud", "") if name.endswith("-cloud") else name
                 details = m.get("details", {})
+                level = usage_levels.get(name, 0)
+                multiplier = level * 0.25 if level else client._get_model_multiplier(name)
                 data.append({
                     "id": display_name,
                     "object": "model",
@@ -483,6 +489,8 @@ def create_router(client: OllamaClient, analytics=None, config=None, account_poo
                     "root": display_name,
                     "parent": None,
                     "capabilities": client._get_model_capabilities(name),
+                    "usage_multiplier": multiplier,
+                    "usage_level": level,  # 1-4, 0 = unknown
                     "details": {
                         "parameter_size": details.get("parameter_size", ""),
                         "quantization": details.get("quantization_level", ""),
