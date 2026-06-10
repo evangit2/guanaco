@@ -895,7 +895,16 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
             )
             current_branch = branch_result.stdout.strip() or "main"
 
-            # Step 2: Git fetch + pull
+            # Step 2: Git fetch + hard reset — never fail because of local changes.
+            # We stash any local edits, reset to the exact remote commit, then pull.
+            # This guarantees the update always succeeds even if the user (or a prior
+            # partial update) left uncommitted files in the repo.
+            stash_result = subprocess.run(
+                ["git", "stash", "push", "-m", "pre-update-stash", "--include-untracked"],
+                cwd=project_dir, capture_output=True, text=True, timeout=15
+            )
+            # stash exit 0 = stashed something, exit 1 = nothing to stash — both OK
+
             fetch_result = subprocess.run(
                 ["git", "fetch", "origin", current_branch],
                 cwd=project_dir, capture_output=True, text=True, timeout=30
@@ -903,12 +912,12 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
             if fetch_result.returncode != 0:
                 return {"status": "error", "step": "fetch", "message": fetch_result.stderr[:200]}
 
-            pull_result = subprocess.run(
-                ["git", "pull", "origin", current_branch],
+            reset_result = subprocess.run(
+                ["git", "reset", "--hard", f"origin/{current_branch}"],
                 cwd=project_dir, capture_output=True, text=True, timeout=30
             )
-            if pull_result.returncode != 0:
-                return {"status": "error", "step": "pull", "message": pull_result.stderr[:200]}
+            if reset_result.returncode != 0:
+                return {"status": "error", "step": "reset", "message": reset_result.stderr[:200]}
 
             # Step 3: Reinstall into venv
             install_dir = Path.home() / ".guanaco"

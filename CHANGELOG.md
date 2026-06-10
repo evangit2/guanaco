@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.1] - 2026-06-10
+
+### Fixed
+- **Updater now stashes + hard-resets instead of merge-pulling.** Previously if the working tree had any local modifications (e.g. leftover version-string edits from a prior partial update), `git pull` would abort with a merge conflict and the update silently failed, leaving the old code running. The updater now unconditionally stashes any local changes (including untracked files) and resets to `origin/{branch}` before reinstalling. This makes the **Apply Update** button work reliably on every install, even if the repo is dirty.
+
+### Changed
+- Bumped version to 0.5.1 to ensure existing 0.4.2 → 0.5.x update paths hit the new updater logic immediately.
+
+---
+
 ## [0.5.0] - 2026-06-10
 
 ### Major Release — Usage Tracking, ROI Dashboard, and Multi-Account Infrastructure
