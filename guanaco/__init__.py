@@ -7,12 +7,15 @@ __version__ = "0.5.0"
 
 try:
     from importlib.metadata import version as _version
-    _pkg_ver = _version("guanaco")
-    # Only use pkg version if it parses as a clean semver >= our hardcoded baseline.
-    # This prevents stale/RC versions like "0.4.0rc1" from overriding the hardcoded value.
+    _pkg_ver = _version("guanaco-llm-proxy")
+    # Only override hardcoded if installed metadata is *newer or same* —
+    # prevents stale metadata from git-pull without re-pip-install from
+    # reverting the version to an old value.
     import re
     _m = re.match(r"^(\d+)\.(\d+)\.(\d+)$", _pkg_ver or "")
-    if _m and tuple(int(x) for x in _m.groups()) >= (0, 4, 1):
-        __version__ = _pkg_ver
+    if _m:
+        _hardcoded = tuple(int(x) for x in __version__.split("."))
+        if tuple(int(x) for x in _m.groups()) >= _hardcoded:
+            __version__ = _pkg_ver
 except Exception:
     pass
