@@ -1945,6 +1945,12 @@ function checkOllamaStatus() {
             modelsEl.textContent = data.model_count || 0;
             dotEl.classList.remove('error','warn');
             textEl.textContent = 'Connected';
+        } else if (data.status === 'not_configured') {
+            connEl.innerHTML = '<span class="status-warn">⚪ Not configured</span>';
+            modelsEl.textContent = '—';
+            dotEl.classList.remove('error');
+            dotEl.classList.add('warn');
+            textEl.textContent = 'No Ollama';
         } else {
             connEl.innerHTML = `<span class="status-err">❌ ${data.error || data.status}</span>`;
             modelsEl.textContent = '0';
@@ -1953,8 +1959,8 @@ function checkOllamaStatus() {
             textEl.textContent = 'Error';
         }
         latEl.textContent = data.latency_ms ? data.latency_ms + 'ms' : '—';
-        keyEl.textContent = CONFIG.llm ? '✓ Set' : '✗ Not set';
-        keyEl.className = 'status-value ' + (CONFIG.llm ? 'status-ok' : 'status-err');
+        keyEl.textContent = 'See Accounts';
+        keyEl.className = 'status-value';
     }).catch(err => {
         connEl.innerHTML = '<span class="status-err">❌ Unreachable</span>';
         dotEl.classList.add('error');
