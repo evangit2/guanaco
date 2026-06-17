@@ -218,7 +218,6 @@ async def _convert_image_urls_to_base64(messages: list) -> list:
                 converted.append(new_msg)
             else:
                 converted.append(msg)
-    
     return converted
 
 
@@ -235,6 +234,8 @@ class ChatCompletionRequest(BaseModel):
     tools: Optional[list[dict]] = None
     tool_choice: Optional[str | dict] = None
     response_format: Optional[dict] = None
+    reasoning_effort: Optional[str] = None
+    extra_body: Optional[dict] = None
 
 
 # ── Anthropic Request Models ──
@@ -255,6 +256,8 @@ class AnthropicRequest(BaseModel):
     stop_sequences: Optional[list[str]] = None
     tools: Optional[list[dict]] = None
     tool_choice: Optional[dict] = None
+    reasoning_effort: Optional[str] = None
+    extra_body: Optional[dict] = None
 
 
 def _resolve_model(model: str, config) -> str:
@@ -764,6 +767,9 @@ def create_router(client, analytics=None, config=None, account_pool=None) -> API
         
         payload = body.model_dump(exclude_none=True)
         payload["model"] = resolved_model
+        if body.extra_body:
+            payload.update(body.extra_body)
+            payload.pop("extra_body", None)
 
         # ── Quota-full redirect: skip Ollama entirely, go straight to fallback ──
         # Exception: vision requests should skip fallback if the provider doesn't support them
@@ -1207,6 +1213,10 @@ def create_router(client, analytics=None, config=None, account_pool=None) -> API
                             openai_payload["tool_choice"] = {"type": "function", "function": {"name": body.tool_choice.get("name", "")}}
                 elif isinstance(body.tool_choice, str):
                     openai_payload["tool_choice"] = body.tool_choice
+        if body.reasoning_effort:
+            openai_payload["reasoning_effort"] = body.reasoning_effort
+        if body.extra_body:
+            openai_payload.update(body.extra_body)
 
         try:
             if body.stream:
