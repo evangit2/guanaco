@@ -8,6 +8,9 @@ from typing import Optional
 
 from guanaco.search.base import ProviderEmulator, register_provider
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 # ── Response Models ──
 
@@ -50,8 +53,12 @@ class SearXNGProvider(ProviderEmulator):
             categories: Optional[str] = None,
             request: Request = None,
         ):
-            ollama_resp = await self.ollama.search(query=q, max_results=10)
-            return _format_searxng(q, ollama_resp)
+            try:
+                ollama_resp = await self.ollama.search(query=q, max_results=10)
+                return _format_searxng(q, ollama_resp)
+            except Exception as e:
+                logger.warning("SearXNG search failed: %s", e)
+                return _format_searxng(q, {"results": []})
 
         @router.post("/search", response_model=SearXNGSearchResponse)
         async def searxng_search_post(
@@ -61,14 +68,22 @@ class SearXNGProvider(ProviderEmulator):
             categories: Optional[str] = None,
             request: Request = None,
         ):
-            ollama_resp = await self.ollama.search(query=q, max_results=10)
-            return _format_searxng(q, ollama_resp)
+            try:
+                ollama_resp = await self.ollama.search(query=q, max_results=10)
+                return _format_searxng(q, ollama_resp)
+            except Exception as e:
+                logger.warning("SearXNG search failed: %s", e)
+                return _format_searxng(q, {"results": []})
 
         # SearXNG also accepts requests at root /
         @router.get("/", response_model=SearXNGSearchResponse, include_in_schema=False)
         async def searxng_root_get(q: str, format: str = "json"):
-            ollama_resp = await self.ollama.search(query=q, max_results=10)
-            return _format_searxng(q, ollama_resp)
+            try:
+                ollama_resp = await self.ollama.search(query=q, max_results=10)
+                return _format_searxng(q, ollama_resp)
+            except Exception as e:
+                logger.warning("SearXNG root search failed: %s", e)
+                return _format_searxng(q, {"results": []})
 
         app.include_router(router)
 
