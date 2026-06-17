@@ -28,7 +28,7 @@
     .stat .value { font-size: 24px; font-weight: 700; color: var(--accent); }
     .stat .label { font-size: 11px; color: var(--text2); margin-top: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
 
-    .tabs { display: flex; gap: 4px; margin-bottom: 24px; background: var(--surface); border-radius: 10px; padding: 4px; flex-wrap: wrap; }
+    .tabs { display:flex; gap:4px; margin-bottom:24px; background:var(--surface); border-radius:10px; padding:4px; overflow-x:auto; flex-wrap:nowrap; }
     .tab { padding: 8px 16px; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 500; color: var(--text2); transition: all 0.15s; white-space: nowrap; }
     .tab:hover { color: var(--text); }
     .tab.active { background: var(--accent); color: white; }
@@ -180,6 +180,7 @@
         <div class="tab" onclick="showTab('analytics')">Analytics</div>
         <div class="tab" onclick="showTab('history')">History</div>
         <div class="tab" onclick="showTab('status')">Status</div>
+        <div class="tab" onclick="showTab('network')">Network</div>
         <div class="tab" onclick="showTab('cache')">Cache</div>
         <div class="tab" onclick="showTab('keys')">API Keys</div>
         <div class="tab" onclick="showTab('accounts')">Accounts</div>
@@ -206,14 +207,6 @@
             <h2><span class="emoji">🔍</span> Emulated Search Provider Endpoints</h2>
             <div class="provider-pills" id="provider-pills"></div>
             <div id="search-endpoints" style="margin-top:12px;"></div>
-        </div>
-        <div class="card">
-            <h2><span class="emoji">🌐</span> Network</h2>
-            <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;">
-                <label class="toggle"><input type="checkbox" id="tailscale-toggle" onchange="toggleTailscale()"><span class="slider"></span></label>
-                <div><div style="font-size:14px;font-weight:600;">Tailscale</div><div style="font-size:12px;color:var(--text2);" id="tailscale-status">Not installed</div></div>
-            </div>
-            <div id="network-info" style="font-size:13px;color:var(--text2);"></div>
         </div>
     </div>
 
@@ -726,7 +719,35 @@
         </div>
     </div>
 
-    <!-- ─── Cache Tab ─── -->
+        <!-- ─── Network Tab ─── -->
+    <div id="tab-network" class="hidden">
+        <div class="card">
+            <h2><span class="emoji">🌐</span> Network Visibility</h2>
+            <p style="font-size:13px;color:var(--text2);margin-bottom:16px;">Control which interfaces can reach the dashboard and API. Changing the binding requires a Guanaco restart.</p>
+            <form id="network-form" onsubmit="saveNetworkConfig(event)">
+                <div style="margin-bottom:12px;">
+                    <label style="display:block;font-size:12px;color:var(--text2);margin-bottom:4px;">Visibility</label>
+                    <select id="network-visibility" name="visibility" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:8px;font-size:13px;width:100%;">
+                        <option value="localhost">localhost — only this machine</option>
+                        <option value="tailscale">tailscale — Tailscale mesh network</option>
+                        <option value="all">all — every network interface</option>
+                    </select>
+                </div>
+                <div style="margin-bottom:12px;">
+                    <label style="display:block;font-size:12px;color:var(--text2);margin-bottom:4px;">Port</label>
+                    <input id="network-port" name="port" type="number" min="1" max="65535" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:8px;font-size:13px;width:100%;">
+                </div>
+                <div style="margin-bottom:12px;">
+                    <label style="display:block;font-size:12px;color:var(--text2);margin-bottom:4px;">Reachable addresses</label>
+                    <div id="network-addresses" style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px 12px;font-size:13px;color:var(--text);">—</div>
+                </div>
+                <button type="submit" class="btn" style="margin-top:8px;">Save Network Settings</button>
+                <span id="network-status" style="margin-left:12px;font-size:13px;"></span>
+            </form>
+        </div>
+    </div>
+
+<!-- ─── Cache Tab ─── -->
     <div id="tab-cache" class="hidden">
         <div class="card">
             <h2><span class="emoji">💰</span> OpenCode Go Usage</h2>
@@ -901,7 +922,7 @@ function showTab(tab) {
     // Find the clicked tab element by matching onclick content (works with both inline onclick and programmatic calls)
     const tabEl = document.querySelector(`.tab[onclick*="'${tab}'"]`) || document.querySelector(`.tab[onclick*='"${tab}"']`);
     if (tabEl) tabEl.classList.add('active');
-    ['endpoints','search','models','fallback','analytics','history','status','cache','keys','accounts','system'].forEach(t => {
+    ['endpoints','search','models','fallback','analytics','history','status','network','cache','keys','accounts','system'].forEach(t => {
         const el = document.getElementById('tab-'+t);
         if (el) el.classList.toggle('hidden', t !== tab);
     });
@@ -913,6 +934,7 @@ function showTab(tab) {
     if (tab === 'analytics') loadAnalytics();
     if (tab === 'history') { loadHistoryConfig(); loadHistory(); loadHistoryLogs(); }
     if (tab === 'status') { checkOllamaStatus(); loadUsageConfig(); checkUsage(); loadStatusLog(); loadROIConfig(); }
+    if (tab === 'network') loadNetworkConfig();
     if (tab === 'accounts') { loadAccounts(); checkAllAccountUsage(); }
     if (tab === 'system') { loadAutostart(); loadProviderStrategy(); checkForUpdate(); }
 }
@@ -1028,6 +1050,48 @@ function updateNetworkInfo() {
         (CONFIG.tailscale_installed
             ? `<div>Tailscale: ${CONFIG.tailscale_ip ? CONFIG.tailscale_ip : 'Not available'}</div>`
             : `<div style="color:var(--text2);font-size:11px;">Tailscale not installed — <a href="https://tailscale.com" target="_blank" style="color:var(--accent);">install it</a> for remote access</div>`);
+}
+
+function loadNetworkConfig() {
+    fetch('/dashboard/api/network/config').then(r => r.json()).then(data => {
+        const vis = data.visibility || 'localhost';
+        document.getElementById('network-visibility').value = vis;
+        document.getElementById('network-port').value = data.port || 8080;
+        const addrs = [];
+        addrs.push('<div>localhost: <span style="color:var(--accent);">http://127.0.0.1:' + data.port + '</span></div>');
+        if (data.local_ip) addrs.push('<div>local: <span style="color:var(--accent);">http://' + data.local_ip + ':' + data.port + '</span></div>');
+        if (data.tailscale_ip) addrs.push('<div>Tailscale: <span style="color:var(--accent);">http://' + data.tailscale_ip + ':' + data.port + '</span></div>');
+        document.getElementById('network-addresses').innerHTML = addrs.join('');
+    }).catch(err => {
+        document.getElementById('network-addresses').innerHTML = '<span style="color:var(--red);">Could not load network config</span>';
+    });
+}
+
+function saveNetworkConfig(e) {
+    e.preventDefault();
+    const body = {
+        visibility: document.getElementById('network-visibility').value,
+        port: parseInt(document.getElementById('network-port').value, 10),
+    };
+    fetch('/dashboard/api/network/config', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body),
+    }).then(r => r.json()).then(data => {
+        const status = document.getElementById('network-status');
+        if (data.status === 'ok') {
+            status.innerHTML = '✅ Saved — restart Guanaco to apply binding';
+            status.style.color = 'var(--green)';
+        } else {
+            status.innerHTML = '❌ ' + (data.detail || 'Save failed');
+            status.style.color = 'var(--red)';
+        }
+        loadNetworkConfig();
+    }).catch(err => {
+        const status = document.getElementById('network-status');
+        status.innerHTML = '❌ Network error';
+        status.style.color = 'var(--red)';
+    });
 }
 
 
@@ -1344,6 +1408,7 @@ function loadModels() {
                 name: id,
                 model: id,
                 id: id,
+                owned_by: ownedBy,
                 details: details,
                 capabilities: caps,
                 usage_multiplier: _getMultiplier(id),
@@ -1378,44 +1443,53 @@ function refreshModels() {
 
 function renderModels(models) {
     const grid = document.getElementById('models-grid');
-    // Group by base name (strip opencode-go/ prefix) to merge overlapping models
+    // Group by base name, merging Ollama + Go + UMANS variants
     const grouped = {};
     models.forEach(m => {
         const name = m.name || m.model || 'unknown';
-        const isGo = name.startsWith('opencode-go/');
-        const baseName = isGo ? name.replace('opencode-go/', '') : name.replace('-cloud','');
+        let provider = 'ollama';
+        if (name.startsWith('opencode-go/')) provider = 'go';
+        else if (name.startsWith('umans/')) provider = 'umans';
+        else if (m.owned_by === 'umans') provider = 'umans';
+        else if (m.owned_by === 'opencode_go') provider = 'go';
+
+        let baseName = name;
+        if (name.startsWith('opencode-go/')) baseName = name.replace('opencode-go/', '');
+        else if (name.startsWith('umans/')) baseName = name.replace('umans/', '');
+        else baseName = name.replace('-cloud','');
+
         if (!grouped[baseName]) {
-            grouped[baseName] = { ollama: null, go: null };
+            grouped[baseName] = {};
         }
-        if (isGo) grouped[baseName].go = m;
-        else grouped[baseName].ollama = m;
+        grouped[baseName][provider] = m;
     });
 
     grid.innerHTML = Object.entries(grouped).map(([baseName, entry]) => {
-        const m = entry.ollama || entry.go;
+        const providers = Object.keys(entry);
+        const m = entry.ollama || entry.go || entry.umans;
         const display = baseName;
         const details = (m.details || {});
         const family = details.family || '';
         const paramSize = details.parameter_size || '';
         const quant = details.quantization_level || '';
         const caps = m.capabilities || ['cloud'];
-        const ollamaMult = entry.ollama ? _getMultiplier(entry.ollama.name) : null;
-        const goMult = entry.go ? _getMultiplier(entry.go.name) : null;
+
+        const mults = {};
+        if (entry.ollama) mults.ollama = _getMultiplier(entry.ollama.name);
+        if (entry.go) mults.go = _getMultiplier(entry.go.name);
+        if (entry.umans) mults.umans = _getMultiplier(entry.umans.name);
+
         const capHtml = caps.map(c => '<span class="cap ' + c + '">' + c + '</span>').join('');
 
-        // Provider tags — show both if available on both providers
-        let providerTags = '';
-        if (entry.ollama && entry.go) {
-            providerTags = '<span style="font-size:9px;font-weight:700;background:var(--surface2);color:var(--text2);padding:2px 6px;border-radius:4px;margin-left:8px;vertical-align:middle;">Ollama</span><span style="font-size:9px;font-weight:700;background:var(--surface);color:var(--green);padding:2px 6px;border-radius:4px;margin-left:4px;vertical-align:middle;">Go</span>';
-        } else if (entry.go) {
-            providerTags = '<span style="font-size:9px;font-weight:700;background:var(--surface);color:var(--green);padding:2px 6px;border-radius:4px;margin-left:8px;vertical-align:middle;">Go</span>';
-        } else {
-            providerTags = '<span style="font-size:9px;font-weight:700;background:var(--surface2);color:var(--text2);padding:2px 6px;border-radius:4px;margin-left:8px;vertical-align:middle;">Ollama</span>';
-        }
+        const providerTags = providers.map(p => {
+            const color = p === 'go' ? 'var(--green)' : (p === 'umans' ? 'var(--cyan)' : 'var(--text2)');
+            const bg = p === 'go' ? 'var(--surface)' : 'var(--surface2)';
+            const labelMap = {ollama: 'Ollama', go: 'Go', umans: 'UMANS'};
+            return '<span style="font-size:9px;font-weight:700;background:' + bg + ';color:' + color + ';padding:2px 6px;border-radius:4px;margin-left:8px;vertical-align:middle;">' + labelMap[p] + '</span>';
+        }).join('');
 
-        // Build usage bars — one per provider when both exist
         function makeUsageBar(mult, label, color) {
-            const filled = Math.round(mult * 4);
+            const filled = Math.min(4, Math.round(mult * 4));
             var slots = '';
             for (var i = 0; i < 4; i++) {
                 var cls = i < filled ? 'usage-slot usage-active' : 'usage-slot';
@@ -1425,15 +1499,16 @@ function renderModels(models) {
             return '<div class="usage-bar" title="' + label + ': ' + mult.toFixed(2) + 'x">' + slots + '<span class="usage-label">' + label + ' ' + mult.toFixed(2) + 'x</span></div>';
         }
 
-        var usageBarsHtml;
-        if (entry.ollama && entry.go) {
-            usageBarsHtml = '<div style="display:flex;flex-direction:column;gap:4px;margin-top:6px;">' + makeUsageBar(ollamaMult, 'Ollama', 'var(--text2)') + makeUsageBar(goMult, 'Go', 'var(--green)') + '</div>';
+        const colors = {ollama: 'var(--text2)', go: 'var(--green)', umans: 'var(--cyan)'};
+        const labels = {ollama: 'Ollama', go: 'Go', umans: 'UMANS'};
+        let usageBarsHtml;
+        if (providers.length > 1) {
+            usageBarsHtml = '<div style="display:flex;flex-direction:column;gap:4px;margin-top:6px;">' + providers.map(p => makeUsageBar(mults[p], labels[p], colors[p])).join('') + '</div>';
         } else {
-            var singleMult = goMult !== null ? goMult : (ollamaMult !== null ? ollamaMult : 0.75);
-            var singleLabel = goMult !== null ? 'Go' : 'Ollama';
-            var singleColor = goMult !== null ? 'var(--green)' : 'var(--text2)';
-            usageBarsHtml = makeUsageBar(singleMult, singleLabel, singleColor);
+            const p = providers[0];
+            usageBarsHtml = makeUsageBar(mults[p], labels[p], colors[p]);
         }
+
         return `<div class="model-card">
             <div class="model-name">${display}${providerTags}</div>
             <div class="model-details">
