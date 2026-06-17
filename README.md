@@ -23,8 +23,8 @@ curl -sSL https://raw.githubusercontent.com/evangit2/guanaco/main/install.sh | b
 ## Features
 
 - **LLM Router** — OpenAI-compatible `/v1/chat/completions` and Anthropic-compatible `/v1/messages` proxy with streaming, token tracking, and analytics
+- **Multi-Provider Support** — Use [Ollama Cloud](https://ollama.com) (free), [OpenCode Go](https://opencode.ai/go?ref=82YPJKPFFP), or [UMANS](https://app.umans.ai/register?ref=4YG6UP9U) (unlimited token plan available); route by model prefix or priority order
 - **8 Search/Scrape Emulators** — Drop-in replacements for Tavily, Exa, SearXNG, Firecrawl, Serper, Jina, Cohere, and Brave Search
-- **Multi-Provider Support** — Configure one or more Ollama Cloud, OpenCode Go, or other OpenAI-compatible provider accounts; route by model prefix or priority order
 - **Fallback Provider** — Automatically route to a secondary OpenAI-compatible provider when the primary provider is slow, rate-limited, or unavailable; also kicks in when usage quotas are exhausted
 - **Usage Tracking** — Monitor provider session and weekly quota usage in real time (where supported)
 - **Smart Caching** — Optional exact-match and session-aware prefix caching (BETA) to reduce redundant API calls
@@ -80,26 +80,6 @@ The installer starts Guanaco automatically (as a systemd service or in the foreg
 | `guanaco config --set <key> <value>` | Update a config value |
 | `guanaco version` | Show version |
 | `guanaco uninstall` | Remove systemd service and clean up |
-
----
-
-## Supported LLM Providers
-
-| Provider | Get a key | Notes |
-|----------|-----------|-------|
-| **[Ollama Cloud](https://ollama.com)** | Free at [ollama.com](https://ollama.com) | Recommended for search fallback; free tier available |
-| **[OpenCode Go](https://opencode.ai/go?ref=82YPJKPFFP)** | [opencode.ai](https://opencode.ai/go?ref=82YPJKPFFP) | One account, multiple models; supports OpenAI + Anthropic endpoints |
-| **[UMANS](https://app.umans.ai/register?ref=4YG6UP9U)** | [app.umans.ai](https://app.umans.ai/register?ref=4YG6UP9U) | Available Moonshot, GLM, Qwen, and custom models; offers an **unlimited token plan** |
-
-Models can be requested by provider prefix:
-
-| Prefix | Provider | Example model |
-|--------|----------|---------------|
-| (none) | Provider priority order | `gemma4:31b` |
-| `opencode-go/` | OpenCode Go | `opencode-go/deepseek-v4-flash` |
-| `umans/` | UMANS | `umans/umans-kimi-k2.7` |
-
-`provider_priority` in `config.yaml` determines which provider handles unprefixed model names first.
 
 ---
 
