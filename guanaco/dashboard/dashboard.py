@@ -1030,7 +1030,10 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
                     "step": "validate",
                     "message": f"Update installed but app failed to start: {validate_result.stderr[:200]}"
                 }
-            new_version = validate_result.stdout.strip()
+            # The validation script may print startup banner lines before the version;
+            # ignore everything except the final non-empty line.
+            output_lines = [ln for ln in validate_result.stdout.splitlines() if ln.strip()]
+            new_version = output_lines[-1].strip() if output_lines else "unknown"
 
             # Step 5: Schedule stop → start as a BackgroundTask
             # This ensures the HTTP response is sent before we kill ourselves.

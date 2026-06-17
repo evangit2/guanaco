@@ -244,10 +244,8 @@ def _run_install():
     port = getattr(config.router, "port", 8080) or 8080
     config_dir = os.environ.get("GUANACO_CONFIG_DIR") or str(get_default_config_dir())
     service_name = getattr(config.router, "service_name", "guanaco") or "guanaco"
-    venv_python = os.path.join(os.path.dirname(os.path.abspath(shutil.which("python3") or "python3")), "python")
-    if not os.path.exists(venv_python):
-        venv_python = shutil.which("python3") or "/usr/bin/python3"
-    install_dir = os.path.dirname(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+    venv_python = sys.executable
+    install_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     service_name = getattr(config.router, "service_name", "guanaco") or "guanaco"
 
     # Detect Tailscale IP for the service environment
