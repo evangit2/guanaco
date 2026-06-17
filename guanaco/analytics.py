@@ -144,6 +144,29 @@ class AnalyticsLogger:
             except Exception:
                 pass
 
+        # Performance: WAL mode and synchronous must be set outside of an explicit transaction.
+        with sqlite3.connect(self.db_path, isolation_level=None) as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_log_type_ts ON request_log(type, ts DESC)
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_log_type_model_ts ON request_log(type, model, ts DESC)
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_log_type_provider_ts ON request_log(type, provider, ts DESC)
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_log_fallback_for ON request_log(fallback_for)
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_log_error_ts ON request_log(error, ts DESC)
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_log_request_id ON request_log(request_id)
+            """)
+
     def log_llm(
         self,
         model: str,
@@ -400,8 +423,8 @@ class AnalyticsLogger:
 
             # Average TPS — based on most recent rows covering ~10k completion tokens
             tps_rows = conn.execute(
-                "SELECT tps, COALESCE(completion_tokens,0) FROM request_log "
-                "WHERE type='llm' AND tps IS NOT NULL ORDER BY ts DESC"
+                "SELECT tps, completion_tokens FROM request_log "
+                "WHERE type='llm' AND tps IS NOT NULL ORDER BY ts DESC LIMIT 10000"
             ).fetchall()
             recent_tps = []
             token_budget = 10000
@@ -414,8 +437,8 @@ class AnalyticsLogger:
 
             # Average TTFT — same 10k token window
             ttft_rows = conn.execute(
-                "SELECT ttft_seconds, COALESCE(completion_tokens,0) FROM request_log "
-                "WHERE type='llm' AND ttft_seconds IS NOT NULL ORDER BY ts DESC"
+                "SELECT ttft_seconds, completion_tokens FROM request_log "
+                "WHERE type='llm' AND ttft_seconds IS NOT NULL ORDER BY ts DESC LIMIT 10000"
             ).fetchall()
             recent_ttft = []
             token_budget = 10000
@@ -435,10 +458,10 @@ class AnalyticsLogger:
             models = []
             for row in model_rows:
                 model_name = row[0]
-                # Get recent TPS for this model
+                # Get recent TPS for this model (bounded by a token budget; use indexed DESC query)
                 m_tps_rows = conn.execute(
-                    "SELECT tps, COALESCE(completion_tokens,0) FROM request_log "
-                    "WHERE type='llm' AND model=? AND tps IS NOT NULL ORDER BY ts DESC",
+                    "SELECT tps, completion_tokens FROM request_log "
+                    "WHERE type='llm' AND model=? AND tps IS NOT NULL ORDER BY ts DESC LIMIT 2000",
                     (model_name,)
                 ).fetchall()
                 recent_m_tps = []
@@ -450,10 +473,10 @@ class AnalyticsLogger:
                     budget -= ct
                 m_avg_tps = round(sum(recent_m_tps) / len(recent_m_tps), 2) if recent_m_tps else 0
 
-                # Get recent TTFT for this model
+                # Get recent TTFT for this model (bounded by a token budget)
                 m_ttft_rows = conn.execute(
-                    "SELECT ttft_seconds, COALESCE(completion_tokens,0) FROM request_log "
-                    "WHERE type='llm' AND model=? AND ttft_seconds IS NOT NULL ORDER BY ts DESC",
+                    "SELECT ttft_seconds, completion_tokens FROM request_log "
+                    "WHERE type='llm' AND model=? AND ttft_seconds IS NOT NULL ORDER BY ts DESC LIMIT 2000",
                     (model_name,)
                 ).fetchall()
                 recent_m_ttft = []
@@ -493,10 +516,10 @@ class AnalyticsLogger:
             llm_providers = []
             for row in llm_provider_rows:
                 prov_name = row[0]
-                # Get recent TPS for this provider
+                # Get recent TPS for this provider (bounded by token budget)
                 p_tps_rows = conn.execute(
-                    "SELECT tps, COALESCE(completion_tokens,0) FROM request_log "
-                    "WHERE type='llm' AND provider=? AND tps IS NOT NULL ORDER BY ts DESC",
+                    "SELECT tps, completion_tokens FROM request_log "
+                    "WHERE type='llm' AND provider=? AND tps IS NOT NULL ORDER BY ts DESC LIMIT 2000",
                     (prov_name,)
                 ).fetchall()
                 recent_p_tps = []
@@ -508,10 +531,10 @@ class AnalyticsLogger:
                     budget -= ct
                 p_avg_tps = round(sum(recent_p_tps) / len(recent_p_tps), 2) if recent_p_tps else 0
 
-                # Get recent TTFT for this provider
+                # Get recent TTFT for this provider (bounded by token budget)
                 p_ttft_rows = conn.execute(
-                    "SELECT ttft_seconds, COALESCE(completion_tokens,0) FROM request_log "
-                    "WHERE type='llm' AND provider=? AND ttft_seconds IS NOT NULL ORDER BY ts DESC",
+                    "SELECT ttft_seconds, completion_tokens FROM request_log "
+                    "WHERE type='llm' AND provider=? AND ttft_seconds IS NOT NULL ORDER BY ts DESC LIMIT 2000",
                     (prov_name,)
                 ).fetchall()
                 recent_p_ttft = []

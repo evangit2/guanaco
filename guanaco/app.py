@@ -112,35 +112,35 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         base_url = get_base_url(config)
-        print(f"Guanaco running on http://{config.router.host}:{config.router.port}")
-        print(f"   LLM Router:    {base_url}:{config.router.port}/v1/chat/completions")
-        print(f"   Anthropic:     {base_url}:{config.router.port}/v1/messages")
-        print(f"   Search APIs:    {base_url}:{config.router.port}/<provider>/...")
-        print(f"   Dashboard:     {base_url}:{config.router.port}/dashboard")
-        print(f"   Analytics DB:  {analytics.db_path}")
+        logger.info("Guanaco running on http://%s:%s", config.router.host, config.router.port)
+        logger.info("   LLM Router:    %s:%s/v1/chat/completions", base_url, config.router.port)
+        logger.info("   Anthropic:     %s:%s/v1/messages", base_url, config.router.port)
+        logger.info("   Search APIs:    %s:%s/<provider>/...", base_url, config.router.port)
+        logger.info("   Dashboard:     %s:%s/dashboard", base_url, config.router.port)
+        logger.info("   Analytics DB:  %s", analytics.db_path)
         analytics.log_status("info", "system", "Guanaco started", {
             "host": config.router.host, "port": config.router.port,
             "cache_beta": config.cache.beta_mode,
             "providers": chat_client.provider_keys,
         })
         if config.cache.beta_mode:
-            print(f"   Cache (BETA):  ENABLED — exact_ttl={config.cache.exact_ttl}s, prefix_ttl={config.cache.session_prefix_ttl}s, dedup={config.cache.dedup_enabled}")
+            logger.info("   Cache (BETA):  ENABLED — exact_ttl=%ss, prefix_ttl=%ss, dedup=%s", config.cache.exact_ttl, config.cache.session_prefix_ttl, config.cache.dedup_enabled)
         else:
-            print("   Cache (BETA):  DISABLED (enable with /v1/config/cache)")
+            logger.info("   Cache (BETA):  DISABLED (enable with /v1/config/cache)")
         if has_ollama:
-            print("   Ollama Cloud:  ENABLED")
+            logger.info("   Ollama Cloud:  ENABLED")
         else:
-            print("   Ollama Cloud:  DISABLED (no OLLAMA_API_KEY)")
+            logger.info("   Ollama Cloud:  DISABLED (no OLLAMA_API_KEY)")
         if has_go:
-            print(f"   OpenCode Go:   ENABLED ({len(go_accounts)} account(s))")
+            logger.info("   OpenCode Go:   ENABLED (%s account(s))", len(go_accounts))
         else:
-            print("   OpenCode Go:   DISABLED (no OPENCODE_GO_API_KEY)")
+            logger.info("   OpenCode Go:   DISABLED (no OPENCODE_GO_API_KEY)")
         if has_umans:
-            print(f"   UMANS:         ENABLED ({len(umans_accounts)} account(s))")
+            logger.info("   UMANS:         ENABLED (%s account(s))", len(umans_accounts))
         else:
-            print("   UMANS:         DISABLED (no UMANS_API_KEY)")
+            logger.info("   UMANS:         DISABLED (no UMANS_API_KEY)")
         if not has_ollama and not has_go and not has_umans:
-            print("\nWarning: running with no LLM provider configured. Only search APIs will work.")
+            logger.warning("Running with no LLM provider configured. Only search APIs will work.")
         yield
         if "ollama" in clients:
             await clients["ollama"].close()

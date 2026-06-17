@@ -22,6 +22,10 @@ from guanaco.concurrency import OllamaConcurrencyLimiter
 
 log = logging.getLogger("guanaco.router")
 
+# In-memory TTL cache for /v1/models to avoid hammering upstream provider APIs.
+_MODEL_LIST_CACHE_TTL_SECONDS = 60
+_model_list_cache: dict[str, Any] = {"data": None, "cached_at": 0.0}
+
 
 def _describe_error(exc: Exception) -> str:
     """Return a human-readable description for an exception, handling httpx
@@ -577,7 +581,12 @@ def create_router(client, analytics=None, config=None, account_pool=None) -> API
 
     @router.get("/v1/models")
     async def list_models(request: Request):
-        """List available models by querying all configured providers."""
+        """List available models by querying all configured providers, with TTL caching."""
+        global _model_list_cache
+        now = time.time()
+        if _model_list_cache["data"] is not None and (now - _model_list_cache["cached_at"]) < _MODEL_LIST_CACHE_TTL_SECONDS:
+            return _model_list_cache["data"]
+
         data = []
         seen_ids = set()
 
@@ -725,7 +734,9 @@ def create_router(client, analytics=None, config=None, account_pool=None) -> API
                     })
 
         if data:
-            return {"object": "list", "data": data}
+            result = {"object": "list", "data": data}
+            _model_list_cache = {"data": result, "cached_at": time.time()}
+            return result
 
         # ── Total failure — return configured model list ──
         if _config:
