@@ -77,7 +77,7 @@ detect_platform() {
 PLATFORM=$(detect_platform)
 
 printf "\n${BOLD}  Guanaco${RESET}\n"
-printf "  OpenAI-compatible LLM proxy for Ollama Cloud\n\n"
+printf "  OpenAI-compatible LLM proxy for multiple providers\n\n"
 info "Platform: $PLATFORM"
 
 # ── Auto-install prereqs ──
@@ -182,36 +182,69 @@ fi
 # ── Configuration ──
 step "Configuration"
 
-info "You'll need an Ollama Cloud API key."
-info "Get one at: ${CYAN}https://ollama.com${RESET}"
+info "Guanaco supports multiple LLM providers. You can configure any or all now, or add them later with: guanaco setup"
 echo ""
 
-prompt OLLAMA_API_KEY "Enter your Ollama API key" ""
+prompt_yesno SETUP_OLLAMA "Set up Ollama Cloud account?" "y"
+prompt_yesno SETUP_OPENCODE "Set up OpenCode Go account?" "n"
 
-if [ -n "$OLLAMA_API_KEY" ]; then
-    info "Validating API key with Ollama Cloud..."
-    VALIDATE_RESPONSE=$(curl -s -w "\n%{http_code}" "https://api.ollama.com/v1/models" \
-        -H "Authorization: Bearer ${OLLAMA_API_KEY}" \
-        -H "Accept: application/json" \
-        --max-time 10 2>/dev/null || echo "timeout")
-    HTTP_CODE=$(echo "$VALIDATE_RESPONSE" | tail -1)
-    if [ "$HTTP_CODE" = "200" ]; then
-        success "API key validated (models endpoint responds OK)"
-    elif [ "$HTTP_CODE" = "401" ]; then
-        warn "API key returned 401 Unauthorized from Ollama Cloud"
-        warn "Key may be invalid or expired. Guanaco will still install but inference will fail."
-        warn "Fix with: guanaco setup  (after install)"
-    elif [ "$HTTP_CODE" = "timeout" ]; then
-        warn "Could not reach Ollama Cloud (timeout). Skipping validation."
-    else
-        warn "API key validation returned HTTP $HTTP_CODE — key may not work"
+SETUP_OLLAMA_API_KEY=""
+SETUP_OPENCODE_API_KEY=""
+
+if [ "$SETUP_OLLAMA" = "y" ]; then
+    echo ""
+    info "Get an Ollama Cloud API key at: ${CYAN}https://ollama.com${RESET}"
+    prompt SETUP_OLLAMA_API_KEY "Enter your Ollama API key" ""
+    if [ -n "$SETUP_OLLAMA_API_KEY" ]; then
+        info "Validating API key with Ollama Cloud..."
+        VALIDATE_RESPONSE=$(curl -s -w "\n%{http_code}" "https://api.ollama.com/v1/models" \
+            -H "Authorization: Bearer ${SETUP_OLLAMA_API_KEY}" \
+            -H "Accept: application/json" \
+            --max-time 10 2>/dev/null || echo "timeout")
+        HTTP_CODE=$(echo "$VALIDATE_RESPONSE" | tail -1)
+        if [ "$HTTP_CODE" = "200" ]; then
+            success "Ollama API key validated (models endpoint OK)"
+        elif [ "$HTTP_CODE" = "401" ]; then
+            warn "Ollama API key returned 401 Unauthorized"
+            warn "Key may be invalid or expired. Guanaco will still install but inference will fail."
+            warn "Fix with: guanaco setup  (after install)"
+        elif [ "$HTTP_CODE" = "timeout" ]; then
+            warn "Could not reach Ollama Cloud (timeout). Skipping validation."
+        else
+            warn "Ollama API key validation returned HTTP $HTTP_CODE — key may not work"
+        fi
     fi
 fi
 
-if [ -z "$OLLAMA_API_KEY" ]; then
+if [ "$SETUP_OPENCODE" = "y" ]; then
     echo ""
-    warn "No API key provided. You can set it later with: guanaco setup"
-    info "Tip: If you plan to use OpenCode Go as your primary LLM provider, the free Ollama Cloud tier is still useful for lots of free web search requests."
+    info "Get an OpenCode Go API key at: ${CYAN}https://opencode.ai${RESET}"
+    prompt SETUP_OPENCODE_API_KEY "Enter your OpenCode Go API key" ""
+    if [ -n "$SETUP_OPENCODE_API_KEY" ]; then
+        info "Validating API key with OpenCode Go..."
+        VALIDATE_RESPONSE=$(curl -s -w "\n%{http_code}" "https://opencode.ai/zen/go/v1/models" \
+            -H "Authorization: Bearer ${SETUP_OPENCODE_API_KEY}" \
+            -H "Accept: application/json" \
+            --max-time 10 2>/dev/null || echo "timeout")
+        HTTP_CODE=$(echo "$VALIDATE_RESPONSE" | tail -1)
+        if [ "$HTTP_CODE" = "200" ]; then
+            success "OpenCode Go API key validated (models endpoint OK)"
+        elif [ "$HTTP_CODE" = "401" ]; then
+            warn "OpenCode Go API key returned 401 Unauthorized"
+            warn "Key may be invalid or expired. Guanaco will still install but inference will fail."
+            warn "Fix with: guanaco setup  (after install)"
+        elif [ "$HTTP_CODE" = "timeout" ]; then
+            warn "Could not reach OpenCode Go (timeout). Skipping validation."
+        else
+            warn "OpenCode Go API key validation returned HTTP $HTTP_CODE — key may not work"
+        fi
+    fi
+fi
+
+if [ -z "$SETUP_OLLAMA_API_KEY" ] && [ -z "$SETUP_OPENCODE_API_KEY" ]; then
+    echo ""
+    warn "No API keys provided. You can configure providers later with: guanaco setup"
+    warn "Guanaco will still install and run, but LLM requests will fail until an account is added."
     echo ""
 fi
 
@@ -224,9 +257,9 @@ printf "  ${RED}  SECURITY WARNING${RESET}\n"
 printf "  ${RED}  ─────────────────${RESET}\n"
 printf "  ${RED}  If your machine has automatic port forwarding (some VPS${RESET}\n"
 printf "  ${RED}  providers, routers with UPnP, Cloudflare tunnels, etc.),${RESET}\n"
-printf "  ${RED}  this will EXPOSE your Ollama API proxy to the public${RESET}\n"
-printf "  ${RED}  internet. Anyone who finds it can use your API key and${RESET}\n"
-printf "  ${RED}  consume your Ollama Cloud quota.${RESET}\n\n"
+printf "  ${RED}  this will EXPOSE your LLM provider API proxy to the public${RESET}\n"
+printf "  ${RED}  internet. Anyone who finds it can use your API keys and${RESET}\n"
+printf "  ${RED}  consume your provider quota.${RESET}\n\n"
 printf "  ${RED}  - Bind to 127.0.0.1 unless you need remote access${RESET}\n"
 printf "  ${RED}  - Use a firewall or auth proxy if you must expose it${RESET}\n"
 printf "  ${RED}  - Never run this on a public-facing VPS without auth${RESET}\n\n"
@@ -296,6 +329,48 @@ info "Writing configuration..."
 
 mkdir -p "$INSTALL_DIR"
 
+# Build account list and provider priority based on user choices
+ACCOUNTS_YAML=""
+PRIORITY_YAML=""
+
+if [ -n "$SETUP_OLLAMA_API_KEY" ]; then
+    ACCOUNTS_YAML="${ACCOUNTS_YAML}
+  - name: ollama
+    provider: ollama
+    api_key: \"${SETUP_OLLAMA_API_KEY}\""
+fi
+
+if [ -n "$SETUP_OPENCODE_API_KEY" ]; then
+    ACCOUNTS_YAML="${ACCOUNTS_YAML}
+  - name: opencode
+    provider: opencode_go
+    api_key: \"${SETUP_OPENCODE_API_KEY}\""
+fi
+
+if [ "$SETUP_OLLAMA" = "y" ] && [ "$SETUP_OPENCODE" = "y" ]; then
+    prompt_yesno OLLAMA_PRIMARY "Use Ollama Cloud as the primary provider? (OpenCode Go if no)" "y"
+    if [ "$OLLAMA_PRIMARY" = "y" ]; then
+        PRIORITY_YAML="  - ollama
+  - opencode_go"
+    else
+        PRIORITY_YAML="  - opencode_go
+  - ollama"
+    fi
+elif [ "$SETUP_OLLAMA" = "y" ]; then
+    PRIORITY_YAML="  - ollama"
+elif [ "$SETUP_OPENCODE" = "y" ]; then
+    PRIORITY_YAML="  - opencode_go"
+else
+    PRIORITY_YAML="  - ollama
+  - opencode_go"
+fi
+
+if [ -z "$ACCOUNTS_YAML" ]; then
+    ACCOUNTS_LINE="ollama_accounts: []"
+else
+    ACCOUNTS_LINE="ollama_accounts:${ACCOUNTS_YAML}"
+fi
+
 cat > "$INSTALL_DIR/config.yaml" << EOF
 # Guanaco configuration
 # Generated by install.sh on $(date -I)
@@ -303,31 +378,42 @@ cat > "$INSTALL_DIR/config.yaml" << EOF
 router:
   host: "${BIND_HOST}"
   port: ${PORT}
+  provider_priority:
+${PRIORITY_YAML}
 
-llm:
-  provider: ollama_cloud
-  base_url: "https://api.ollama.com/v1"
-  api_key_env: OLLAMA_API_KEY
+ollama_api_key: "${SETUP_OLLAMA_API_KEY:-}"
+
+${ACCOUNTS_LINE}
 
 fallback:
   enabled: false
-  provider: ""
+  name: ""
   api_key: ""
   model: ""
   primary_timeout: 30.0
   stream_chunk_timeout: 180.0
+  timeout: 60.0
+  stream_fallback: true
   max_tokens: 128000
 
 cache:
-  enabled: false
+  exact_cache_enabled: false
+  session_prefix_enabled: false
 EOF
 
 # Write API key env file
-if [ -n "$OLLAMA_API_KEY" ]; then
+if [ -n "$SETUP_OLLAMA_API_KEY" ]; then
     # Preserve existing env lines except old OLLAMA_API_KEY
     TMP_ENV=$(mktemp)
     grep -v "^export OLLAMA_API_KEY=" "$INSTALL_DIR/env" 2>/dev/null > "$TMP_ENV" || true
-    echo "export OLLAMA_API_KEY=\"${OLLAMA_API_KEY}\"" >> "$TMP_ENV"
+    echo "export OLLAMA_API_KEY=\"${SETUP_OLLAMA_API_KEY}\"" >> "$TMP_ENV"
+    mv "$TMP_ENV" "$INSTALL_DIR/env"
+fi
+
+if [ -n "$SETUP_OPENCODE_API_KEY" ]; then
+    TMP_ENV=$(mktemp)
+    grep -v "^export OPENCODE_GO_API_KEY=" "$INSTALL_DIR/env" 2>/dev/null > "$TMP_ENV" || true
+    echo "export OPENCODE_GO_API_KEY=\"${SETUP_OPENCODE_API_KEY}\"" >> "$TMP_ENV"
     mv "$TMP_ENV" "$INSTALL_DIR/env"
 fi
 
@@ -396,7 +482,7 @@ echo ""
 printf "  ${BOLD}CLI commands:${RESET}\n"
 printf "    %-24s %s\n" "guanaco status" "Show service & connection status"
 printf "    %-24s %s\n" "guanaco models" "List available cloud models"
-printf "    %-24s %s\n" "guanaco usage" "Check your Ollama Cloud usage/quota"
+printf "    %-24s %s\n" "guanaco usage" "Check provider usage/quota (where supported)"
 printf "    %-24s %s\n" "guanaco analytics" "View request analytics & stats"
 printf "    %-24s %s\n" "guanaco key generate" "Generate an API key"
 printf "    %-24s %s\n" "guanaco config --show" "Show current configuration"
