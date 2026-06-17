@@ -7,14 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.6.2] - 2026-06-18
+## [0.6.3] - 2026-06-18
 
 ### Fixed
 - **Streaming usage chunks.** All providers (UMANS, OpenCode Go, Ollama) now emit a final `chat.completion.chunk` with `usage` during streaming responses, matching OpenAI spec.
-- **Provider priority for unprefixed models.** `_select_account` now passes `provider_priority` so models like `glm-5.2` correctly route to UMANS when UMANS is top priority.
-- **`glm-5.2` alias.** Added `glm-5.2` / `glm-5-2` to `KNOWN_UMANS_MODELS`.
+- **Provider priority for unprefixed models.** `_select_account` now passes `provider_priority` so models like `glm-5.2` correctly route according to configured priority.
+- **`glm-5.2` alias.** Added `glm-5.2` / `glm-5-2` / `glm5.2` to `KNOWN_UMANS_MODELS`.
 
-## [0.6.1] - 2026-06-18
+## [0.6.2] - 2026-06-18
+
+### Fixed
+- (yanked; superseded by 0.6.3)
 
 ### Fixed
 - **Explicit provider account selection.** Model prefixes (`umans/`, `opencode-go/`) now correctly use their own provider account instead of always falling back to `provider_priority` order.

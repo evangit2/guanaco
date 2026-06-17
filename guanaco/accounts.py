@@ -47,7 +47,7 @@ KNOWN_OLLAMA_MODELS = {
 KNOWN_UMANS_MODELS = {
     "kimi-k2.7", "kimi-k2.6", "kimi-k2.5",
     "kimi-k2-7", "kimi-k2-6", "kimi-k2-5",
-    "glm-5.1", "glm-5", "glm-5-1", "glm5.1", "glm5",
+    "glm-5.2", "glm-5.1", "glm-5", "glm-5-2", "glm-5-1", "glm5.2", "glm5.1", "glm5",
     "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus",
     "qwen3-7-max", "qwen3-7-plus", "qwen3-6-plus",
 }
