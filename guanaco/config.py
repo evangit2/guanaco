@@ -358,12 +358,13 @@ def load_config(path: Optional[Path] = None) -> AppConfig:
 
     _config = AppConfig(**data)
 
-    # v0.5.3+: Auto-correct accounts whose provider field doesn't match their key.
+    # v0.5.3+: Auto-correct accounts whose provider field doesn't match their key,
+    # but respect an explicitly configured provider hint.
     for acc in _config.ollama_accounts:
         if acc.name == "ollama":
             acc.provider = "ollama"
         else:
-            inferred = infer_provider_from_key(acc.api_key)
+            inferred = infer_provider_from_key(acc.api_key, provider_hint=acc.provider)
             if inferred != acc.provider:
                 acc.provider = inferred
     if not any(a.name == "ollama" for a in _config.ollama_accounts):

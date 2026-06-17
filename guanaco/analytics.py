@@ -102,6 +102,12 @@ class AnalyticsLogger:
                     conn.execute(f"ALTER TABLE request_log ADD COLUMN {col}")
                 except sqlite3.OperationalError:
                     pass
+            # Migration: add usage_multiplier and model capabilities columns
+            for col in ["usage_multiplier REAL DEFAULT 1.0"]:
+                try:
+                    conn.execute(f"ALTER TABLE request_log ADD COLUMN {col}")
+                except sqlite3.OperationalError:
+                    pass
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS status_events (
                     id TEXT PRIMARY KEY,
