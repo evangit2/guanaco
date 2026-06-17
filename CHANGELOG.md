@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.6.0] - 2026-06-18
+
+### Added
+- **UMANS provider support.** First-class provider with session-label stamping, image-limit enforcement, reasoning stripping, and retry logic. Models are prefixed as `umans/<id>` in `/v1/models`.
+- **Network visibility configuration.** New dashboard Network settings consolidated into the System tab; supports `localhost`, `Tailscale`, and `0.0.0.0` binding choices via both the installer and the dashboard.
+- **Provider selection in installer.** Install script now lets users choose which providers to enable and prompts for API keys only for enabled providers.
+- **Reasoning effort passthrough.** `/v1/chat/completions` and `/v1/messages` now accept `reasoning_effort` and `extra_body` and forward them to upstream providers (UMANS, OpenCode Go, Ollama Cloud).
+
+### Changed
+- **Dashboard UI polish.** Removed duplicate Network card from Endpoints tab; tab bar consolidated into a single scrollable row; System tab now hosts Network Visibility.
+- **Analytics performance.** Analytics DB switched to WAL mode with composite indexes for faster summary queries on large datasets; refresh times reduced from several seconds to near-instant.
+- **Model list caching.** `/v1/models` responses are cached in memory for 60 seconds, reducing upstream provider calls and dashboard load.
+- **Startup logging.** Lifespan prints converted to `logger.info` so all startup output flows through uvicorn / systemd journals.
+
+### Fixed
+- **Image URL conversion loop.** `_convert_image_urls_to_base64` no longer returns after the first message; all vision messages are processed.
+
+---
+
 ## [0.5.5] - 2026-06-17
 
 ### Fixed
