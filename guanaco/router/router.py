@@ -738,7 +738,8 @@ def create_router(client, analytics=None, config=None, account_pool=None) -> API
 
         if data:
             result = {"object": "list", "data": data}
-            _model_list_cache = {"data": result, "cached_at": time.time()}
+            _model_list_cache["data"] = result
+            _model_list_cache["cached_at"] = time.time()
             return result
 
         # ── Total failure — return configured model list ──
