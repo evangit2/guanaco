@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Guanaco installer
+# Guanaco installer v0.6.0
+# Generated: 2026-06-18
 # Usage: curl -sSL https://raw.githubusercontent.com/evangit2/guanaco/main/install.sh | bash
 #
 # Supports: Linux, macOS, WSL
