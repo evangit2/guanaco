@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.4] - 2026-06-17
+
+### Fixed
+- **Streaming bug with MultiProviderChatClient:** `chat_completion_stream` no longer returns a coroutine. It now yields chunks directly so callers can `async for` over the stream. This fixes the `'async for' requires an object with aiter method, got coroutine` error that broke all Ollama requests when the multi-provider client was active.
+
+---
+
 ## [0.5.3] - 2026-06-17
 
 ### Fixed

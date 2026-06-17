@@ -65,7 +65,8 @@ class MultiProviderChatClient:
             raise RuntimeError("No LLM provider configured")
         if model.startswith("opencode-go/") and "opencode_go" in self._clients and client is self._clients["opencode_go"]:
             payload["model"] = model[len("opencode-go/"):]
-        return client.chat_completion_stream(payload, api_key=api_key)
+        async for chunk in client.chat_completion_stream(payload, api_key=api_key):
+            yield chunk
 
     async def close(self):
         for client in self._clients.values():

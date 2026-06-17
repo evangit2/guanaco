@@ -17,7 +17,7 @@ from guanaco.client import OllamaClient
 from guanaco.opencode_go_client import OpenCodeGoClient
 from guanaco.multi_provider_client import MultiProviderChatClient
 from guanaco.accounts import AccountPool
-__version__ = "0.5.3"
+__version__ = "0.5.4"
 from guanaco.router.router import create_router as create_llm_router
 from guanaco.search.providers import ALL_PROVIDERS
 from guanaco.dashboard import create_dashboard_router
