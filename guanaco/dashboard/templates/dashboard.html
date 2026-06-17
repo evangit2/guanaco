@@ -180,7 +180,6 @@
         <div class="tab" onclick="showTab('analytics')">Analytics</div>
         <div class="tab" onclick="showTab('history')">History</div>
         <div class="tab" onclick="showTab('status')">Status</div>
-        <div class="tab" onclick="showTab('network')">Network</div>
         <div class="tab" onclick="showTab('cache')">Cache</div>
         <div class="tab" onclick="showTab('keys')">API Keys</div>
         <div class="tab" onclick="showTab('accounts')">Accounts</div>
@@ -719,34 +718,6 @@
         </div>
     </div>
 
-        <!-- ─── Network Tab ─── -->
-    <div id="tab-network" class="hidden">
-        <div class="card">
-            <h2><span class="emoji">🌐</span> Network Visibility</h2>
-            <p style="font-size:13px;color:var(--text2);margin-bottom:16px;">Control which interfaces can reach the dashboard and API. Changing the binding requires a Guanaco restart.</p>
-            <form id="network-form" onsubmit="saveNetworkConfig(event)">
-                <div style="margin-bottom:12px;">
-                    <label style="display:block;font-size:12px;color:var(--text2);margin-bottom:4px;">Visibility</label>
-                    <select id="network-visibility" name="visibility" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:8px;font-size:13px;width:100%;">
-                        <option value="localhost">localhost — only this machine</option>
-                        <option value="tailscale">tailscale — Tailscale mesh network</option>
-                        <option value="all">all — every network interface</option>
-                    </select>
-                </div>
-                <div style="margin-bottom:12px;">
-                    <label style="display:block;font-size:12px;color:var(--text2);margin-bottom:4px;">Port</label>
-                    <input id="network-port" name="port" type="number" min="1" max="65535" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:8px;font-size:13px;width:100%;">
-                </div>
-                <div style="margin-bottom:12px;">
-                    <label style="display:block;font-size:12px;color:var(--text2);margin-bottom:4px;">Reachable addresses</label>
-                    <div id="network-addresses" style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px 12px;font-size:13px;color:var(--text);">—</div>
-                </div>
-                <button type="submit" class="btn" style="margin-top:8px;">Save Network Settings</button>
-                <span id="network-status" style="margin-left:12px;font-size:13px;"></span>
-            </form>
-        </div>
-    </div>
-
 <!-- ─── Cache Tab ─── -->
     <div id="tab-cache" class="hidden">
         <div class="card">
@@ -827,6 +798,31 @@
     <!-- ─── System Tab ─── -->
     <div id="tab-system" class="hidden">
         <div class="card">
+            <h2><span class="emoji">🏠</span> Network Visibility</h2>
+            <p style="font-size:13px;color:var(--text2);margin-bottom:16px;">Control which interfaces can reach the dashboard and API. Changing the binding requires a Guanaco restart.</p>
+            <form id="network-form" onsubmit="saveNetworkConfig(event)">
+                <div style="margin-bottom:12px;">
+                    <label style="display:block;font-size:12px;color:var(--text2);margin-bottom:4px;">Visibility</label>
+                    <select id="network-visibility" name="visibility" onchange="updateEndpoints()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:8px;font-size:13px;width:100%;">
+                        <option value="localhost">localhost — only this machine</option>
+                        <option value="tailscale">tailscale — Tailscale mesh network</option>
+                        <option value="all">all — every network interface</option>
+                    </select>
+                </div>
+                <div style="margin-bottom:12px;">
+                    <label style="display:block;font-size:12px;color:var(--text2);margin-bottom:4px;">Port</label>
+                    <input id="network-port" name="port" type="number" min="1" max="65535" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:8px;font-size:13px;width:100%;">
+                </div>
+                <div style="margin-bottom:12px;">
+                    <label style="display:block;font-size:12px;color:var(--text2);margin-bottom:4px;">Reachable addresses</label>
+                    <div id="network-addresses" style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px 12px;font-size:13px;color:var(--text);">—</div>
+                </div>
+                <button type="submit" class="btn" style="margin-top:8px;">Save Network Settings</button>
+                <span id="network-status" style="margin-left:12px;font-size:13px;"></span>
+            </form>
+        </div>
+
+        <div class="card" style="margin-top:16px;">
             <h2><span class="emoji">🌐</span> Primary Provider</h2>
             <p style="font-size:13px;color:var(--text2);margin-bottom:16px;">Drag providers into priority order. Guanaco will route unprefixed models to the first available provider, then fall back if it hits usage limits or errors.</p>
             <ul id="provider-priority-list" class="priority-list">
@@ -922,7 +918,7 @@ function showTab(tab) {
     // Find the clicked tab element by matching onclick content (works with both inline onclick and programmatic calls)
     const tabEl = document.querySelector(`.tab[onclick*="'${tab}'"]`) || document.querySelector(`.tab[onclick*='"${tab}"']`);
     if (tabEl) tabEl.classList.add('active');
-    ['endpoints','search','models','fallback','analytics','history','status','network','cache','keys','accounts','system'].forEach(t => {
+    ['endpoints','search','models','fallback','analytics','history','status','cache','keys','accounts','system'].forEach(t => {
         const el = document.getElementById('tab-'+t);
         if (el) el.classList.toggle('hidden', t !== tab);
     });
@@ -934,9 +930,8 @@ function showTab(tab) {
     if (tab === 'analytics') loadAnalytics();
     if (tab === 'history') { loadHistoryConfig(); loadHistory(); loadHistoryLogs(); }
     if (tab === 'status') { checkOllamaStatus(); loadUsageConfig(); checkUsage(); loadStatusLog(); loadROIConfig(); }
-    if (tab === 'network') loadNetworkConfig();
     if (tab === 'accounts') { loadAccounts(); checkAllAccountUsage(); }
-    if (tab === 'system') { loadAutostart(); loadProviderStrategy(); checkForUpdate(); }
+    if (tab === 'system') { loadNetworkConfig(); loadAutostart(); loadProviderStrategy(); checkForUpdate(); }
 }
 
 function copyUrl(id) {
@@ -1006,8 +1001,10 @@ function saveSearchConfig() {
 }
 
 function getCurrentBaseUrl() {
-    const on = document.getElementById('tailscale-toggle').checked;
-    const ip = (on && CONFIG.tailscale_ip) ? CONFIG.tailscale_ip : CONFIG.local_ip;
+    const visibility = document.getElementById('network-visibility')?.value || CONFIG.visibility || 'localhost';
+    let ip = '127.0.0.1';
+    if (visibility === 'tailscale' && CONFIG.tailscale_ip) ip = CONFIG.tailscale_ip;
+    else if (visibility === 'all' || visibility === 'tailscale') ip = CONFIG.local_ip || '127.0.0.1';
     return `http://${ip}`;
 }
 
@@ -1027,30 +1024,8 @@ function updateEndpoints() {
     });
 }
 
-function toggleTailscale() {
-    const on = document.getElementById('tailscale-toggle').checked;
-    if (on && CONFIG.tailscale_installed) {
-        document.getElementById('tailscale-status').textContent = 'Enabled — ' + (CONFIG.tailscale_ip || 'fetching...');
-    } else if (!CONFIG.tailscale_installed) {
-        document.getElementById('tailscale-status').textContent = 'Not installed';
-        document.getElementById('tailscale-toggle').checked = false;
-    } else {
-        document.getElementById('tailscale-status').textContent = 'Disabled';
-    }
-    updateNetworkInfo();
-    updateEndpoints();
-}
-
-function updateNetworkInfo() {
-    const on = document.getElementById('tailscale-toggle').checked;
-    const ip = on && CONFIG.tailscale_ip ? CONFIG.tailscale_ip : CONFIG.local_ip;
-    const port = location.port || CONFIG.port || 8080;
-    document.getElementById('network-info').innerHTML =
-        `<div>Local: <a href="http://${ip}:${port}/dashboard" target="_blank" style="color:var(--accent);">http://${ip}:${port}</a></div>` +
-        (CONFIG.tailscale_installed
-            ? `<div>Tailscale: ${CONFIG.tailscale_ip ? CONFIG.tailscale_ip : 'Not available'}</div>`
-            : `<div style="color:var(--text2);font-size:11px;">Tailscale not installed — <a href="https://tailscale.com" target="_blank" style="color:var(--accent);">install it</a> for remote access</div>`);
-}
+function toggleTailscale() {}
+function updateNetworkInfo() {}
 
 function loadNetworkConfig() {
     fetch('/dashboard/api/network/config').then(r => r.json()).then(data => {
@@ -2680,19 +2655,6 @@ document.addEventListener('DOMContentLoaded', () => {
     // Emulation toggles
     document.getElementById('cfg-emulate-openai').checked = cfg.emulate_openai !== false;
     document.getElementById('cfg-emulate-anthropic').checked = cfg.emulate_anthropic !== false;
-
-    // Tailscale
-    document.getElementById('tailscale-toggle').checked = CONFIG.tailscale && CONFIG.tailscale_installed;
-    if (!CONFIG.tailscale_installed) {
-        document.getElementById('tailscale-status').textContent = 'Not installed';
-        document.getElementById('tailscale-toggle').disabled = true;
-        document.getElementById('tailscale-toggle').style.opacity = '0.4';
-    } else if (CONFIG.tailscale) {
-        document.getElementById('tailscale-status').textContent = `Enabled — ${CONFIG.tailscale_ip || 'unknown'}`;
-    } else {
-        document.getElementById('tailscale-status').textContent = 'Disabled';
-    }
-    updateNetworkInfo();
 
     // Keys
     loadKeys();

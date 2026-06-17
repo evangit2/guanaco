@@ -92,6 +92,8 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
             "base_url": base_url,
             "port": port,
             "router_port": port,
+            "visibility": config.router.visibility,
+            "host": config.router.host,
             "tailscale": config.router.use_tailscale,
             "tailscale_ip": get_tailscale_ip(),
             "local_ip": get_local_ip(),
