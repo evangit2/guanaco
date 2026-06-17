@@ -179,88 +179,115 @@ if [ "$PLATFORM" = "macos" ]; then
     fi
 fi
 
-# ── Configuration ──
+# ── Provider selection ──
 step "Configuration"
 
-info "Guanaco supports multiple LLM providers. You can configure any or all now, or add them later with: guanaco setup"
+info "Guanaco supports multiple LLM providers. Choose which ones to configure."
+info "Ollama Cloud is free and recommended for web-search fallback, even if you use another provider."
+info "You can add or change providers later with: guanaco setup"
 echo ""
 
-prompt_yesno SETUP_OLLAMA "Set up Ollama Cloud account?" "y"
-prompt_yesno SETUP_OPENCODE "Set up OpenCode Go account?" "n"
-
+USE_OLLAMA="y"
+USE_OPENCODE="n"
+USE_UMANS="n"
 SETUP_OLLAMA_API_KEY=""
-SETUP_OPENCODE_API_KEY=""
+...EY=""
+UMANS_API_KEY=""
+
+provider_status() {
+    case "$1" in
+        ollama) [ "$USE_OLLAMA" = "y" ] && echo "[enabled]" || echo "[disabled]" ;;
+        opencode) [ "$USE_OPENCODE" = "y" ] && echo "[enabled]" || echo "[disabled]" ;;
+        umans) [ "$USE_UMANS" = "y" ] && echo "[enabled]" || echo "[disabled]" ;;
+    esac
+}
+
+while true; do
+    echo ""
+    printf "  ${BOLD}Select providers to configure:${RESET}\n"
+    printf "    1) Ollama Cloud (free, recommended)  $(provider_status ollama)\n"
+    printf "    2) OpenCode Go                       $(provider_status opencode)\n"
+    printf "    3) UMANS                             $(provider_status umans)\n"
+    printf "    4) Done\n"
+    prompt SELECTION "Enter number" "4"
+
+    case "$SELECTION" in
+        1)
+            if [ "$USE_OLLAMA" = "y" ]; then USE_OLLAMA="n"; else USE_OLLAMA="y"; fi
+            ;;
+        2)
+            if [ "$USE_OPENCODE" = "y" ]; then USE_OPENCODE="n"; else USE_OPENCODE="y"; fi
+            ;;
+        3)
+            if [ "$USE_UMANS" = "y" ]; then USE_UMANS="n"; else USE_UMANS="y"; fi
+            ;;
+        4|done|Done)
+            break
+            ;;
+        *)
+            warn "Invalid choice: $SELECTION"
+            ;;
+    esac
+done
+
+SETUP_OLLAMA="$USE_OLLAMA"
+SETUP_OPENCODE="$USE_OPENCODE"
+SETUP_UMANS="$USE_UMANS"
+
+validate_key() {
+    local name="$1" url="$2" api_key="$3"
+    if [ -z "$api_key" ]; then
+        return 0
+    fi
+    info "Validating API key with ${name}..."
+    local response
+    response=$(curl -s -w "\n%{http_code}" "$url" \
+        -H "Authorization: Bearer ${api_key}" \
+        -H "Accept: application/json" \
+        --max-time 10 2>/dev/null || echo "timeout")
+    local http_code
+    http_code=$(echo "$response" | tail -1)
+    if [ "$http_code" = "200" ]; then
+        success "${name} API key validated (models endpoint OK)"
+    elif [ "$http_code" = "401" ]; then
+        warn "${name} API key returned 401 Unauthorized"
+        warn "Key may be invalid or expired. Guanaco will still install but inference will fail."
+        warn "Fix with: guanaco setup  (after install)"
+    elif [ "$http_code" = "timeout" ]; then
+        warn "Could not reach ${name} (timeout). Skipping validation."
+    else
+        warn "${name} API key validation returned HTTP ${http_code} — key may not work"
+    fi
+}
 
 if [ "$SETUP_OLLAMA" = "y" ]; then
     echo ""
     info "Get an Ollama Cloud API key at: ${CYAN}https://ollama.com${RESET}"
     prompt SETUP_OLLAMA_API_KEY "Enter your Ollama API key" ""
-    if [ -n "$SETUP_OLLAMA_API_KEY" ]; then
-        info "Validating API key with Ollama Cloud..."
-        VALIDATE_RESPONSE=$(curl -s -w "\n%{http_code}" "https://api.ollama.com/v1/models" \
-            -H "Authorization: Bearer ${SETUP_OLLAMA_API_KEY}" \
-            -H "Accept: application/json" \
-            --max-time 10 2>/dev/null || echo "timeout")
-        HTTP_CODE=$(echo "$VALIDATE_RESPONSE" | tail -1)
-        if [ "$HTTP_CODE" = "200" ]; then
-            success "Ollama API key validated (models endpoint OK)"
-        elif [ "$HTTP_CODE" = "401" ]; then
-            warn "Ollama API key returned 401 Unauthorized"
-            warn "Key may be invalid or expired. Guanaco will still install but inference will fail."
-            warn "Fix with: guanaco setup  (after install)"
-        elif [ "$HTTP_CODE" = "timeout" ]; then
-            warn "Could not reach Ollama Cloud (timeout). Skipping validation."
-        else
-            warn "Ollama API key validation returned HTTP $HTTP_CODE — key may not work"
-        fi
-    fi
+    validate_key "Ollama Cloud" "https://api.ollama.com/v1/models" "$SETUP_OLLAMA_API_KEY"
 fi
 
 if [ "$SETUP_OPENCODE" = "y" ]; then
     echo ""
     info "Get an OpenCode Go API key at: ${CYAN}https://opencode.ai${RESET}"
     prompt SETUP_OPENCODE_API_KEY "Enter your OpenCode Go API key" ""
-    if [ -n "$SETUP_OPENCODE_API_KEY" ]; then
-        info "Validating API key with OpenCode Go..."
-        VALIDATE_RESPONSE=$(curl -s -w "\n%{http_code}" "https://opencode.ai/zen/go/v1/models" \
-            -H "Authorization: Bearer ${SETUP_OPENCODE_API_KEY}" \
-            -H "Accept: application/json" \
-            --max-time 10 2>/dev/null || echo "timeout")
-        HTTP_CODE=$(echo "$VALIDATE_RESPONSE" | tail -1)
-        if [ "$HTTP_CODE" = "200" ]; then
-            success "OpenCode Go API key validated (models endpoint OK)"
-        elif [ "$HTTP_CODE" = "401" ]; then
-            warn "OpenCode Go API key returned 401 Unauthorized"
-            warn "Key may be invalid or expired. Guanaco will still install but inference will fail."
-            warn "Fix with: guanaco setup  (after install)"
-        elif [ "$HTTP_CODE" = "timeout" ]; then
-            warn "Could not reach OpenCode Go (timeout). Skipping validation."
-        else
-            warn "OpenCode Go API key validation returned HTTP $HTTP_CODE — key may not work"
-        fi
+    validate_key "OpenCode Go" "https://opencode.ai/zen/go/v1/models" "$SETUP_OPENCODE_API_KEY"
+fi
+
+if [ "$SETUP_UMANS" = "y" ]; then
+    echo ""
+    info "Get a UMANS API key from your subscription dashboard."
+    prompt UMANS_API_KEY "Enter your UMANS API key" ""
+    if [ -z "$UMANS_API_KEY" ]; then
+        warn "No UMANS API key provided. Set it later with: guanaco setup"
     fi
 fi
 
-if [ -z "$SETUP_OLLAMA_API_KEY" ] && [ -z "$SETUP_OPENCODE_API_KEY" ]; then
+if [ -z "$SETUP_OLLAMA_API_KEY" ] && [ -z "$SETUP_OPENCODE_API_KEY" ] && [ -z "$UMANS_API_KEY" ]; then
     echo ""
     warn "No API keys provided. You can configure providers later with: guanaco setup"
     warn "Guanaco will still install and run, but LLM requests will fail until an account is added."
     echo ""
-fi
-
-# ── Optional providers ──
-step "Optional providers"
-
-prompt_yesno SETUP_UMANS "Set up UMANS subscription?" "n"
-if [ "$SETUP_UMANS" = "y" ]; then
-    prompt UMANS_API_KEY "Enter your UMANS API key" ""
-    if [ -n "$UMANS_API_KEY" ]; then
-        TMP_ENV=$(mktemp)
-        grep -v "^export UMANS_API_KEY=" "$INSTALL_DIR/env" 2>/dev/null > "$TMP_ENV" || true
-        echo "export UMANS_API_KEY=\"${UMANS_API_KEY}\"" >> "$TMP_ENV"
-        mv "$TMP_ENV" "$INSTALL_DIR/env"
-        success "UMANS API key saved"
-    fi
 fi
 
 # ── Network configuration ──
@@ -362,23 +389,55 @@ if [ -n "$SETUP_OPENCODE_API_KEY" ]; then
     api_key: \"${SETUP_OPENCODE_API_KEY}\""
 fi
 
-if [ "$SETUP_OLLAMA" = "y" ] && [ "$SETUP_OPENCODE" = "y" ]; then
-    prompt_yesno OLLAMA_PRIMARY "Use Ollama Cloud as the primary provider? (OpenCode Go if no)" "y"
+if [ -n "$UMANS_API_KEY" ]; then
+    ACCOUNTS_YAML="${ACCOUNTS_YAML}
+  - name: umans
+    provider: umans
+    api_key: \"${UMANS_API_KEY}\""
+fi
+
+if [ "$SETUP_OLLAMA" = "y" ] && [ "$SETUP_OPENCODE" = "y" ] && [ "$SETUP_UMANS" = "y" ]; then
+    prompt_yesno OLLAMA_PRIMARY "Use Ollama Cloud as the primary provider?" "y"
     if [ "$OLLAMA_PRIMARY" = "y" ]; then
         PRIORITY_YAML="  - ollama
-  - opencode_go"
+  - opencode_go
+  - umans"
     else
-        PRIORITY_YAML="  - opencode_go
-  - ollama"
-    fi
-elif [ "$SETUP_OLLAMA" = "y" ]; then
-    PRIORITY_YAML="  - ollama"
-elif [ "$SETUP_OPENCODE" = "y" ]; then
-    PRIORITY_YAML="  - opencode_go"
-else
-    PRIORITY_YAML="  - ollama
+        prompt_yesno OPENCODE_PRIMARY "Use OpenCode Go as the primary provider? (UMANS if no)" "y"
+        if [ "$OPENCODE_PRIMARY" = "y" ]; then
+            PRIORITY_YAML="  - opencode_go
+  - ollama
+  - umans"
+        else
+            PRIORITY_YAML="  - umans
+  - ollama
   - opencode_go"
+        fi
+    fi
+else
+    if [ "$SETUP_OLLAMA" = "y" ]; then
+        PRIORITY_YAML="  - ollama
+"
+    fi
+    if [ "$SETUP_OPENCODE" = "y" ]; then
+        PRIORITY_YAML="${PRIORITY_YAML}  - opencode_go
+"
+    fi
+    if [ "$SETUP_UMANS" = "y" ]; then
+        PRIORITY_YAML="${PRIORITY_YAML}  - umans
+"
+    fi
+    if [ -z "$SETUP_OLLAMA" ] || [ -z "$SETUP_OPENCODE" ] || [ -z "$SETUP_UMANS" ]; then
+        # fallback default if no providers chosen
+        if [ -z "$PRIORITY_YAML" ]; then
+            PRIORITY_YAML="  - ollama
+  - opencode_go"
+        fi
+    fi
 fi
+
+# Trim blank lines
+PRIORITY_YAML=$(echo "$PRIORITY_YAML" | sed '/^$/d')
 
 if [ -z "$ACCOUNTS_YAML" ]; then
     ACCOUNTS_LINE="ollama_accounts: []"
@@ -420,18 +479,24 @@ EOF
 if [ -n "$SETUP_OLLAMA_API_KEY" ]; then
     # Preserve existing env lines except old OLLAMA_API_KEY
     TMP_ENV=$(mktemp)
-    grep -v "^export OLLAMA_API_KEY=" "$INSTALL_DIR/env" 2>/dev/null > "$TMP_ENV" || true
-    echo "export OLLAMA_API_KEY=\"${SETUP_OLLAMA_API_KEY}\"" >> "$TMP_ENV"
+    grep -v "^export OLLAMA_API_KEY=*** "$INSTALL_DIR/env" 2>/dev/null > "$TMP_ENV" || true
+    echo "export OLLAMA_API_KEY=*** >> "$TMP_ENV"
     mv "$TMP_ENV" "$INSTALL_DIR/env"
 fi
 
 if [ -n "$SETUP_OPENCODE_API_KEY" ]; then
     TMP_ENV=$(mktemp)
-    grep -v "^export OPENCODE_GO_API_KEY=" "$INSTALL_DIR/env" 2>/dev/null > "$TMP_ENV" || true
-    echo "export OPENCODE_GO_API_KEY=\"${SETUP_OPENCODE_API_KEY}\"" >> "$TMP_ENV"
+    grep -v "^export OPENCODE_GO_API_KEY=*** "$INSTALL_DIR/env" 2>/dev/null > "$TMP_ENV" || true
+    echo "export OPENCODE_GO_API_KEY=*** >> "$TMP_ENV"
     mv "$TMP_ENV" "$INSTALL_DIR/env"
 fi
 
+if [ -n "$UMANS_API_KEY" ]; then
+    TMP_ENV=$(mktemp)
+    grep -v "^export UMANS_API_KEY=*** "$INSTALL_DIR/env" 2>/dev/null > "$TMP_ENV" || true
+    echo "export UMANS_API_KEY=*** >> "$TMP_ENV"
+    mv "$TMP_ENV" "$INSTALL_DIR/env"
+fi
 # ── Create guanaco binary ──
 mkdir -p "$BIN_DIR"
 
