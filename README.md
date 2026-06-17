@@ -83,6 +83,26 @@ The installer starts Guanaco automatically (as a systemd service or in the foreg
 
 ---
 
+## Supported LLM Providers
+
+| Provider | Get a key | Notes |
+|----------|-----------|-------|
+| **[Ollama Cloud](https://ollama.com)** | Free at [ollama.com](https://ollama.com) | Recommended for search fallback; free tier available |
+| **[OpenCode Go](https://opencode.ai/go?ref=82YPJKPFFP)** | [opencode.ai](https://opencode.ai/go?ref=82YPJKPFFP) | One account, multiple models; supports OpenAI + Anthropic endpoints |
+| **[UMANS](https://app.umans.ai/register?ref=4YG6UP9U)** | [app.umans.ai](https://app.umans.ai/register?ref=4YG6UP9U) | Available Moonshot, GLM, Qwen, and custom models; offers an **unlimited token plan** |
+
+Models can be requested by provider prefix:
+
+| Prefix | Provider | Example model |
+|--------|----------|---------------|
+| (none) | Provider priority order | `gemma4:31b` |
+| `opencode-go/` | OpenCode Go | `opencode-go/deepseek-v4-flash` |
+| `umans/` | UMANS | `umans/umans-kimi-k2.7` |
+
+`provider_priority` in `config.yaml` determines which provider handles unprefixed model names first.
+
+---
+
 ## Dashboard
 
 The built-in web dashboard is available at `http://localhost:8080/dashboard`.
