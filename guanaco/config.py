@@ -199,6 +199,19 @@ class ProviderAccount(BaseModel):
 OllamaAccount = ProviderAccount
 
 
+def infer_provider_from_key(api_key: str, provider_hint: Optional[str] = None) -> str:
+    """Return the most likely provider for an account key.
+
+    OpenCode Go keys start with ``sk-``; Ollama keys do not.
+    If ``provider_hint`` is provided and valid, it is respected.
+    """
+    if provider_hint in ("ollama", "opencode_go"):
+        return provider_hint
+    if api_key.strip().lower().startswith("sk-"):
+        return "opencode_go"
+    return "ollama"
+
+
 class AppConfig(BaseModel):
     ollama_api_key: str = ""
     ollama_accounts: list[OllamaAccount] = Field(default_factory=list)
@@ -297,7 +310,14 @@ def load_config(path: Optional[Path] = None) -> AppConfig:
             router["provider_priority"] = ["ollama", "opencode_go"]
     _config = AppConfig(**data)
 
-    # Ensure the primary "ollama" account is always in the accounts list
+    # v0.5.3+: Auto-correct accounts whose provider field doesn't match their key.
+    for acc in _config.ollama_accounts:
+        if acc.name == "ollama":
+            acc.provider = "ollama"
+        else:
+            inferred = infer_provider_from_key(acc.api_key, acc.provider)
+            if inferred != acc.provider:
+                acc.provider = inferred
     if not any(a.name == "ollama" for a in _config.ollama_accounts):
         # Create primary from the legacy single-key config + usage data
         # Use ollama_api_key_resolved so env-var-only setups get a working key

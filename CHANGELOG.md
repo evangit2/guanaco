@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.3] - 2026-06-17
+
+### Fixed
+- **OpenCode Go account detection on add/update:** accounts created through the dashboard with `sk-*` API keys are now tagged as `opencode_go` instead of defaulting to `ollama`. A provider selector is now respected and the key is tested with the matching client.
+- **Config migration on load:** existing accounts whose stored provider does not match their key prefix are auto-corrected, so already-misclassified OpenCode Go accounts show Go models after restart.
+- **Dashboard account list now exposes the stored provider field**, so each account shows the correct provider badge (`ollama` or `opencode_go`).
+
+---
+
 ## [0.5.2] - 2026-06-10
 
 ### Fixed

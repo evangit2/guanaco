@@ -15,7 +15,7 @@ import httpx
 
 from guanaco.config import (
     get_config, get_base_url, get_tailscale_ip, save_config,
-    OllamaAccount, get_default_config_dir,
+    OllamaAccount, get_default_config_dir, infer_provider_from_key,
 )
 from guanaco.utils.api_keys import ApiKeyManager
 from guanaco.analytics import AnalyticsLogger
@@ -1115,6 +1115,7 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
         for acc in all_accounts:
             accounts.append({
                 "name": acc.name,
+                "provider": acc.provider or "ollama",
                 "api_key_masked": acc.api_key[:8] + "..." + acc.api_key[-4:] if len(acc.api_key) > 12 else ("***" if acc.api_key else ""),
                 "has_session_cookie": bool(acc.session_cookie),
                 "last_session_pct": acc.last_session_pct,
@@ -1128,10 +1129,11 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
 
     @router.post("/api/accounts/add")
     async def add_account(request: Request):
-        """Add a new Ollama account."""
+        """Add a new provider account."""
         body = await request.json()
         name = body.get("name", "").strip()
         api_key = body.get("api_key", "").strip()
+        provider_hint = body.get("provider", "").strip() or None
 
         if not name:
             return {"status": "error", "message": "Account name is required"}
@@ -1152,14 +1154,22 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
         if len(config.ollama_accounts) >= 10:
             return {"status": "error", "message": "Maximum of 10 accounts reached"}
 
-        # Test the key first
-        if client:
-            result = await client.test_key(api_key)
-            if not result["ok"]:
-                return {"status": "error", "message": f"API key test failed: {result['error']}"}
+        provider = infer_provider_from_key(api_key, provider_hint)
+
+        # Test the key with the matching client
+        clients = getattr(request.app.state, "clients", {}) or {}
+        test_client = clients.get(provider)
+        if not test_client:
+            # Fallback to Ollama client; if it's actually a Go key without a Go client loaded,
+            # let it through and the account will work once the Go client is initialized.
+            test_client = client if provider == "ollama" else None
+        if test_client:
+            result = await test_client.test_key(api_key)
+            if not result.get("ok"):
+                return {"status": "error", "message": f"API key test failed: {result.get('error')}"}
 
         # Add the account
-        new_account = OllamaAccount(name=name, api_key=api_key)
+        new_account = OllamaAccount(name=name, api_key=api_key, provider=provider)
         config.ollama_accounts.append(new_account)
         save_config(config)
 
@@ -1167,7 +1177,7 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
         if _account_pool:
             _account_pool.update_accounts(config.ollama_accounts)
 
-        return {"status": "ok", "message": f"Account '{name}' added successfully"}
+        return {"status": "ok", "message": f"Account '{name}' added successfully", "provider": provider}
 
     @router.post("/api/accounts/remove")
     async def remove_account(request: Request):
@@ -1212,10 +1222,18 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
         if not api_key:
             return {"ok": False, "error": "No API key to test"}
 
-        if client:
-            result = await client.test_key(api_key)
+        config = get_config()
+        acc = next((a for a in config.ollama_accounts if a.name == name), None) if name else None
+        provider = acc.provider if acc else infer_provider_from_key(api_key)
+
+        clients = getattr(request.app.state, "clients", {}) or {}
+        test_client = clients.get(provider)
+        if not test_client:
+            test_client = client if provider == "ollama" else None
+        if test_client:
+            result = await test_client.test_key(api_key)
             return result
-        return {"ok": False, "error": "No OllamaClient available"}
+        return {"ok": False, "error": "No client available for this provider"}
 
     @router.post("/api/accounts/session-cookie")
     async def set_account_session_cookie(request: Request):
@@ -1273,6 +1291,7 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
         if not acc:
             return {"status": "error", "message": f"Account '{name}' not found"}
         acc.api_key = api_key
+        acc.provider = infer_provider_from_key(api_key, acc.provider)
         save_config(config)
 
         if _account_pool:
