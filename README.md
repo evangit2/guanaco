@@ -8,9 +8,9 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 
-**Maximize your Ollama Cloud subscription.**
+**Maximize your LLM provider subscriptions.**
 
-Guanaco is a self-hosted FastAPI proxy that sits between your applications and Ollama Cloud. It provides an OpenAI-compatible `/v1/chat/completions` endpoint, emulates 8 major search and scrape APIs, tracks token usage, supports transparent fallback to external providers, and ships with a real-time management dashboard — all on a single port.
+Guanaco is a self-hosted FastAPI proxy that sits between your applications and multiple LLM providers. It provides an OpenAI-compatible `/v1/chat/completions` endpoint, supports providers such as **Ollama Cloud** and **OpenCode Go** alongside transparent fallback providers, emulates 8 major search/scrape APIs, tracks token usage, and ships with a real-time management dashboard — all on a single port.
 
 </div>
 
@@ -24,10 +24,11 @@ curl -sSL https://raw.githubusercontent.com/evangit2/guanaco/main/install.sh | b
 
 - **LLM Router** — OpenAI-compatible `/v1/chat/completions` and Anthropic-compatible `/v1/messages` proxy with streaming, token tracking, and analytics
 - **8 Search/Scrape Emulators** — Drop-in replacements for Tavily, Exa, SearXNG, Firecrawl, Serper, Jina, Cohere, and Brave Search
-- **Fallback Provider** — Automatically route to a secondary OpenAI-compatible provider when Ollama Cloud is slow, rate-limited, or unavailable; also kicks in when your Ollama Cloud usage quota is exhausted
-- **Usage Tracking** — Monitor Ollama Cloud session and weekly quota usage in real time
+- **Multi-Provider Support** — Configure one or more Ollama Cloud, OpenCode Go, or other OpenAI-compatible provider accounts; route by model prefix or priority order
+- **Fallback Provider** — Automatically route to a secondary OpenAI-compatible provider when the primary provider is slow, rate-limited, or unavailable; also kicks in when usage quotas are exhausted
+- **Usage Tracking** — Monitor provider session and weekly quota usage in real time (where supported)
 - **Smart Caching** — Optional exact-match and session-aware prefix caching (BETA) to reduce redundant API calls
-- **Web Dashboard** — Real-time analytics, model configuration, API key management, and service status at `http://localhost:8080/dashboard`
+- **Web Dashboard** — Real-time analytics, model configuration, API key management, account setup, and service status at `http://localhost:8080/dashboard`
 - **Docker & systemd** — Production-ready deployment with included service unit files
 
 ---
@@ -40,7 +41,7 @@ curl -sSL https://raw.githubusercontent.com/evangit2/guanaco/main/install.sh | b
 curl -sSL https://raw.githubusercontent.com/evangit2/guanaco/main/install.sh | bash
 ```
 
-The installer will check for prerequisites (git, Python 3.10+, venv) and auto-install them if missing, then prompt you for your Ollama API key and preferred port.
+The installer will check for prerequisites (git, Python 3.10+, venv) and auto-install them if missing, then prompt you for your primary LLM provider API key and preferred port.
 
 For platform-specific instructions, see [WSL Installation](#wsl-installation) and [macOS Installation](#macos-installation).
 
@@ -64,11 +65,11 @@ The installer starts Guanaco automatically (as a systemd service or in the foreg
 |---------|-------------|
 | `guanaco start` | Start the proxy server (router + search APIs + dashboard) |
 | `guanaco setup` | Interactive configuration wizard |
-| `guanaco status` | Show service status and Ollama Cloud connectivity |
-| `guanaco models` | List available Ollama Cloud models |
-| `guanaco models --refresh` | Force-refresh model list from Ollama API |
+| `guanaco status` | Show service status and primary provider connectivity |
+| `guanaco models` | List available provider models |
+| `guanaco models --refresh` | Force-refresh model list from providers |
 | `guanaco models --capabilities` | Show model capabilities and sizes |
-| `guanaco usage` | Check current Ollama Cloud session/weekly quota |
+| `guanaco usage` | Check current provider session/weekly quota (where supported) |
 | `guanaco key generate` | Generate a new API key |
 | `guanaco key list` | List all API keys |
 | `guanaco key revoke` | Revoke an API key |
@@ -88,7 +89,7 @@ The built-in web dashboard is available at `http://localhost:8080/dashboard`.
 
 ![Guanaco Dashboard](https://i.ibb.co/KzzP6yNw/Screenshot-2026-04-09-223634.png)
 
-Features: real-time request analytics, token usage graphs, model configuration, fallback provider setup, API key management, and Ollama Cloud quota monitoring.
+Features: real-time request analytics, token usage graphs, model configuration, fallback provider setup, API key management, provider account management, and quota monitoring.
 
 ---
 
@@ -103,8 +104,15 @@ export GUANACO_CONFIG_DIR=/path/to/config
 ### Full `config.yaml` Reference
 
 ```yaml
-# ── Required ──
-ollama_api_key: "sk-ollama-..."       # Or set via OLLAMA_API_KEY env var
+# ── Required / Provider Accounts ──
+# Add one or more LLM provider accounts. Guanaco supports:
+#   provider: ollama        # Ollama Cloud
+#   provider: opencode_go    # OpenCode Go
+#   provider: openai         # Generic OpenAI-compatible fallback
+ollama_accounts:
+  - name: ollama
+    provider: ollama
+    api_key: "sk-ollama-..."            # Or set via OLLAMA_API_KEY env var
 
 # ── Server ──
 router:
@@ -124,7 +132,7 @@ llm:
   emulate_anthropic: true             # Enable /v1/messages proxy endpoint
   # available_models: [...]
 
-# ── Fallback Provider (when Ollama Cloud is unavailable) ──
+# ── Fallback Provider (when primary provider is unavailable) ──
 fallback:
   enabled: false
   name: "openai"                      # Display name
@@ -161,25 +169,44 @@ cache:
   exact_cache_enabled: true
   min_prompt_chars: 50                # Don't cache tiny prompts
 
-# ── Ollama Cloud Usage Tracking ──
+# ── Provider Usage Tracking (where supported) ──
 usage:
   session_cookie: ""                   # __Secure-session cookie from ollama.com
   check_interval: 0                   # Auto-check interval (0 = disabled)
   redirect_on_full: false             # Route to fallback when quota near limit
 ```
 
+### Provider Priority
+
+Guanaco routes unprefixed model names to the first available account in the configured priority list. You can set this order in the dashboard or directly in `config.yaml`:
+
+```yaml
+provider_priority:
+  - ollama
+  - opencode_go
+```
+
+Models can also be requested by prefix:
+
+| Prefix | Example model |
+|--------|---------------|
+| `opencode-go/` | `opencode-go/deepseek-v4-flash` |
+| (none) | falls back to the configured provider priority |
+
+
 ### Environment Variables
 
 | Variable | Description |
 |----------|-------------|
-| `OLLAMA_API_KEY` | Ollama Cloud API key (takes precedence over config file) |
+| `OLLAMA_API_KEY` | Default Ollama Cloud API key (takes precedence over config file) |
+| `OPENCODE_GO_API_KEY` | Default OpenCode Go API key (takes precedence over config file) |
 | `GUANACO_CONFIG_DIR` | Path to config directory (default `~/.guanaco`) |
 
 ---
 
 ## Fallback Provider Setup
 
-When Ollama Cloud is slow, rate-limited, or a requested model isn't available, Guanaco can automatically forward requests to a fallback OpenAI-compatible provider.
+When the primary provider is slow, rate-limited, or a requested model isn't available, Guanaco can automatically forward requests to a fallback OpenAI-compatible provider.
 
 ```yaml
 fallback:
@@ -193,9 +220,8 @@ fallback:
   timeout: 60.0
   stream_fallback: true
   model_map:
-    # Map specific Ollama models to different fallback models
-    "qwen3:480b": "gpt-4o"
-    "deepseek-v3.1:671b": "gpt-4o"
+    # Map specific provider models to different fallback models
+    # "qwen3:480b": "gpt-4o"
 ```
 
 Or configure via the dashboard at **Dashboard → Config → Fallback**.
@@ -268,7 +294,7 @@ Firecrawl SDK v2 paths (`/v2/scrape`, `/v2/search`, `/v2/crawl`, `/v2/extract`) 
 |----------|-------------|
 | `GET /health` | Health check |
 | `GET /v1/models` | List available models |
-| `GET /v1/usage` | Ollama Cloud usage/quota |
+| `GET /v1/usage` | Provider usage/quota (where supported) |
 | `GET /api/ollama/status` | Ollama Cloud connectivity |
 | `GET /api/ollama/models` | Full model list with metadata |
 
@@ -291,6 +317,7 @@ CMD ["guanaco", "start", "--host", "0.0.0.0"]
 docker build -t guanaco .
 docker run -d -p 8080:8080 \
   -e OLLAMA_API_KEY=your_key \
+  -e OPENCODE_GO_API_KEY=your_key \
   -v ~/.guanaco:/data \
   guanaco
 ```
