@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.6.1] - 2026-06-18
+
+### Fixed
+- **Explicit provider account selection.** Model prefixes (`umans/`, `opencode-go/`) now correctly use their own provider account instead of always falling back to `provider_priority` order.
+- **UMANS model prefix duplication.** Canonical UMANS model IDs no longer end up with a doubled `umans-umans-` prefix.
+- **Reasoning content normalization.** Responses that leave `message.content` empty but populate `reasoning_content` or `reasoning` now surface that content so standard OpenAI clients receive a non-null reply.
+- **SearXNG crash on Ollama web-search failure.** The emulator no longer returns HTTP 500 when the upstream Ollama `/api/web_search` endpoint fails.
+- **Analytics migration.** Existing `request_log` databases that predate the `usage_multiplier` column are now upgraded automatically, preventing 500 errors after upgrade.
+- **Config provider hint.** Accounts with an explicit `provider` field are no longer overwritten by key-pattern auto-detection, fixing UMANS keys that start with `sk-` being misidentified as OpenCode Go.
+
 ## [0.6.0] - 2026-06-18
 
 ### Added
