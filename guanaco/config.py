@@ -41,6 +41,11 @@ class RouterConfig(BaseModel):
     allow_prerelease: bool = False
     # Optional name for the systemd service (allows multiple isolated instances)
     service_name: str = "guanaco"
+    # Visibility level for the dashboard/API listener:
+    #   "localhost" -> 127.0.0.1 only (default, safest)
+    #   "tailscale" -> 0.0.0.0, reachable on the Tailscale network
+    #   "all"       -> 0.0.0.0, reachable on all interfaces
+    visibility: str = "localhost"
     # When a model name has no provider prefix and both providers are available,
     # choose the default provider using this strategy: round_robin, usage, ollama, opencode_go.
     # DEPRECATED: kept for backward compatibility. Use provider_priority for ordered fallback.
@@ -341,6 +346,15 @@ def load_config(path: Optional[Path] = None) -> AppConfig:
     # v0.5.6+: ensure umans config exists for migration
     if "umans" not in data:
         data["umans"] = {}
+
+    # v0.6.0+: visibility setting controls host binding
+    if "visibility" not in router:
+        router["visibility"] = "localhost"
+    # Keep host aligned with visibility so existing installs behave consistently
+    if router.get("visibility") in ("tailscale", "all"):
+        router["host"] = "0.0.0.0"
+    elif router.get("visibility") == "localhost":
+        router["host"] = "127.0.0.1"
 
     _config = AppConfig(**data)
 

@@ -302,9 +302,9 @@ printf "  ${RED}  providers, routers with UPnP, Cloudflare tunnels, etc.),${RESE
 printf "  ${RED}  this will EXPOSE your LLM provider API proxy to the public${RESET}\n"
 printf "  ${RED}  internet. Anyone who finds it can use your API keys and${RESET}\n"
 printf "  ${RED}  consume your provider quota.${RESET}\n\n"
-printf "  ${RED}  - Bind to 127.0.0.1 unless you need remote access${RESET}\n"
-printf "  ${RED}  - Use a firewall or auth proxy if you must expose it${RESET}\n"
-printf "  ${RED}  - Never run this on a public-facing VPS without auth${RESET}\n\n"
+printf "  ${RED}  - "localhost" is safest — only this machine can reach it${RESET}\n"
+printf "  ${RED}  - "tailscale" exposes to your Tailscale mesh network${RESET}\n"
+printf "  ${RED}  - "all" exposes to every interface; use a firewall/auth proxy${RESET}\n\n"
 
 prompt PORT "Which port should Guanaco use" "$DEFAULT_PORT"
 
@@ -316,27 +316,50 @@ fi
 if [ -z "$TS_IP" ] && [ -S /run/tailscale/tailscaled.sock ]; then
     TS_IP=$(tailscale ip -4 2>/dev/null || true)
 fi
-if [ -z "$TS_IP" ]; then
-    TS_IP=$(ip -4 addr show | grep -oP 'inet 100\.\d+\.\d+\.\d+' | head -1 | awk '{print $2}' 2>/dev/null || true)
-fi
 
+# Build visibility menu options
+VISIBILITY_OPTIONS=("localhost")
+VISIBILITY_LABELS=("Only this machine (127.0.0.1)")
 if [ -n "$TS_IP" ]; then
-    printf "  ${CYAN}Tailscale detected at ${TS_IP}${RESET}\n"
-    prompt_yesno BIND_LOCAL "Bind to 0.0.0.0 (accessible via Tailscale)?" "y"
-    if [ "$BIND_LOCAL" = "y" ]; then
-        BIND_HOST="0.0.0.0"
-        info "Bound to 0.0.0.0 — accessible at http://${TS_IP}:${PORT}/dashboard/"
+    VISIBILITY_OPTIONS+=("tailscale")
+    VISIBILITY_LABELS+=("Tailscale network (0.0.0.0) at ${TS_IP}")
+fi
+VISIBILITY_OPTIONS+=("all")
+VISIBILITY_LABELS+=("All interfaces (0.0.0.0)")
+
+echo ""
+info "Select dashboard/API visibility:"
+for i in "${!VISIBILITY_OPTIONS[@]}"; do
+    idx=$((i + 1))
+    if [ "$idx" -eq 1 ]; then
+        default_marker=" *"
     else
-        BIND_HOST="127.0.0.1"
+        default_marker=""
     fi
+    printf "    %d) %s%s\n" "$idx" "${VISIBILITY_LABELS[$i]}" "$default_marker"
+done
+
+default_vis=1
+while true; do
+    prompt VIS_INDEX "Enter number" "$default_vis"
+    # Validate numeric 1..N
+    if [ "$VIS_INDEX" -ge 1 ] 2>/dev/null && [ "$VIS_INDEX" -le "${#VISIBILITY_OPTIONS[@]}" ] 2>/dev/null; then
+        break
+    fi
+    warn "Invalid choice. Enter a number between 1 and ${#VISIBILITY_OPTIONS[@]}."
+done
+
+VISIBILITY="${VISIBILITY_OPTIONS[$((VIS_INDEX - 1))]}"
+
+if [ "$VISIBILITY" = "localhost" ]; then
+    BIND_HOST="127.0.0.1"
+    info "Bound to 127.0.0.1 — only this machine can reach the dashboard/API."
+elif [ "$VISIBILITY" = "tailscale" ]; then
+    BIND_HOST="0.0.0.0"
+    info "Bound to 0.0.0.0 — reachable on Tailscale at http://${TS_IP}:${PORT}/dashboard/"
 else
-    prompt_yesno BIND_LOCAL "Bind to localhost only (127.0.0.1)?" "y"
-    if [ "$BIND_LOCAL" = "y" ]; then
-        BIND_HOST="127.0.0.1"
-    else
-        BIND_HOST="0.0.0.0"
-        warn "Binding to 0.0.0.0 — accessible from ALL interfaces. Ensure you have auth/firewall."
-    fi
+    BIND_HOST="0.0.0.0"
+    warn "Binding to 0.0.0.0 — accessible from ALL interfaces. Ensure you have auth/firewall."
 fi
 
 # ── Install ──
@@ -452,6 +475,7 @@ cat > "$INSTALL_DIR/config.yaml" << EOF
 router:
   host: "${BIND_HOST}"
   port: ${PORT}
+  visibility: ${VISIBILITY}
   provider_priority:
 ${PRIORITY_YAML}
 

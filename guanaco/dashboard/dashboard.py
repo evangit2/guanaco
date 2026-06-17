@@ -15,7 +15,7 @@ from fastapi.responses import HTMLResponse, FileResponse
 import httpx
 
 from guanaco.config import (
-    get_config, get_base_url, get_tailscale_ip, save_config,
+    get_config, get_base_url, get_tailscale_ip, get_local_ip, save_config,
     OllamaAccount, get_default_config_dir, infer_provider_from_key,
 )
 from guanaco.utils.api_keys import ApiKeyManager
@@ -607,6 +607,43 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
 
         save_config(config)
         return {"status": "ok", "config": {"llm": config.llm.model_dump(), "fallback": config.fallback.model_dump(), "search": config.search.model_dump(), "umans": config.umans.model_dump()}}
+
+    # ── Network Config ──
+
+    @router.get("/api/network/config")
+    async def get_network_config(request: Request):
+        """Get current network visibility, port, and reachable addresses."""
+        config = get_config()
+        ts_ip = get_tailscale_ip()
+        return {
+            "visibility": config.router.visibility,
+            "host": config.router.host,
+            "port": config.router.port,
+            "tailscale_ip": ts_ip,
+            "local_ip": get_local_ip() if hasattr(get_local_ip, "__call__") else "127.0.0.1",
+        }
+
+    @router.post("/api/network/config")
+    async def set_network_config(request: Request):
+        """Save visibility and port. Requires restart to apply host binding."""
+        body = await request.json()
+        config = get_config()
+        vis = str(body.get("visibility", config.router.visibility)).lower()
+        if vis in ("localhost", "tailscale", "all"):
+            config.router.visibility = vis
+            config.router.host = "0.0.0.0" if vis in ("tailscale", "all") else "127.0.0.1"
+        if "port" in body:
+            port = int(body["port"])
+            if 1 <= port <= 65535:
+                config.router.port = port
+        save_config(config)
+        return {
+            "status": "ok",
+            "visibility": config.router.visibility,
+            "host": config.router.host,
+            "port": config.router.port,
+            "note": "Restart Guanaco for binding changes to take effect.",
+        }
 
     # ── Emulation Config ──
 
