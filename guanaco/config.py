@@ -46,9 +46,9 @@ class RouterConfig(BaseModel):
     # DEPRECATED: kept for backward compatibility. Use provider_priority for ordered fallback.
     unprefixed_provider_strategy: str = "round_robin"
     # Ordered list of providers to try for unprefixed models. Earlier entries are preferred.
-    # Built-in providers: "ollama", "opencode_go". A configured fallback OpenAI-compatible
+    # Built-in providers: "ollama", "opencode_go", "umans". A configured fallback OpenAI-compatible
     # provider can be included as "fallback".
-    provider_priority: list[str] = Field(default_factory=lambda: ["ollama", "opencode_go"])
+    provider_priority: list[str] = Field(default_factory=lambda: ["ollama", "opencode_go", "umans"])
 
 
 class SearchConfig(BaseModel):
@@ -181,9 +181,9 @@ class ProviderAccount(BaseModel):
     """A single provider account with its own API key and usage tracking."""
     name: str                                      # Display name (unique, "ollama" is reserved for primary)
     api_key: str = ""                              # API key for this account
-    provider: str = "ollama"                       # Provider type: "ollama" or "opencode_go"
+    provider: str = "ollama"                       # Provider type: "ollama", "opencode_go", or "umans"
     base_url: str = ""                             # Optional endpoint override; defaults per provider if empty
-    session_cookie: str = ""                       # __Secure-session cookie for usage scraping (Ollama only)
+    session_cookie: str = ""                       # __Secure-session cookie for usage scraping (Ollama | UMANS)
     # Usage tracking (updated by background check)
     last_session_pct: Optional[float] = None
     last_weekly_pct: Optional[float] = None
@@ -195,6 +195,24 @@ class ProviderAccount(BaseModel):
     rotation_mode: str = "usage"
 
 
+class UmansConfig(BaseModel):
+    """UMANS subscription provider settings."""
+    enabled: bool = False
+    # Optional UMANS app session cookie for usage scraping (from __Secure-authjs.session-token)
+    session_cookie: str = ""
+    # Optional UMANS credentials to fetch the session cookie automatically
+    email: str = ""
+    password: str = ""
+    # Stamp a session label into the first user message:
+    #   yes -> always stamp with "[umans|sessN]"
+    #   auto -> stamp only for models whose name contains "thinking" or supports_thinking
+    session_label_mode: str = "auto"
+    # Max number of images to keep in a single request (0 = unlimited)
+    max_images_per_request: int = 0
+    # Override base URL for testing
+    base_url: str = ""
+
+
 # Backward-compatible alias
 OllamaAccount = ProviderAccount
 
@@ -203,12 +221,17 @@ def infer_provider_from_key(api_key: str, provider_hint: Optional[str] = None) -
     """Return the most likely provider for an account key.
 
     OpenCode Go keys start with ``sk-``; Ollama keys do not.
+    UMANS keys are long hex-ish strings (no uniform prefix, but too long for Go/Ollama).
     If ``provider_hint`` is provided and valid, it is respected.
     """
-    if provider_hint in ("ollama", "opencode_go"):
+    key = api_key.strip()
+    if provider_hint in ("ollama", "opencode_go", "umans"):
         return provider_hint
-    if api_key.strip().lower().startswith("sk-"):
+    if key.lower().startswith("sk-"):
         return "opencode_go"
+    if len(key) >= 64 and not key.startswith("ollama"):
+        # UMANS JWT-looking keys are very long hex-encoded strings
+        return "umans"
     return "ollama"
 
 
@@ -224,6 +247,7 @@ class AppConfig(BaseModel):
     roi: ROIConfig = Field(default_factory=ROIConfig)
     search: SearchConfig = Field(default_factory=SearchConfig)
     history: HistoryConfig = Field(default_factory=HistoryConfig)
+    umans: UmansConfig = Field(default_factory=UmansConfig)
 
     @property
     def ollama_api_key_resolved(self) -> str:
@@ -305,9 +329,19 @@ def load_config(path: Optional[Path] = None) -> AppConfig:
     if "provider_priority" not in router:
         old_strategy = str(router.get("unprefixed_provider_strategy", "round_robin")).lower()
         if old_strategy == "opencode_go":
-            router["provider_priority"] = ["opencode_go", "ollama"]
+            router["provider_priority"] = ["opencode_go", "ollama", "umans"]
         else:
-            router["provider_priority"] = ["ollama", "opencode_go"]
+            router["provider_priority"] = ["ollama", "opencode_go", "umans"]
+
+    # v0.5.6+: ensure provider_priority includes "umans" if missing
+    if "provider_priority" in router and isinstance(router["provider_priority"], list):
+        if "umans" not in router["provider_priority"]:
+            router["provider_priority"].append("umans")
+
+    # v0.5.6+: ensure umans config exists for migration
+    if "umans" not in data:
+        data["umans"] = {}
+
     _config = AppConfig(**data)
 
     # v0.5.3+: Auto-correct accounts whose provider field doesn't match their key.

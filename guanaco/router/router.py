@@ -419,13 +419,15 @@ def create_router(client, analytics=None, config=None, account_pool=None) -> API
         """
         priority = []
         if _config:
-            priority = [p for p in (_config.router.provider_priority or []) if p in ("ollama", "opencode_go", "fallback")]
+            priority = [p for p in (_config.router.provider_priority or []) if p in ("ollama", "opencode_go", "umans", "fallback")]
         if priority:
             available = set()
             if _has_client("ollama"):
                 available.add("ollama")
             if _has_client("opencode_go"):
                 available.add("opencode_go")
+            if _has_client("umans"):
+                available.add("umans")
             if _config and _config.fallback.enabled and _config.fallback.base_url:
                 available.add("fallback")
             for p in priority:
@@ -438,6 +440,8 @@ def create_router(client, analytics=None, config=None, account_pool=None) -> API
             return "ollama"
         if strategy == "opencode_go":
             return "opencode_go"
+        if strategy == "umans":
+            return "umans"
 
         available = {"ollama"}
         if _account_pool:
@@ -454,8 +458,11 @@ def create_router(client, analytics=None, config=None, account_pool=None) -> API
             usage = _account_pool.usage_by_provider()
             ollama_usage = usage.get("ollama", 0)
             go_usage = usage.get("opencode_go", float("inf"))
+            umans_usage = usage.get("umans", float("inf"))
             if "opencode_go" in available and go_usage < ollama_usage:
                 return "opencode_go"
+            if "umans" in available and umans_usage < ollama_usage:
+                return "umans"
         return "ollama"
 
     def _select_account(model: str = None):
@@ -470,7 +477,7 @@ def create_router(client, analytics=None, config=None, account_pool=None) -> API
         """
         priority = []
         if _config:
-            priority = [p for p in (_config.router.provider_priority or []) if p in ("ollama", "opencode_go")]
+            priority = [p for p in (_config.router.provider_priority or []) if p in ("ollama", "opencode_go", "umans")]
         if not priority:
             strategy = getattr(_config, "unprefixed_provider_strategy", "round_robin")
             priority = [_select_default_provider(strategy)]
@@ -672,6 +679,31 @@ def create_router(client, analytics=None, config=None, account_pool=None) -> API
                         "capabilities": caps,
                         "details": {"family": caps.get("family", "")},
                     })
+                elif provider_name == "umans":
+                    name = m.get("id", m.get("name", m.get("model", "")))
+                    if not name:
+                        continue
+                    prefixed = f"umans/{name}"
+                    if prefixed in seen_ids:
+                        continue
+                    seen_ids.add(prefixed)
+                    caps = {}
+                    if hasattr(provider_client, "_get_model_capabilities"):
+                        try:
+                            caps = provider_client._get_model_capabilities(name)
+                        except Exception:
+                            pass
+                    data.append({
+                        "id": prefixed,
+                        "object": "model",
+                        "created": int(time.time()),
+                        "owned_by": "umans",
+                        "permission": [],
+                        "root": name,
+                        "parent": None,
+                        "capabilities": caps,
+                        "details": {"family": caps.get("family", "")},
+                    })
 
         # ── Fallback provider models if configured ──
         if _config and _config.fallback.enabled and _config.fallback.default_model:
@@ -826,7 +858,7 @@ def create_router(client, analytics=None, config=None, account_pool=None) -> API
             async def _fetch_from_upstream(p: dict) -> dict:
                 """Fetch from Ollama Cloud with fallback, retrying on empty response."""
                 request_key, account_name = _select_account(model=resolved_model)
-                _provider = provider_for_model(resolved_model, default_provider=_select_default_provider(getattr(_config, 'unprefixed_provider_strategy', 'round_robin')), provider_priority=([p for p in (_config.router.provider_priority or []) if p in ("ollama", "opencode_go")] if _config else None))
+                _provider = provider_for_model(resolved_model, default_provider=_select_default_provider(getattr(_config, 'unprefixed_provider_strategy', 'round_robin')), provider_priority=([p for p in (_config.router.provider_priority or []) if p in ("ollama", "opencode_go", "umans")] if _config else None))
                 ollama_provider = f"{_provider}:{account_name}" if account_name != _provider else _provider
                 hist_kw = dict(_hist)
                 hist_kw["account_name"] = account_name
@@ -936,7 +968,7 @@ def create_router(client, analytics=None, config=None, account_pool=None) -> API
         # ── Original path for streaming or cache disabled ──
         # Select account only when actually calling Ollama upstream
         _request_key, _account_name = _select_account(model=resolved_model)
-        _provider = provider_for_model(resolved_model, default_provider=_select_default_provider(getattr(_config, 'unprefixed_provider_strategy', 'round_robin')), provider_priority=([p for p in (_config.router.provider_priority or []) if p in ("ollama", "opencode_go")] if _config else None))
+        _provider = provider_for_model(resolved_model, default_provider=_select_default_provider(getattr(_config, 'unprefixed_provider_strategy', 'round_robin')), provider_priority=([p for p in (_config.router.provider_priority or []) if p in ("ollama", "opencode_go", "umans")] if _config else None))
         _ollama_provider = f"{_provider}:{_account_name}" if _account_name != _provider else _provider
         _hist["account_name"] = _account_name
         # Try Ollama Cloud first

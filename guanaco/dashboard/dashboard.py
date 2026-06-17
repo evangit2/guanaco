@@ -527,6 +527,7 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
             "llm": config.llm.model_dump(),
             "fallback": config.fallback.model_dump(),
             "search": config.search.model_dump(),
+            "umans": config.umans.model_dump(),
         }
 
     @router.post("/api/config")
@@ -552,6 +553,22 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
                 s.summarize_all = bool(s_updates["summarize_all"])
             if "summary_model" in s_updates:
                 s.summary_model = str(s_updates["summary_model"])
+
+        # Update UMANS settings
+        if "umans" in body:
+            u_updates = body["umans"]
+            u = config.umans
+            if "enabled" in u_updates:
+                u.enabled = bool(u_updates["enabled"])
+            if "session_label_mode" in u_updates:
+                mode = str(u_updates["session_label_mode"]).lower()
+                if mode in ("yes", "auto", "no"):
+                    u.session_label_mode = mode
+            if "max_images_per_request" in u_updates:
+                u.max_images_per_request = int(u_updates["max_images_per_request"])
+            if "base_url" in u_updates:
+                u.base_url = str(u_updates["base_url"])
+            # email/password are set via dedicated UMANS endpoints; don't expose here
 
         # Update fallback settings
         if "fallback" in body:
@@ -589,7 +606,7 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
                 fb.backoff_base = float(fb_updates["backoff_base"])
 
         save_config(config)
-        return {"status": "ok", "config": {"llm": config.llm.model_dump(), "fallback": config.fallback.model_dump(), "search": config.search.model_dump()}}
+        return {"status": "ok", "config": {"llm": config.llm.model_dump(), "fallback": config.fallback.model_dump(), "search": config.search.model_dump(), "umans": config.umans.model_dump()}}
 
     # ── Emulation Config ──
 
@@ -621,31 +638,36 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
         if ollama_clients is not None:
             configured["ollama"] = bool(ollama_clients.get("ollama"))
             configured["opencode_go"] = bool(ollama_clients.get("opencode_go"))
+            configured["umans"] = bool(ollama_clients.get("umans"))
         else:
             for acc in config.ollama_accounts:
                 if acc.provider == "ollama" and acc.api_key and acc.api_key not in ("***", "REPLACE_ME"):
                     configured["ollama"] = True
                 if acc.provider == "opencode_go" and acc.api_key and acc.api_key not in ("***", "REPLACE_ME"):
                     configured["opencode_go"] = True
+                if acc.provider == "umans" and acc.api_key and acc.api_key not in ("***", "REPLACE_ME"):
+                    configured["umans"] = True
         if getattr(config.fallback, "enabled", False):
             configured["fallback"] = True
 
-        priority = [p for p in (config.router.provider_priority or []) if p in ("ollama", "opencode_go", "fallback")]
+        priority = [p for p in (config.router.provider_priority or []) if p in ("ollama", "opencode_go", "umans", "fallback")]
         if not priority:
             strat = config.router.unprefixed_provider_strategy.lower()
             if strat == "opencode_go":
-                priority = ["opencode_go", "ollama"]
+                priority = ["opencode_go", "ollama", "umans"]
+            elif strat == "umans":
+                priority = ["umans", "ollama", "opencode_go"]
             elif strat == "ollama":
-                priority = ["ollama", "opencode_go"]
+                priority = ["ollama", "opencode_go", "umans"]
             else:
-                priority = ["ollama", "opencode_go"]
+                priority = ["ollama", "opencode_go", "umans"]
         if configured.get("fallback") and "fallback" not in priority:
             priority.append("fallback")
 
         return {
             "provider_priority": priority,
-            "available": ["ollama", "opencode_go", "fallback"],
-            "configured": {p: configured.get(p, False) for p in ["ollama", "opencode_go", "fallback"]},
+            "available": ["ollama", "opencode_go", "umans", "fallback"],
+            "configured": {p: configured.get(p, False) for p in ["ollama", "opencode_go", "umans", "fallback"]},
         }
 
     @router.post("/api/config/provider-priority")
@@ -653,17 +675,19 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
         """Save reordered provider priority list."""
         body = await request.json()
         priority = body.get("provider_priority", [])
-        valid = [p for p in priority if p in ("ollama", "opencode_go", "fallback")]
+        valid = [p for p in priority if p in ("ollama", "opencode_go", "umans", "fallback")]
         if not valid:
             from fastapi import HTTPException
             raise HTTPException(status_code=400, detail="provider_priority must contain valid providers")
 
         config = get_config()
         config.router.provider_priority = valid
-        if valid[:2] == ["ollama", "opencode_go"]:
+        if valid[:3] == ["ollama", "opencode_go", "umans"]:
             config.router.unprefixed_provider_strategy = "ollama"
-        elif valid[:2] == ["opencode_go", "ollama"]:
+        elif valid[:3] == ["opencode_go", "ollama", "umans"]:
             config.router.unprefixed_provider_strategy = "opencode_go"
+        elif valid[:3] == ["umans", "ollama", "opencode_go"]:
+            config.router.unprefixed_provider_strategy = "umans"
         save_config(config)
 
         return {"status": "ok", "provider_priority": valid}
@@ -1168,7 +1192,7 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
         config = get_config()
 
         # Reserved names
-        if name.lower() in ("ollama", "primary", "default"):
+        if name.lower() in ("ollama", "umans", "primary", "default"):
             return {"status": "error", "message": f"'{name}' is a reserved account name"}
 
         # Check duplicate
@@ -1475,5 +1499,88 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
             period=period,
         )
         return result
+
+
+    # ── UMANS Config / Usage ──
+
+    @router.get("/api/umans/config")
+    async def get_umans_config(request: Request):
+        config = get_config()
+        u = config.umans
+        umans_client = getattr(request.app.state, "clients", {}).get("umans")
+        return {
+            "enabled": u.enabled,
+            "session_label_mode": u.session_label_mode,
+            "max_images_per_request": u.max_images_per_request,
+            "base_url": u.base_url,
+            "configured": bool(umans_client and umans_client.api_key and umans_client.api_key not in ("***", "")),
+        }
+
+    @router.post("/api/umans/config")
+    async def set_umans_config(request: Request):
+        body = await request.json()
+        config = get_config()
+        u = config.umans
+        if "enabled" in body:
+            u.enabled = bool(body["enabled"])
+        if "session_label_mode" in body:
+            mode = str(body["session_label_mode"]).lower()
+            if mode in ("yes", "auto", "no"):
+                u.session_label_mode = mode
+        if "max_images_per_request" in body:
+            u.max_images_per_request = int(body["max_images_per_request"])
+        if "base_url" in body:
+            u.base_url = str(body["base_url"])
+        if "session_cookie" in body:
+            config.umans.session_cookie = str(body["session_cookie"]).strip()
+        save_config(config)
+        umans_client = getattr(request.app.state, "clients", {}).get("umans")
+        if umans_client:
+            umans_client.session_label_mode = u.session_label_mode
+            umans_client.max_images_per_request = u.max_images_per_request
+        return {"status": "ok", "umans": config.umans.model_dump()}
+
+    @router.post("/api/umans/usage")
+    async def check_umans_usage(request: Request):
+        """Check UMANS concurrency usage with the configured account API key."""
+        umans_client = getattr(request.app.state, "clients", {}).get("umans")
+        if not umans_client:
+            return {"source": "not_configured", "error": "UMANS provider not enabled"}
+        try:
+            data = await umans_client.get_concurrency()
+            return {"source": "umans", **data}
+        except Exception as e:
+            return {"source": "error", "error": str(e)[:200]}
+
+    @router.post("/api/umans/models")
+    async def sync_umans_models_api(request: Request):
+        """List models from UMANS API and merge into available_models."""
+        config = get_config()
+        umans_client = getattr(request.app.state, "clients", {}).get("umans")
+        if not umans_client:
+            return {"error": "UMANS provider not enabled"}
+        try:
+            models = await umans_client.list_models(force_refresh=True)
+            names = []
+            for m in models:
+                name = m.get("id") or m.get("name") or m.get("model", "")
+                if name:
+                    prefixed = f"umans/{name}"
+                    if prefixed not in names:
+                        names.append(prefixed)
+                    short = name
+                    for prefix in ("umans/", "umans-"):
+                        if short.lower().startswith(prefix):
+                            short = short[len(prefix):]
+                    if short and short not in names and short not in ("umans", ""):
+                        names.append(short)
+            existing = set(config.llm.available_models)
+            for n in names:
+                existing.add(n)
+            config.llm.available_models = sorted(existing)
+            save_config(config)
+            return {"status": "ok", "count": len(names), "models": names}
+        except Exception as e:
+            return {"error": str(e)[:200]}
 
     return router

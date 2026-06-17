@@ -34,9 +34,13 @@ class MultiProviderChatClient:
             }
             if any(m in model.lower() for m in go_models):
                 client = self._clients.get("opencode_go")
+        if client is None and provider == "ollama":
+            # Known UMANS models have a "umans-" prefix even when no provider is configured.
+            if model.lower().startswith("umans-") or model.lower().startswith("umans/"):
+                client = self._clients.get("umans")
         if client is None:
             # Provider requested but not configured — fall back to whatever is available.
-            for fallback_provider in ("ollama", "opencode_go"):
+            for fallback_provider in ("ollama", "opencode_go", "umans"):
                 client = self._clients.get(fallback_provider)
                 if client is not None:
                     break
@@ -55,6 +59,8 @@ class MultiProviderChatClient:
             raise RuntimeError("No LLM provider configured")
         if model.startswith("opencode-go/") and "opencode_go" in self._clients and client is self._clients["opencode_go"]:
             payload["model"] = model[len("opencode-go/"):]
+        if client is self._clients.get("umans") and (model.startswith("umans/") or model.lower().startswith("umans-")):
+            payload["model"] = model
         return await client.chat_completion(payload, api_key=api_key)
 
     async def chat_completion_stream(self, payload: dict, api_key: Optional[str] = None):
@@ -65,6 +71,8 @@ class MultiProviderChatClient:
             raise RuntimeError("No LLM provider configured")
         if model.startswith("opencode-go/") and "opencode_go" in self._clients and client is self._clients["opencode_go"]:
             payload["model"] = model[len("opencode-go/"):]
+        if client is self._clients.get("umans") and (model.startswith("umans/") or model.lower().startswith("umans-")):
+            payload["model"] = model
         async for chunk in client.chat_completion_stream(payload, api_key=api_key):
             yield chunk
 
@@ -115,7 +123,11 @@ class MultiProviderChatClient:
                 raw_id = m.get("id", m.get("name", m.get("model", "")))
                 if not raw_id:
                     continue
-                display_id = f"opencode-go/{raw_id}" if provider == "opencode_go" else raw_id
+                display_id = raw_id
+                if provider == "opencode_go":
+                    display_id = f"opencode-go/{raw_id}"
+                elif provider == "umans":
+                    display_id = f"umans/{raw_id}"
                 if display_id in seen_ids:
                     continue
                 seen_ids.add(display_id)

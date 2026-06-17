@@ -248,6 +248,21 @@ if [ -z "$SETUP_OLLAMA_API_KEY" ] && [ -z "$SETUP_OPENCODE_API_KEY" ]; then
     echo ""
 fi
 
+# ── Optional providers ──
+step "Optional providers"
+
+prompt_yesno SETUP_UMANS "Set up UMANS subscription?" "n"
+if [ "$SETUP_UMANS" = "y" ]; then
+    prompt UMANS_API_KEY "Enter your UMANS API key" ""
+    if [ -n "$UMANS_API_KEY" ]; then
+        TMP_ENV=$(mktemp)
+        grep -v "^export UMANS_API_KEY=" "$INSTALL_DIR/env" 2>/dev/null > "$TMP_ENV" || true
+        echo "export UMANS_API_KEY=\"${UMANS_API_KEY}\"" >> "$TMP_ENV"
+        mv "$TMP_ENV" "$INSTALL_DIR/env"
+        success "UMANS API key saved"
+    fi
+fi
+
 # ── Network configuration ──
 step "Network configuration"
 

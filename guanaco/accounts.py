@@ -16,6 +16,7 @@ PREMIUM_MODELS = {"kimi-k2.6", "glm-5.1"}
 # Provider hints from model names
 OPENCODE_GO_PREFIXES = ("opencode-go/",)
 OLLAMA_PREFIXES = ("ollama/",)
+UMANS_PREFIXES = ("umans/", "umans-")
 
 # Known unprefixed OpenCode Go model names that should default to the Go provider.
 KNOWN_GO_MODELS = {
@@ -42,11 +43,20 @@ KNOWN_OLLAMA_MODELS = {
     "nemotron-3-nano", "nemotron-3-nano:30b", "nemotron-4", "nemotron-4:340b",
 }
 
+# Known UMANS model short names (without umans- prefix) that should default to UMANS provider.
+KNOWN_UMANS_MODELS = {
+    "kimi-k2.7", "kimi-k2.6", "kimi-k2.5",
+    "kimi-k2-7", "kimi-k2-6", "kimi-k2-5",
+    "glm-5.1", "glm-5", "glm-5-1", "glm5.1", "glm5",
+    "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus",
+    "qwen3-7-max", "qwen3-7-plus", "qwen3-6-plus",
+}
+
 
 def _normalize_model_for_provider(model: str) -> str:
     """Return a canonical lowercased identifier for provider detection."""
     m = model.lower().strip()
-    for prefix in OPENCODE_GO_PREFIXES + OLLAMA_PREFIXES:
+    for prefix in OPENCODE_GO_PREFIXES + OLLAMA_PREFIXES + UMANS_PREFIXES:
         if m.startswith(prefix):
             m = m[len(prefix):]
     return m.split(":")[0].replace("_", "-")
@@ -66,15 +76,20 @@ def provider_for_model(model: str, default_provider: str = "ollama", provider_pr
     for prefix in OLLAMA_PREFIXES:
         if m.startswith(prefix):
             return "ollama"
+    for prefix in UMANS_PREFIXES:
+        if m.startswith(prefix):
+            return "umans"
     canon = _normalize_model_for_provider(model)
     if canon in KNOWN_GO_MODELS:
         return "opencode_go"
+    if canon in KNOWN_UMANS_MODELS:
+        return "umans"
     if canon in KNOWN_OLLAMA_MODELS:
         return "ollama"
     # If provider_priority is set, prefer the first configured provider
     if provider_priority:
         for p in provider_priority:
-            if p in ("ollama", "opencode_go"):
+            if p in ("ollama", "opencode_go", "umans"):
                 return p
     return default_provider
 
@@ -142,6 +157,9 @@ class AccountPool:
                     logger.info(f"Model '{model}' requires premium plan, filtered to {len(eligible)} eligible accounts")
                     return eligible
                 logger.warning(f"Model '{model}' requires premium but no paid accounts available, trying all")
+        elif provider == "umans":
+            # UMANS subscription bypasses Ollama-style usage metrics; every key is treated as premium.
+            pass
 
         return active
 
@@ -256,4 +274,4 @@ class AccountPool:
 
     def is_reserved_name(self, name: str) -> bool:
         """Check if a name is reserved (case-insensitive)."""
-        return name.lower() in ("ollama", "opencode_go", "primary", "default")
+        return name.lower() in ("ollama", "opencode_go", "umans", "primary", "default")
