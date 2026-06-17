@@ -143,6 +143,26 @@ def _is_empty_non_streaming_response(resp: dict) -> bool:
     return True
 
 
+def _ensure_content_field(resp: dict) -> dict:
+    """Copy reasoning_content into content for clients that expect it.
+
+    Providers such as UMANS and OpenCode Go sometimes leave content empty and
+    populate reasoning_content or reasoning. We surface that as content so the
+    response is usable with standard OpenAI clients.
+    """
+    for choice in resp.get("choices", []):
+        msg = choice.get("message") if isinstance(choice, dict) else None
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content")
+        if content not in (None, ""):
+            continue
+        reasoning = msg.get("reasoning_content") or msg.get("reasoning")
+        if reasoning:
+            msg["content"] = reasoning
+    return resp
+
+
 # ── Request/Response Models ──
 
 class ChatMessage(BaseModel):
@@ -473,15 +493,16 @@ def create_router(client, analytics=None, config=None, account_pool=None) -> API
         return "ollama"
 
     def _select_account(model: str = None):
-        """Select the best account for the requested provider/model, respecting provider priority.
+        """Select the best account for the requested provider/model.
 
-        Walks the configured provider_priority list and returns the first provider
-        that has an active account. If no priority list is configured, falls back
-        to the legacy strategy-based selection.
-
-        Returns (api_key, account_name) tuple. api_key is None when the account has no
-        stored key (uses the default client key). account_name is the provider name for the primary account.
+        If the model has an explicit provider prefix (e.g. 'umans/...' or
+        'opencode-go/...'), use that provider's account directly. Otherwise fall
+        back to provider_priority selection.
         """
+        explicit_provider = provider_for_model(model) if model else None
+        if explicit_provider not in ("ollama", "opencode_go", "umans"):
+            explicit_provider = None
+
         priority = []
         if _config:
             priority = [p for p in (_config.router.provider_priority or []) if p in ("ollama", "opencode_go", "umans")]
@@ -489,7 +510,9 @@ def create_router(client, analytics=None, config=None, account_pool=None) -> API
             strategy = getattr(_config, "unprefixed_provider_strategy", "round_robin")
             priority = [_select_default_provider(strategy)]
 
-        for provider in priority:
+        # Explicit provider wins: pick its account if available.
+        preferred = ([explicit_provider] if explicit_provider else []) + priority
+        for provider in preferred:
             if not _has_client(provider):
                 continue
             if _account_pool:
@@ -1005,6 +1028,8 @@ def create_router(client, analytics=None, config=None, account_pool=None) -> API
             elapsed = time.time() - start
             metrics = resp.pop("_oct_metrics", {})
             usage = resp.get("usage", {})
+
+            _ensure_content_field(resp)
 
             if _analytics:
                 hist_kw = dict(_hist)

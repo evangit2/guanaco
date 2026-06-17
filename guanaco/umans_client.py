@@ -29,11 +29,12 @@ UMANS_STATIC_CAPS: dict[str, dict[str, Any]] = {
 
 
 def _strip_umans_prefix(model: str) -> str:
-    """Return the canonical UMANS model id with umans- prefix."""
+    """Return the canonical UMANS model id with a single umans- prefix."""
     model = model.strip()
     lower = model.lower()
     if lower.startswith("umans/"):
         model = model[len("umans/"):]
+        lower = model.lower()
     if not lower.startswith("umans-"):
         model = f"umans-{model}"
     return model
