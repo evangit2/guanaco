@@ -3,7 +3,7 @@
 # Single source of truth for version.
 # importlib.metadata can return stale values after git-pull without re-pip-install,
 # so we always use the hardcoded fallback and only override if metadata matches.
-__version__ = "0.5.4"
+__version__ = "0.5.5"
 
 try:
     from importlib.metadata import version as _version

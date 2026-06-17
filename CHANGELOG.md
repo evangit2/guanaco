@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.5] - 2026-06-17
+
+### Fixed
+- **Updater no longer requires `pip` inside the virtual environment.** It detects whether the running venv has `pip`; if not, it falls back to `uv pip install --python <venv>`. This fixes self-updates on uv-created or `--without-pip` venvs.
+
+### Yanked
+- **v0.5.4 was withdrawn.** Its auto-updater failed with `No module named pip` on venvs without pip. Install v0.5.5 instead.
+
+---
+
 ## [0.5.4] - 2026-06-17
 
 ### Fixed
