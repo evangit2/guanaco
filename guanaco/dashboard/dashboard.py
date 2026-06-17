@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -1008,12 +1009,36 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
             if reset_result.returncode != 0:
                 return {"status": "error", "step": "reset", "message": reset_result.stderr[:200]}
 
-            # Step 3: Reinstall into the same virtual environment that is running this server
+            # Step 3: Reinstall into the same virtual environment that is running this server.
+            # Some venvs (especially uv-created ones) don't include pip, so we prefer uv when available.
             venv_python = sys.executable
-            install_result = subprocess.run(
-                [venv_python, "-m", "pip", "install", "-e", ".", "--quiet"],
-                cwd=project_dir, capture_output=True, text=True, timeout=60
-            )
+            uv_bin = shutil.which("uv")
+            pip_available = False
+            try:
+                pip_version = subprocess.run(
+                    [venv_python, "-m", "pip", "--version"],
+                    cwd=project_dir, capture_output=True, text=True, timeout=5
+                )
+                pip_available = pip_version.returncode == 0
+            except Exception:
+                pip_available = False
+
+            if pip_available:
+                install_result = subprocess.run(
+                    [venv_python, "-m", "pip", "install", "-e", ".", "--quiet"],
+                    cwd=project_dir, capture_output=True, text=True, timeout=120
+                )
+            elif uv_bin:
+                install_result = subprocess.run(
+                    [uv_bin, "pip", "install", "-e", ".", "--python", venv_python, "--quiet"],
+                    cwd=project_dir, capture_output=True, text=True, timeout=120
+                )
+            else:
+                return {
+                    "status": "error",
+                    "step": "install",
+                    "message": "This virtual environment has no pip and uv is not available on PATH. Install one of them to enable updates.",
+                }
             if install_result.returncode != 0:
                 return {"status": "error", "step": "install", "message": install_result.stderr[:200]}
 
