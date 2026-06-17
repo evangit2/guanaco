@@ -866,7 +866,7 @@ class AnalyticsLogger:
                 "configured": configured,
             }
 
-    def get_go_usage(self, budgets: tuple[float, float, float] = (12.0, 30.0, 60.0)) -> dict:
+    def get_go_usage(self, budgets: tuple[float, float, float] = (12.0, 30.0, 60.0), configured: bool = False) -> dict:
         """Estimate OpenCode Go spend from logged costs.
 
         budgets: (5_hour, weekly, monthly) USD limits used as reference bars.
@@ -923,5 +923,5 @@ class AnalyticsLogger:
             "weekly": {"cost": round(weekly_cost, 4), "budget": weekly_budget, "pct": _pct(weekly_cost, weekly_budget)},
             "monthly": {"cost": round(monthly_cost, 4), "budget": monthly_budget, "pct": _pct(monthly_cost, monthly_budget)},
             "models": models,
-            "configured": total_cost > 0 or len(models) > 0,
+            "configured": total_cost > 0 or len(models) > 0 or configured,
         }

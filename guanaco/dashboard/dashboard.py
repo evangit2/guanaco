@@ -167,6 +167,20 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
         analytics.clear()
         return {"status": "ok"}
 
+    @router.get("/api/analytics/go-usage")
+    async def analytics_go_usage(request: Request):
+        go_clients = getattr(request.app.state, "clients", {})
+        configured = bool(go_clients.get("opencode_go"))
+        return analytics.get_go_usage(configured=configured)
+
+    @router.get("/api/analytics/cache")
+    async def analytics_cache(request: Request):
+        go_clients = getattr(request.app.state, "clients", {})
+        result = analytics.get_cache_stats()
+        if bool(go_clients.get("opencode_go")):
+            result["configured"] = True
+        return result
+
     # ── Status Events ──
 
     @router.get("/api/status/events")
@@ -994,13 +1008,10 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
             if reset_result.returncode != 0:
                 return {"status": "error", "step": "reset", "message": reset_result.stderr[:200]}
 
-            # Step 3: Reinstall into venv
-            install_dir = Path.home() / ".guanaco"
-            venv_python = install_dir / "venv" / "bin" / "python"
-            if not venv_python.exists():
-                venv_python = project_dir / "venv" / "bin" / "python"
+            # Step 3: Reinstall into the same virtual environment that is running this server
+            venv_python = sys.executable
             install_result = subprocess.run(
-                [str(venv_python), "-m", "pip", "install", "-e", ".", "--quiet"],
+                [venv_python, "-m", "pip", "install", "-e", ".", "--quiet"],
                 cwd=project_dir, capture_output=True, text=True, timeout=60
             )
             if install_result.returncode != 0:
@@ -1008,7 +1019,7 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
 
             # Step 4: Validate the new code can actually start
             validate_result = subprocess.run(
-                [str(venv_python), "-c",
+                [venv_python, "-c",
                  "from guanaco.app import create_app; app = create_app(); "
                  "from guanaco.app import __version__; print(__version__)"],
                 cwd=project_dir, capture_output=True, text=True, timeout=15

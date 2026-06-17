@@ -211,6 +211,7 @@ fi
 if [ -z "$OLLAMA_API_KEY" ]; then
     echo ""
     warn "No API key provided. You can set it later with: guanaco setup"
+    info "Tip: If you plan to use OpenCode Go as your primary LLM provider, the free Ollama Cloud tier is still useful for lots of free web search requests."
     echo ""
 fi
 
