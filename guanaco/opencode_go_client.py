@@ -209,6 +209,21 @@ class OpenCodeGoClient:
                             }
                             if final_tokens and generation_time > 0:
                                 metrics["tps"] = round(final_tokens / generation_time, 2)
+                            usage_chunk = {
+                                "id": "chatcmpl-final",
+                                "object": "chat.completion.chunk",
+                                "created": int(time.time()),
+                                "model": payload_copy.get("model", ""),
+                                "choices": [],
+                                "usage": {
+                                    "prompt_tokens": metrics.get("prompt_eval_count", 0),
+                                    "completion_tokens": metrics.get("eval_count", 0),
+                                    "total_tokens": metrics.get("prompt_eval_count", 0) + metrics.get("eval_count", 0),
+                                },
+                            }
+                            if metrics.get("reasoning_tokens"):
+                                usage_chunk["usage"]["completion_tokens_details"] = {"reasoning_tokens": metrics["reasoning_tokens"]}
+                            yield f"data: {json.dumps(usage_chunk)}\n\n"
                             yield "data: [DONE]\n\n"
                             yield f"__oct_metrics__:{json.dumps(metrics)}\n\n"
                             return
