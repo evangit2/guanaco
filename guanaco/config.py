@@ -39,6 +39,16 @@ class RouterConfig(BaseModel):
     autostart: bool = False
     auto_update: bool = False
     allow_prerelease: bool = False
+    # Optional name for the systemd service (allows multiple isolated instances)
+    service_name: str = "guanaco"
+    # When a model name has no provider prefix and both providers are available,
+    # choose the default provider using this strategy: round_robin, usage, ollama, opencode_go.
+    # DEPRECATED: kept for backward compatibility. Use provider_priority for ordered fallback.
+    unprefixed_provider_strategy: str = "round_robin"
+    # Ordered list of providers to try for unprefixed models. Earlier entries are preferred.
+    # Built-in providers: "ollama", "opencode_go". A configured fallback OpenAI-compatible
+    # provider can be included as "fallback".
+    provider_priority: list[str] = Field(default_factory=lambda: ["ollama", "opencode_go"])
 
 
 class SearchConfig(BaseModel):
@@ -167,11 +177,13 @@ class ROIConfig(BaseModel):
     last_roi_calc: float = 0.0
     last_roi_detail: dict = Field(default_factory=dict)
 
-class OllamaAccount(BaseModel):
-    """A single Ollama Cloud account with its own API key and usage tracking."""
+class ProviderAccount(BaseModel):
+    """A single provider account with its own API key and usage tracking."""
     name: str                                      # Display name (unique, "ollama" is reserved for primary)
     api_key: str = ""                              # API key for this account
-    session_cookie: str = ""                       # __Secure-session cookie for usage scraping
+    provider: str = "ollama"                       # Provider type: "ollama" or "opencode_go"
+    base_url: str = ""                             # Optional endpoint override; defaults per provider if empty
+    session_cookie: str = ""                       # __Secure-session cookie for usage scraping (Ollama only)
     # Usage tracking (updated by background check)
     last_session_pct: Optional[float] = None
     last_weekly_pct: Optional[float] = None
@@ -179,6 +191,12 @@ class OllamaAccount(BaseModel):
     last_session_reset: Optional[str] = None
     last_weekly_reset: Optional[str] = None
     last_checked: Optional[float] = None
+    # Multi-account rotation mode. "usage" = quota-aware (default). "round_robin" = round-robin.
+    rotation_mode: str = "usage"
+
+
+# Backward-compatible alias
+OllamaAccount = ProviderAccount
 
 
 class AppConfig(BaseModel):
@@ -217,6 +235,7 @@ class AppConfig(BaseModel):
             last_session_reset=self.usage.last_session_reset if hasattr(self, 'usage') else None,
             last_weekly_reset=self.usage.last_weekly_reset if hasattr(self, 'usage') else None,
             last_checked=self.usage.last_checked if hasattr(self, 'usage') else None,
+            rotation_mode="usage",
         )
 
     @property
@@ -265,6 +284,17 @@ def load_config(path: Optional[Path] = None) -> AppConfig:
         if field not in router:
             router[field] = default
 
+    # v0.4.4+: service_name added for multi-instance systemd support
+    if "service_name" not in router:
+        router["service_name"] = "guanaco"
+
+    # v0.4.4+: provider_priority replaces unprefixed_provider_strategy
+    if "provider_priority" not in router:
+        old_strategy = str(router.get("unprefixed_provider_strategy", "round_robin")).lower()
+        if old_strategy == "opencode_go":
+            router["provider_priority"] = ["opencode_go", "ollama"]
+        else:
+            router["provider_priority"] = ["ollama", "opencode_go"]
     _config = AppConfig(**data)
 
     # Ensure the primary "ollama" account is always in the accounts list
@@ -281,6 +311,7 @@ def load_config(path: Optional[Path] = None) -> AppConfig:
             last_session_reset=_config.usage.last_session_reset if hasattr(_config, 'usage') else None,
             last_weekly_reset=_config.usage.last_weekly_reset if hasattr(_config, 'usage') else None,
             last_checked=_config.usage.last_checked if hasattr(_config, 'usage') else None,
+            rotation_mode="usage",
         ))
 
     return _config

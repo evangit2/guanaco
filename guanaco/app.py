@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import time
-import sys
 from contextlib import asynccontextmanager
-from typing import Optional
+from pathlib import Path
+from typing import Any, Optional
 
 from fastapi import FastAPI, APIRouter, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-from guanaco.config import load_config, get_config, AppConfig, get_base_url, get_tailscale_ip
+from guanaco.config import load_config, AppConfig, get_base_url
 from guanaco.client import OllamaClient
+from guanaco.opencode_go_client import OpenCodeGoClient
+from guanaco.multi_provider_client import MultiProviderChatClient
 from guanaco.accounts import AccountPool
 __version__ = "0.5.2"
 from guanaco.router.router import create_router as create_llm_router
@@ -22,23 +25,58 @@ from guanaco.utils.api_keys import ApiKeyManager
 from guanaco.analytics import AnalyticsLogger
 
 
+logger = logging.getLogger(__name__)
+
+
 def create_app(config: AppConfig | None = None) -> FastAPI:
     """Create the combined FastAPI application with all routes on a single port."""
     if config is None:
         config = load_config()
 
-    resolved_key = os.getenv("OLLAMA_API_KEY", "") or config.ollama_api_key or ""
-    if not resolved_key:
-        print("Warning: OLLAMA_API_KEY not set. Set it with 'guanaco setup' or export OLLAMA_API_KEY.")
+    # Gather provider credentials from config, env, and per-provider files/env vars.
+    ollama_key = os.getenv("OLLAMA_API_KEY", "") or config.ollama_api_key or ""
+    go_key_source = os.getenv("OPENCODE_GO_API_KEY", "")
+    if not go_key_source:
+        go_key_file = os.getenv("OPENCODE_GO_API_KEY_FILE", "")
+        if go_key_file:
+            try:
+                go_key_source = Path(go_key_file).expanduser().read_text().strip()
+            except Exception as e:
+                logger.warning("Could not read OPENCODE_GO_API_KEY_FILE %s: %s", go_key_file, e)
+    go_accounts = [a for a in config.ollama_accounts if a.provider == "opencode_go"]
+    if go_accounts and not go_key_source:
+        go_key_source = go_accounts[0].api_key or ""
 
-    client = OllamaClient(api_key=resolved_key, session_cookie=config.usage.session_cookie)
+    # Normalize provider account list. Primary Ollama account is created only when an Ollama key exists.
+    has_ollama = bool(ollama_key)
+    has_go = bool(go_key_source)
 
-    # Ensure primary account exists in the accounts list
     if not config.ollama_accounts:
-        config.ollama_accounts = [config.primary_account]
-    elif not any(a.name == "ollama" for a in config.ollama_accounts):
-        config.ollama_accounts.insert(0, config.primary_account)
+        accounts: list = []
+        if has_ollama:
+            accounts.append(config.primary_account)
+        for acc in go_accounts:
+            accounts.append(acc)
+        config.ollama_accounts = accounts
+    else:
+        if has_ollama and not any(a.name == "ollama" for a in config.ollama_accounts):
+            config.ollama_accounts.insert(0, config.primary_account)
     account_pool = AccountPool(config.ollama_accounts)
+
+    # ── Provider clients ──
+    clients: dict[str, Any] = {}
+    if has_ollama:
+        clients["ollama"] = OllamaClient(api_key=ollama_key, session_cookie=config.usage.session_cookie)
+    if has_go:
+        clients["opencode_go"] = OpenCodeGoClient(api_key=go_key_source)
+
+    chat_client = MultiProviderChatClient(clients, account_pool=account_pool)
+
+    # A generic OllamaClient is still useful for web fetch/search utilities even when
+    # no Ollama API key is configured for chat. It operates with an empty auth header.
+    utility_client: OllamaClient = clients.get("ollama") or OllamaClient(
+        api_key="", session_cookie=config.usage.session_cookie
+    )
 
     from guanaco.config import get_default_config_dir
     key_manager = ApiKeyManager(get_default_config_dir())
@@ -57,13 +95,29 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         analytics.log_status("info", "system", "Guanaco started", {
             "host": config.router.host, "port": config.router.port,
             "cache_beta": config.cache.beta_mode,
+            "providers": chat_client.provider_keys,
         })
         if config.cache.beta_mode:
-            print(f"   Cache (BETA):  ENABLED — exact_ttl={config.cache.exact_cache_ttl}s, prefix_ttl={config.cache.session_prefix_ttl}s, dedup={config.cache.dedup_enabled}")
+            print(f"   Cache (BETA):  ENABLED — exact_ttl={config.cache.exact_ttl}s, prefix_ttl={config.cache.session_prefix_ttl}s, dedup={config.cache.dedup_enabled}")
         else:
-            print(f"   Cache (BETA):  DISABLED (enable with /v1/config/cache)")
+            print("   Cache (BETA):  DISABLED (enable with /v1/config/cache)")
+        if has_ollama:
+            print("   Ollama Cloud:  ENABLED")
+        else:
+            print("   Ollama Cloud:  DISABLED (no OLLAMA_API_KEY)")
+        if has_go:
+            print(f"   OpenCode Go:   ENABLED ({len(go_accounts)} account(s))")
+        else:
+            print("   OpenCode Go:   DISABLED (no OPENCODE_GO_API_KEY)")
+        if not has_ollama and not has_go:
+            print("\nWarning: running with no LLM provider configured. Only search APIs will work.")
         yield
-        await client.close()
+        if "ollama" in clients:
+            await clients["ollama"].close()
+        if "opencode_go" in clients:
+            await clients["opencode_go"].close()
+        if utility_client is not clients.get("ollama") and hasattr(utility_client, "close"):
+            await utility_client.close()
 
     app = FastAPI(
         title="Guanaco",
@@ -137,14 +191,14 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         return {"status": "ok", "version": __version__}
 
     # ── LLM Router ──
-    app.include_router(create_llm_router(client, analytics=analytics, config=config, account_pool=account_pool))
+    app.include_router(create_llm_router(chat_client, analytics=analytics, config=config, account_pool=account_pool))
 
     # ── Search Providers ──
     for provider_cls in ALL_PROVIDERS:
         prov_name = provider_cls.name
         prov_cfg = providers_config.get(prov_name, {})
         if prov_cfg.get("enabled", True):
-            provider = provider_cls(client, analytics=analytics)
+            provider = provider_cls(utility_client, analytics=analytics)
             provider.register_routes(app)
             print(f"   [OK] {prov_name}")
         else:
@@ -155,8 +209,6 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     # Guanaco exposes these under /firecrawl/v2/... but the SDK sends to /v2/...
     # These top-level aliases let the SDK work without the /firecrawl prefix.
     try:
-        firecrawl_prov = next(p for p in ALL_PROVIDERS if p.name == "firecrawl")
-        fc_instance = firecrawl_prov(client, analytics=analytics)
         fc_compat = APIRouter(tags=["Firecrawl SDK Compat"])
 
         # Re-use the same handler logic by delegating to the provider's methods
@@ -166,9 +218,8 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             from guanaco.search.providers.firecrawl import ScrapeRequest
             body = await request.json()
             body_obj = ScrapeRequest(**body)
-            # Access the provider's registered router handlers
-            # Simpler: just call the ollama fetch directly
-            ollama_resp = await client.fetch(url=body_obj.url)
+            # Simpler: just call the Ollama fetch directly
+            ollama_resp = await utility_client.fetch(url=body_obj.url)
             title = ollama_resp.get("title", "")
             content = ollama_resp.get("content", "")
             links = ollama_resp.get("links", [])
@@ -198,7 +249,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             from guanaco.search.providers.firecrawl import SearchRequest
             body = await request.json()
             body_obj = SearchRequest(**body)
-            ollama_resp = await client.search(query=body_obj.query, max_results=body_obj.limit)
+            ollama_resp = await utility_client.search(query=body_obj.query, max_results=body_obj.limit)
             results = []
             for r in ollama_resp.get("results", []):
                 results.append({
@@ -214,7 +265,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             from guanaco.search.providers.firecrawl import CrawlRequest
             body = await request.json()
             body_obj = CrawlRequest(**body)
-            ollama_resp = await client.fetch(url=body_obj.url)
+            ollama_resp = await utility_client.fetch(url=body_obj.url)
             title = ollama_resp.get("title", "")
             content = ollama_resp.get("content", "")
             links = ollama_resp.get("links", [])
@@ -227,7 +278,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             }]
             for link in links[:body_obj.limit - 1]:
                 try:
-                    link_resp = await client.fetch(url=link)
+                    link_resp = await utility_client.fetch(url=link)
                     lt = link_resp.get("title", "")
                     lc = link_resp.get("content", "")
                     results.append({
@@ -256,7 +307,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             all_content = {}
             for url in body_obj.urls[:5]:
                 try:
-                    resp = await client.fetch(url=url)
+                    resp = await utility_client.fetch(url=url)
                     all_content[url] = resp.get("content", "")
                 except Exception:
                     all_content[url] = ""
@@ -267,25 +318,27 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         print(f"   [WARN] Firecrawl SDK compat routes not loaded: {e}")
 
     # ── Dashboard ──
-    app.include_router(create_dashboard_router(key_manager, analytics, client, account_pool=account_pool), prefix="/dashboard")
+    app.include_router(create_dashboard_router(key_manager, analytics, utility_client, account_pool=account_pool), prefix="/dashboard")
 
-    # Store account_pool on app state for dashboard access
+    # Store references on app state for dashboard / middleware access
     app.state.account_pool = account_pool
+    app.state.clients = clients
 
     # ── Ollama status & models (top-level API) ──
-
     @app.get("/api/ollama/status")
     async def ollama_status():
         """Check Ollama Cloud API connectivity and list available models."""
+        if not has_ollama or clients.get("ollama") is None:
+            return {"status": "not_configured", "message": "Ollama Cloud is not configured", "model_count": 0, "latency_ms": 0}
+        ollama_client = clients["ollama"]
         start = time.time()
-        cfg = get_config()
         try:
-            health = await client.health_check()
+            health = await ollama_client.health_check()
             latency_ms = health.get("latency_ms", round((time.time() - start) * 1000))
 
             if health["status"] == "connected":
                 try:
-                    models = await client.list_models()
+                    models = await ollama_client.list_models()
                     model_count = len(models)
                 except Exception:
                     model_count = health.get("model_count", 0)
@@ -321,8 +374,11 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     @app.get("/api/ollama/models")
     async def ollama_models():
         """List all available Ollama Cloud models with metadata."""
+        if not has_ollama or clients.get("ollama") is None:
+            return {"models": [], "count": 0}
+        ollama_client = clients["ollama"]
         try:
-            models = await client.get_cloud_models()
+            models = await ollama_client.get_cloud_models()
             return {"models": models, "count": len(models)}
         except Exception as e:
             analytics.log_status("error", "ollama", f"Failed to list models: {str(e)}")
@@ -331,8 +387,11 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     @app.get("/v1/usage")
     async def get_usage():
         """Get Ollama Cloud account usage/quota information."""
+        if not has_ollama or clients.get("ollama") is None:
+            return {"source": "not_configured", "error": "Ollama Cloud is not configured"}
+        ollama_client = clients["ollama"]
         try:
-            usage_data = await client.get_usage()
+            usage_data = await ollama_client.get_usage()
             if usage_data.get("source") != "unavailable":
                 session_pct = None
                 weekly_pct = None

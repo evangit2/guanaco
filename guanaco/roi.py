@@ -15,7 +15,6 @@ import logging
 import sqlite3
 import time
 from pathlib import Path
-from typing import Optional
 
 import httpx
 
@@ -233,18 +232,37 @@ def get_usage_from_analytics(db_path: Path | str, since: float = 0) -> tuple[dic
     total_weighted = 0.0
     try:
         conn = sqlite3.connect(str(db_path))
-        rows = conn.execute(
-            """SELECT model,
-                      IFNULL(SUM(prompt_tokens),0),
-                      IFNULL(SUM(completion_tokens),0),
-                      IFNULL(SUM(prompt_tokens * IFNULL(usage_multiplier,1.0)),0),
-                      IFNULL(SUM(completion_tokens * IFNULL(usage_multiplier,1.0)),0),
-                      COUNT(*)
-               FROM request_log WHERE type='llm' AND ts > ? GROUP BY model""",
-            (since,),
-        ).fetchall()
+        # Detect whether the request_log table has the usage_multiplier column
+        # (older DBs created before v0.4.3 may not).
+        has_multiplier = False
+        try:
+            cols = {row[1] for row in conn.execute("PRAGMA table_info(request_log)")}
+            has_multiplier = "usage_multiplier" in cols
+        except Exception:
+            pass
+
+        if has_multiplier:
+            sql = """SELECT model,
+                            IFNULL(SUM(prompt_tokens),0),
+                            IFNULL(SUM(completion_tokens),0),
+                            IFNULL(SUM(prompt_tokens * IFNULL(usage_multiplier,1.0)),0),
+                            IFNULL(SUM(completion_tokens * IFNULL(usage_multiplier,1.0)),0),
+                            COUNT(*)
+                     FROM request_log WHERE type='llm' AND ts > ? GROUP BY model"""
+        else:
+            sql = """SELECT model,
+                            IFNULL(SUM(prompt_tokens),0),
+                            IFNULL(SUM(completion_tokens),0),
+                            COUNT(*)
+                     FROM request_log WHERE type='llm' AND ts > ? GROUP BY model"""
+
+        rows = conn.execute(sql, (since,)).fetchall()
         for row in rows:
-            model, pt, ct, w_pt, w_ct, req_count = row
+            if has_multiplier:
+                model, pt, ct, w_pt, w_ct, req_count = row
+            else:
+                model, pt, ct, req_count = row
+                w_pt, w_ct = float(pt), float(ct)
             usage_by_model[model] = {
                 "prompt_tokens": pt,
                 "completion_tokens": ct,
@@ -303,7 +321,7 @@ def calculate_roi(
     prices_stale = not prices or len(prices) < 10
     plan = "pro" if subscription_monthly <= 25 else "max"
 
-    # 2. Get usage
+    # 2. Get usage since Ollama's weekly reset (Sunday 20:00 UTC)
     since = _get_ollama_week_start()
     usage_by_model, total_weighted = get_usage_from_analytics(db_path, since)
 

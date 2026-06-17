@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Header, Query, Request
+from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 from typing import Optional
 

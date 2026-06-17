@@ -64,7 +64,10 @@ class AnalyticsLogger:
                     error TEXT,                   -- error message if failed
                     request_id TEXT,
                     fallback_for TEXT,            -- original model name if this was a fallback call
-                    extra TEXT                    -- JSON blob for additional data
+                    extra TEXT,                   -- JSON blob for additional data
+                    prompt_cache_hit_tokens INTEGER DEFAULT 0,
+                    prompt_cache_miss_tokens INTEGER DEFAULT 0,
+                    estimated_cost REAL DEFAULT 0.0
                 )
             """)
             # Migration: add provider column if upgrading from older schema
@@ -93,6 +96,12 @@ class AnalyticsLogger:
                 conn.execute("ALTER TABLE request_log ADD COLUMN account_name TEXT")
             except sqlite3.OperationalError:
                 pass
+            # Migration: add OpenCode Go cache columns
+            for col in ["prompt_cache_hit_tokens INTEGER DEFAULT 0", "prompt_cache_miss_tokens INTEGER DEFAULT 0", "estimated_cost REAL DEFAULT 0.0"]:
+                try:
+                    conn.execute(f"ALTER TABLE request_log ADD COLUMN {col}")
+                except sqlite3.OperationalError:
+                    pass
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS status_events (
                     id TEXT PRIMARY KEY,
@@ -159,6 +168,10 @@ class AnalyticsLogger:
         output_text: Optional[str] = None,
         fallback_reason: Optional[str] = None,
         account_name: Optional[str] = None,
+        usage_multiplier: float = 1.00,
+        prompt_cache_hit_tokens: int = 0,
+        prompt_cache_miss_tokens: int = 0,
+        estimated_cost: float = 0.0,
     ) -> str:
         """Log an LLM request. Returns the log entry ID."""
         # Normalize model name so glm-5.1:cloud and glm-5.1 are grouped together
@@ -187,12 +200,14 @@ class AnalyticsLogger:
                    (id, ts, type, model, prompt_tokens, completion_tokens, total_tokens,
                     tps, prompt_tps, ttft_seconds, total_duration_seconds,
                     load_duration_seconds, error, request_id, provider, fallback_for,
-                    source_ip, source_port, user_agent, input_text, output_text, fallback_reason, account_name)
-                   VALUES (?, ?, 'llm', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    source_ip, source_port, user_agent, input_text, output_text, fallback_reason, account_name, usage_multiplier,
+                    prompt_cache_hit_tokens, prompt_cache_miss_tokens, estimated_cost)
+                   VALUES (?, ?, 'llm', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (entry_id, time.time(), model, prompt_tokens, completion_tokens,
                  total_tokens, tps, prompt_tps, ttft_seconds, total_duration_seconds,
                  load_duration_seconds, error, request_id, provider, fallback_for,
-                 source_ip, source_port, user_agent, input_text, output_text, fallback_reason, account_name),
+                 source_ip, source_port, user_agent, input_text, output_text, fallback_reason, account_name, usage_multiplier,
+                 prompt_cache_hit_tokens, prompt_cache_miss_tokens, estimated_cost),
             )
         
         # Write plaintext log file if configured
@@ -223,7 +238,7 @@ class AnalyticsLogger:
             filepath = log_dir / filename
             
             lines = []
-            lines.append(f"=== Guanaco Request Log ===")
+            lines.append("=== Guanaco Request Log ===")
             lines.append(f"ID:       {entry_id}")
             lines.append(f"Time:     {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}")
             lines.append(f"Model:    {model}")
@@ -231,16 +246,16 @@ class AnalyticsLogger:
             lines.append(f"Caller:   {source_ip or 'unknown'}")
             if error:
                 lines.append(f"Error:    {error}")
-            lines.append(f"")
+            lines.append("")
             if input_text:
-                lines.append(f"--- INPUT ---")
+                lines.append("--- INPUT ---")
                 lines.append(input_text)
-                lines.append(f"")
+                lines.append("")
             if output_text:
-                lines.append(f"--- OUTPUT ---")
+                lines.append("--- OUTPUT ---")
                 lines.append(output_text)
-                lines.append(f"")
-            lines.append(f"=== END ===")
+                lines.append("")
+            lines.append("=== END ===")
             
             filepath.write_text("\n".join(lines), encoding="utf-8")
         except Exception:
@@ -307,6 +322,7 @@ class AnalyticsLogger:
         offset: int = 0,
         type_filter: Optional[str] = None,
         model_filter: Optional[str] = None,
+        provider_filter: Optional[str] = None,
     ) -> list[dict]:
         """Get recent log entries."""
         query = "SELECT * FROM request_log WHERE 1=1"
@@ -317,6 +333,13 @@ class AnalyticsLogger:
         if model_filter:
             query += " AND model = ?"
             params.append(model_filter)
+        if provider_filter:
+            if ":" in provider_filter:
+                query += " AND provider = ?"
+                params.append(provider_filter)
+            else:
+                query += " AND (provider = ? OR provider LIKE ?)"
+                params.extend([provider_filter, f"{provider_filter}:%"])
         query += " ORDER BY ts DESC LIMIT ? OFFSET ?"
         params.extend([limit, offset])
 
@@ -348,19 +371,30 @@ class AnalyticsLogger:
             rows = conn.execute(query, params).fetchall()
             return [dict(r) for r in rows]
 
-    def get_summary(self) -> dict:
-        """Get aggregate analytics summary."""
+    def get_summary(self, provider_filter: Optional[str] = None) -> dict:
+        """Get aggregate analytics summary. Optionally filter by provider."""
+        provider_where = ""
+        provider_params = []
+        if provider_filter:
+            if ":" in provider_filter:
+                provider_where = " AND provider = ?"
+                provider_params = [provider_filter]
+            else:
+                provider_where = " AND (provider = ? OR provider LIKE ?)"
+                provider_params = [provider_filter, f"{provider_filter}:%"]
+
         with sqlite3.connect(self.db_path) as conn:
             # Total counts
             total = conn.execute("SELECT COUNT(*) FROM request_log").fetchone()[0]
-            llm_calls = conn.execute("SELECT COUNT(*) FROM request_log WHERE type='llm'").fetchone()[0]
+            llm_calls = conn.execute(f"SELECT COUNT(*) FROM request_log WHERE type='llm'{provider_where}", provider_params).fetchone()[0]
             search_calls = conn.execute("SELECT COUNT(*) FROM request_log WHERE type='search'").fetchone()[0]
-            errors = conn.execute("SELECT COUNT(*) FROM request_log WHERE error IS NOT NULL").fetchone()[0]
+            errors = conn.execute(f"SELECT COUNT(*) FROM request_log WHERE error IS NOT NULL{provider_where}", provider_params).fetchone()[0]
 
             # Token totals
             row = conn.execute(
-                "SELECT COALESCE(SUM(prompt_tokens),0), COALESCE(SUM(completion_tokens),0), "
-                "COALESCE(SUM(total_tokens),0) FROM request_log WHERE type='llm'"
+                f"SELECT COALESCE(SUM(prompt_tokens),0), COALESCE(SUM(completion_tokens),0), "
+                f"COALESCE(SUM(total_tokens),0) FROM request_log WHERE type='llm'{provider_where}",
+                provider_params,
             ).fetchone()
             prompt_tokens, completion_tokens, total_tokens = row
 
@@ -775,3 +809,119 @@ class AnalyticsLogger:
             return deleted
         except Exception:
             return 0
+
+    def get_cache_stats(self) -> dict:
+        """Get OpenCode Go prompt cache hit/miss analytics."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+
+            # Overall cache stats from Go provider requests
+            row = conn.execute(
+                """SELECT
+                   COALESCE(SUM(prompt_cache_hit_tokens), 0) AS total_hit,
+                   COALESCE(SUM(prompt_cache_miss_tokens), 0) AS total_miss,
+                   COUNT(*) AS total_requests
+                   FROM request_log
+                   WHERE type='llm' AND provider LIKE '%opencode%'"""
+            ).fetchone()
+
+            total_hit = row["total_hit"] or 0
+            total_miss = row["total_miss"] or 0
+            total_cached = total_hit + total_miss
+            hit_rate = round((total_hit / total_cached) * 100, 1) if total_cached > 0 else 0.0
+
+            # Per-model cache breakdown
+            model_rows = conn.execute(
+                """SELECT model,
+                   COALESCE(SUM(prompt_cache_hit_tokens), 0) AS hit,
+                   COALESCE(SUM(prompt_cache_miss_tokens), 0) AS miss,
+                   COUNT(*) AS requests
+                   FROM request_log
+                   WHERE type='llm' AND provider LIKE '%opencode%'
+                   GROUP BY model ORDER BY hit DESC"""
+            ).fetchall()
+
+            models = []
+            for r in model_rows:
+                m_total = (r["hit"] or 0) + (r["miss"] or 0)
+                m_rate = round((r["hit"] / m_total) * 100, 1) if m_total > 0 else 0.0
+                models.append({
+                    "model": r["model"],
+                    "cache_hit_tokens": r["hit"],
+                    "cache_miss_tokens": r["miss"],
+                    "total_tokens": m_total,
+                    "hit_rate": m_rate,
+                    "requests": r["requests"],
+                })
+
+            configured = total_cached > 0 or total_hit > 0
+
+            return {
+                "total_cache_hit_tokens": total_hit,
+                "total_cache_miss_tokens": total_miss,
+                "total_cached_tokens": total_cached,
+                "hit_rate": hit_rate,
+                "total_requests": row["total_requests"],
+                "models": models,
+                "configured": configured,
+            }
+
+    def get_go_usage(self, budgets: tuple[float, float, float] = (12.0, 30.0, 60.0)) -> dict:
+        """Estimate OpenCode Go spend from logged costs.
+
+        budgets: (5_hour, weekly, monthly) USD limits used as reference bars.
+        """
+        five_hr_budget, weekly_budget, monthly_budget = budgets
+        now = time.time()
+        five_hr_ago = now - (5 * 3600)
+        week_ago = now - (7 * 24 * 3600)
+        month_ago = now - (30 * 24 * 3600)
+
+        def _cost_for_window(cutoff: float) -> float:
+            with sqlite3.connect(self.db_path) as conn:
+                row = conn.execute(
+                    "SELECT COALESCE(SUM(estimated_cost), 0) FROM request_log "
+                    "WHERE type='llm' AND provider LIKE 'opencode_go%' AND ts > ?",
+                    (cutoff,),
+                ).fetchone()
+                return float(row[0] or 0.0)
+
+        total_cost = _cost_for_window(0.0)
+        five_hr_cost = _cost_for_window(five_hr_ago)
+        weekly_cost = _cost_for_window(week_ago)
+        monthly_cost = _cost_for_window(month_ago)
+
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            model_rows = conn.execute(
+                """SELECT model,
+                   COALESCE(SUM(estimated_cost), 0) AS cost,
+                   COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
+                   COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
+                   COUNT(*) AS requests
+                   FROM request_log
+                   WHERE type='llm' AND provider LIKE 'opencode_go%'
+                   GROUP BY model ORDER BY cost DESC"""
+            ).fetchall()
+
+        models = []
+        for r in model_rows:
+            models.append({
+                "model": r["model"],
+                "cost": round(r["cost"] or 0, 4),
+                "requests": r["requests"],
+                "prompt_tokens": r["prompt_tokens"] or 0,
+                "completion_tokens": r["completion_tokens"] or 0,
+            })
+
+        def _pct(cost: float, budget: float) -> float:
+            return round((cost / budget) * 100, 1) if budget > 0 else 0.0
+
+        return {
+            "total_cost": round(total_cost, 4),
+            "five_hour": {"cost": round(five_hr_cost, 4), "budget": five_hr_budget, "pct": _pct(five_hr_cost, five_hr_budget)},
+            "weekly": {"cost": round(weekly_cost, 4), "budget": weekly_budget, "pct": _pct(weekly_cost, weekly_budget)},
+            "monthly": {"cost": round(monthly_cost, 4), "budget": monthly_budget, "pct": _pct(monthly_cost, monthly_budget)},
+            "models": models,
+            "configured": total_cost > 0 or len(models) > 0,
+        }

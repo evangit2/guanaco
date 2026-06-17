@@ -9,8 +9,6 @@ Firecrawl is HIGH PRIORITY. We emulate:
 
 from __future__ import annotations
 
-import uuid
-import time
 from typing import Optional
 
 from fastapi import APIRouter, Request

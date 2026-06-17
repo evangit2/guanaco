@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import sys
 import time
 from pathlib import Path
 from typing import Optional
@@ -11,7 +13,10 @@ from fastapi import APIRouter, Request, BackgroundTasks
 from fastapi.responses import HTMLResponse, FileResponse
 import httpx
 
-from guanaco.config import get_config, get_base_url, get_tailscale_ip, save_config, load_config, OllamaAccount
+from guanaco.config import (
+    get_config, get_base_url, get_tailscale_ip, save_config,
+    OllamaAccount, get_default_config_dir,
+)
 from guanaco.utils.api_keys import ApiKeyManager
 from guanaco.analytics import AnalyticsLogger
 from guanaco.client import OllamaClient
@@ -32,14 +37,18 @@ def get_local_ip():
         return "127.0.0.1"
 
 
-def _generate_systemd_service() -> str:
+def _generate_systemd_service(
+    port: int = 8080,
+    config_dir: Optional[str] = None,
+    venv_python: Optional[str] = None,
+) -> str:
     """Generate systemd unit file content for Guanaco."""
     import shutil
     import sys
 
-    venv_python = shutil.which("python") or sys.executable
+    venv_python = venv_python or shutil.which("python") or sys.executable
     working_dir = str(Path(__file__).resolve().parent.parent.parent)
-    config_dir = str(Path.home() / ".guanaco")
+    config_dir = config_dir or str(Path.home() / ".guanaco")
 
     return f"""[Unit]
 Description=Guanaco - LLM Proxy & Dashboard
@@ -50,10 +59,10 @@ Wants=network-online.target
 Type=simple
 Environment=PATH={Path(venv_python).parent}:/usr/bin:/usr/local/bin
 WorkingDirectory={working_dir}
-ExecStart={venv_python} -m uvicorn guanaco.app:create_app --factory --host 0.0.0.0 --port 8080
+ExecStart={venv_python} -m uvicorn guanaco.app:create_app --factory --host 0.0.0.0 --port {port}
 Restart=on-failure
 RestartSec=5
-Environment=OCT_CONFIG_DIR={config_dir}
+Environment=GUANACO_CONFIG_DIR={config_dir}
 
 [Install]
 WantedBy=multi-user.target
@@ -587,6 +596,63 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
         config = get_config()
         return {"emulate_openai": config.llm.emulate_openai, "emulate_anthropic": config.llm.emulate_anthropic}
 
+    @router.get("/api/config/provider-priority")
+    async def get_provider_priority(request: Request):
+        """Get current provider priority list and which providers are configured."""
+        config = get_config()
+        configured = {}
+        ollama_clients = getattr(request.app.state, "clients", None)
+        # If app state knows which clients are active, prefer that
+        if ollama_clients is not None:
+            configured["ollama"] = bool(ollama_clients.get("ollama"))
+            configured["opencode_go"] = bool(ollama_clients.get("opencode_go"))
+        else:
+            for acc in config.ollama_accounts:
+                if acc.provider == "ollama" and acc.api_key and acc.api_key not in ("***", "REPLACE_ME"):
+                    configured["ollama"] = True
+                if acc.provider == "opencode_go" and acc.api_key and acc.api_key not in ("***", "REPLACE_ME"):
+                    configured["opencode_go"] = True
+        if getattr(config.fallback, "enabled", False):
+            configured["fallback"] = True
+
+        priority = [p for p in (config.router.provider_priority or []) if p in ("ollama", "opencode_go", "fallback")]
+        if not priority:
+            strat = config.router.unprefixed_provider_strategy.lower()
+            if strat == "opencode_go":
+                priority = ["opencode_go", "ollama"]
+            elif strat == "ollama":
+                priority = ["ollama", "opencode_go"]
+            else:
+                priority = ["ollama", "opencode_go"]
+        if configured.get("fallback") and "fallback" not in priority:
+            priority.append("fallback")
+
+        return {
+            "provider_priority": priority,
+            "available": ["ollama", "opencode_go", "fallback"],
+            "configured": {p: configured.get(p, False) for p in ["ollama", "opencode_go", "fallback"]},
+        }
+
+    @router.post("/api/config/provider-priority")
+    async def save_provider_priority(request: Request):
+        """Save reordered provider priority list."""
+        body = await request.json()
+        priority = body.get("provider_priority", [])
+        valid = [p for p in priority if p in ("ollama", "opencode_go", "fallback")]
+        if not valid:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=400, detail="provider_priority must contain valid providers")
+
+        config = get_config()
+        config.router.provider_priority = valid
+        if valid[:2] == ["ollama", "opencode_go"]:
+            config.router.unprefixed_provider_strategy = "ollama"
+        elif valid[:2] == ["opencode_go", "ollama"]:
+            config.router.unprefixed_provider_strategy = "opencode_go"
+        save_config(config)
+
+        return {"status": "ok", "provider_priority": valid}
+
     # ── Model History ──
 
     @router.get("/api/analytics/model/{model_name}")
@@ -600,7 +666,8 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
     async def get_autostart(request: Request):
         """Check if Guanaco is currently set to autostart via systemd."""
         import subprocess
-        service_name = "guanaco.service"
+        config = get_config()
+        service_name = f"{getattr(config.router, 'service_name', 'guanaco')}.service"
         try:
             result = subprocess.run(
                 ["systemctl", "is-enabled", service_name],
@@ -630,7 +697,6 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
         except (FileNotFoundError, subprocess.TimeoutExpired):
             active = False
 
-        config = get_config()
         return {
             "enabled": enabled or config.router.autostart,
             "installed": installed,
@@ -643,8 +709,15 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
         import subprocess
         from pathlib import Path
 
-        service_content = _generate_systemd_service()
-        service_path = Path("/etc/systemd/system/guanaco.service")
+        config = get_config()
+        service_name = getattr(config.router, "service_name", "guanaco")
+        port = config.router.port
+        service_content = _generate_systemd_service(
+            port=port,
+            config_dir=os.environ.get("GUANACO_CONFIG_DIR") or str(get_default_config_dir()),
+            venv_python=sys.executable,
+        )
+        service_path = Path(f"/etc/systemd/system/{service_name}.service")
 
         try:
             service_path.write_text(service_content)
@@ -654,12 +727,11 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
 
         # Reload and enable
         subprocess.run(["systemctl", "daemon-reload"], check=True, capture_output=True, timeout=10)
-        subprocess.run(["systemctl", "enable", "guanaco.service"], check=True, capture_output=True, timeout=10)
+        subprocess.run(["systemctl", "enable", f"{service_name}.service"], check=True, capture_output=True, timeout=10)
 
         # Start it now if not already running
-        subprocess.run(["systemctl", "start", "guanaco.service"], capture_output=True, timeout=10)
+        subprocess.run(["systemctl", "start", f"{service_name}.service"], capture_output=True, timeout=10)
 
-        config = get_config()
         config.router.autostart = True
         save_config(config)
 
@@ -670,13 +742,15 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
         """Disable and remove Guanaco systemd service."""
         import subprocess
 
+        config = get_config()
+        service_name = getattr(config.router, "service_name", "guanaco")
+
         try:
-            subprocess.run(["systemctl", "stop", "guanaco.service"], capture_output=True, timeout=10)
-            subprocess.run(["systemctl", "disable", "guanaco.service"], capture_output=True, timeout=10)
+            subprocess.run(["systemctl", "stop", f"{service_name}.service"], capture_output=True, timeout=10)
+            subprocess.run(["systemctl", "disable", f"{service_name}.service"], capture_output=True, timeout=10)
         except Exception:
             pass
 
-        config = get_config()
         config.router.autostart = False
         save_config(config)
 
@@ -899,9 +973,10 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
             # We stash any local edits, reset to the exact remote commit, then pull.
             # This guarantees the update always succeeds even if the user (or a prior
             # partial update) left uncommitted files in the repo.
-            stash_result = subprocess.run(
+            subprocess.run(
                 ["git", "stash", "push", "-m", "pre-update-stash", "--include-untracked"],
-                cwd=project_dir, capture_output=True, text=True, timeout=15
+                cwd=project_dir, capture_output=True, text=True, timeout=15,
+                check=False,
             )
             # stash exit 0 = stashed something, exit 1 = nothing to stash — both OK
 
@@ -952,14 +1027,16 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
             # the old process running with cached modules.
             async def _stop_start_service():
                 import asyncio
+                config = get_config()
+                service_name = getattr(config.router, "service_name", "guanaco")
                 await asyncio.sleep(1)  # let the HTTP response be sent
                 subprocess.run(
-                    ["sudo", "systemctl", "stop", "guanaco.service"],
+                    ["sudo", "systemctl", "stop", f"{service_name}.service"],
                     capture_output=True, timeout=15
                 )
                 await asyncio.sleep(2)  # let the process fully exit and release ports
                 subprocess.run(
-                    ["sudo", "systemctl", "start", "guanaco.service"],
+                    ["sudo", "systemctl", "start", f"{service_name}.service"],
                     capture_output=True, timeout=15
                 )
 
@@ -1127,7 +1204,7 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
         return {"ok": False, "error": "No OllamaClient available"}
 
     @router.post("/api/accounts/session-cookie")
-    async def set_session_cookie(request: Request):
+    async def set_account_session_cookie(request: Request):
         """Set the session cookie for an account (for usage scraping)."""
         body = await request.json()
         name = body.get("name", "ollama")

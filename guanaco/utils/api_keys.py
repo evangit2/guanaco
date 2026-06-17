@@ -61,7 +61,6 @@ class ApiKeyManager:
             if provider and entry["provider"] != provider:
                 return False
             return True
-            return True
         return False
 
     def list_keys(self) -> list[dict]:

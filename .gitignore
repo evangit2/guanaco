@@ -88,3 +88,9 @@ Thumbs.db
 
 # Project-specific
 .oct/.venv-test/
+
+# OpenCode Go dev key
+.opencode_go_key
+
+# Local helper scripts not part of distribution
+scripts/

@@ -4,28 +4,36 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import time
 import uuid
-from typing import Optional
+from typing import Any, Optional
 
 import httpx
-from fastapi import APIRouter, Header, HTTPException, Request
-from fastapi.responses import StreamingResponse, JSONResponse
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
+
+from guanaco.analytics import _normalize_model_name
+from guanaco.cache import CacheEngine
+from guanaco.accounts import provider_for_model
+from guanaco.concurrency import OllamaConcurrencyLimiter
+
+log = logging.getLogger("guanaco.router")
 
 
 def _describe_error(exc: Exception) -> str:
     """Return a human-readable description for an exception, handling httpx
     timeout/connect errors whose str() is often empty or unhelpful."""
     if isinstance(exc, httpx.ReadTimeout):
-        return f"ReadTimeout: server did not respond within timeout"
+        return "ReadTimeout: server did not respond within timeout"
     if isinstance(exc, httpx.ConnectTimeout):
-        return f"ConnectTimeout: could not establish connection within timeout"
+        return "ConnectTimeout: could not establish connection within timeout"
     if isinstance(exc, httpx.WriteTimeout):
-        return f"WriteTimeout: could not send data within timeout"
+        return "WriteTimeout: could not send data within timeout"
     if isinstance(exc, httpx.PoolTimeout):
-        return f"PoolTimeout: connection pool exhausted"
+        return "PoolTimeout: connection pool exhausted"
     if isinstance(exc, httpx.ConnectError):
         return f"ConnectError: {exc}"
     if isinstance(exc, httpx.HTTPStatusError):
@@ -59,20 +67,33 @@ async def _ollama_chat_with_primary_timeout(client, payload, fallback_config=Non
     """
     async def _do_call():
         """Execute the actual Ollama call with 429 retry logic."""
-        # If no limiter, just call directly
-        if limiter is None:
-            return await client.chat_completion(payload, api_key=api_key)
-
-        # Retry loop for 429s
-        for attempt in range(limiter.max_429_retries + 1):
+        current_key = api_key
+        current_account = account_name
+        while True:
             try:
-                return await client.chat_completion(payload, api_key=api_key)
+                return await client.chat_completion(payload, api_key=current_key)
             except Exception as e:
-                if attempt < limiter.max_429_retries and limiter.should_retry_429(e):
-                    # Mark account as 429'd if we have an account pool
-                    if account_name and account_pool:
-                        account_pool.mark_429(account_name)
-                    await limiter.backoff_and_retry(attempt)
+                # Only handle 429s when a pool with multiple accounts is available
+                should_failover = (
+                    isinstance(e, httpx.HTTPStatusError)
+                    and e.response.status_code == 429
+                    and account_pool is not None
+                    and len(account_pool.accounts) > 1
+                )
+                if should_failover:
+                    if current_account:
+                        account_pool.mark_429(current_account)
+                    next_acc = account_pool.next_account_for_failover(current_account or "ollama", provider=provider_for_model(payload.get("model")), model=payload.get("model"))
+                    if next_acc is None:
+                        # All accounts exhausted — preserve original error semantics
+                        raise
+                    current_key = next_acc.api_key
+                    current_account = next_acc.name
+                    log.info("429 failover: trying account '%s'", current_account)
+                    continue
+                # Let the concurrency limiter handle its own retry/backoff only when no failover happened
+                if limiter and limiter.should_retry_429(e):
+                    await limiter.backoff_and_retry(0)
                     continue
                 raise
 
@@ -87,15 +108,6 @@ async def _ollama_chat_with_primary_timeout(client, payload, fallback_config=Non
                 f"Ollama did not respond within {fallback_config.primary_timeout}s primary timeout"
             )
     return await _do_call()
-
-from guanaco.client import OllamaClient
-from guanaco.cache import CacheEngine
-from guanaco.analytics import _normalize_model_name
-from guanaco.concurrency import OllamaConcurrencyLimiter
-
-import logging
-
-log = logging.getLogger("guanaco.router")
 
 # Module-level reference to the active concurrency limiter (for dashboard/status API)
 _concurrency_limiter_instance: OllamaConcurrencyLimiter = None
@@ -272,6 +284,7 @@ def _map_model_to_fallback(model: str, fallback_config) -> str:
         return fallback_config.model_map[base]
     return fallback_config.default_model or model
 
+
 def _is_quota_full(config) -> bool:
     """Check if Ollama Cloud usage quota is near or at limit (>= 99.5%)."""
     if not config or not config.usage.redirect_on_full:
@@ -359,7 +372,7 @@ async def _call_fallback_provider(payload: dict, fallback_config, stream: bool =
 
 # ── Provider creation ──
 
-def create_router(client: OllamaClient, analytics=None, config=None, account_pool=None) -> APIRouter:
+def create_router(client, analytics=None, config=None, account_pool=None) -> APIRouter:
     router = APIRouter(tags=["LLM Router"])
     _analytics = analytics
     _config = config
@@ -379,15 +392,111 @@ def create_router(client: OllamaClient, analytics=None, config=None, account_poo
     global _concurrency_limiter_instance
     _concurrency_limiter_instance = _concurrency_limiter
 
-    def _select_account(model: str = None):
-        """Select the best Ollama account for the next request.
+    # Collect configured provider clients from the MultiProviderChatClient wrapper.
+    _clients: dict[str, Any] = {}
+    if hasattr(client, "_clients") and isinstance(client._clients, dict):
+        _clients = client._clients
+    else:
+        _clients = {"ollama": client}
 
-        Returns (api_key, account_name) tuple. api_key is None for the primary account
-        (uses the default client key). account_name is 'ollama' for the primary account.
+    def _has_client(name: str) -> bool:
+        c = _clients.get(name)
+        return c is not None and getattr(c, "api_key", None) != "***"
+
+
+    def _select_default_provider(strategy: str) -> str:
+        """Pick the default provider for an unprefixed model name.
+
+        Strategies:
+        - round_robin (default): alternate providers on each call, but only across
+          providers that are actually configured/available.
+        - usage: provider with the most quota / lowest recent usage.
+        - ollama: always default to Ollama Cloud.
+        - opencode_go: always default to OpenCode Go.
+
+        Provider priority list: if set in config, the first available configured
+        provider is used. This enables drag-and-drop fallback ordering.
         """
+        priority = []
+        if _config:
+            priority = [p for p in (_config.router.provider_priority or []) if p in ("ollama", "opencode_go", "fallback")]
+        if priority:
+            available = set()
+            if _has_client("ollama"):
+                available.add("ollama")
+            if _has_client("opencode_go"):
+                available.add("opencode_go")
+            if _config and _config.fallback.enabled and _config.fallback.base_url:
+                available.add("fallback")
+            for p in priority:
+                if p in available:
+                    return p
+            # If nothing in priority is available, fall through to legacy logic
+
+        strategy = (strategy or "round_robin").lower()
+        if strategy == "ollama":
+            return "ollama"
+        if strategy == "opencode_go":
+            return "opencode_go"
+
+        available = {"ollama"}
+        if _account_pool:
+            available.update({a.provider for a in _account_pool.accounts})
+        available = sorted(available)
+
+        if strategy == "round_robin":
+            counter = getattr(_select_default_provider, "_counter", 0)
+            _select_default_provider._counter = counter + 1
+            return available[counter % len(available)]
+
+        # usage strategy: prefer provider with more available headroom.
+        if _account_pool:
+            usage = _account_pool.usage_by_provider()
+            ollama_usage = usage.get("ollama", 0)
+            go_usage = usage.get("opencode_go", float("inf"))
+            if "opencode_go" in available and go_usage < ollama_usage:
+                return "opencode_go"
+        return "ollama"
+
+    def _select_account(model: str = None):
+        """Select the best account for the requested provider/model, respecting provider priority.
+
+        Walks the configured provider_priority list and returns the first provider
+        that has an active account. If no priority list is configured, falls back
+        to the legacy strategy-based selection.
+
+        Returns (api_key, account_name) tuple. api_key is None when the account has no
+        stored key (uses the default client key). account_name is the provider name for the primary account.
+        """
+        priority = []
+        if _config:
+            priority = [p for p in (_config.router.provider_priority or []) if p in ("ollama", "opencode_go")]
+        if not priority:
+            strategy = getattr(_config, "unprefixed_provider_strategy", "round_robin")
+            priority = [_select_default_provider(strategy)]
+
+        for provider in priority:
+            if not _has_client(provider):
+                continue
+            if _account_pool:
+                if not _account_pool.has_active_account(provider, model=model):
+                    continue
+                account = _account_pool.get_account(provider=provider, model=model)
+                if not account.api_key:
+                    continue
+                return account.api_key, account.name
+            # No account pool means default client for this provider
+            return None, provider
+
+        # Nothing in priority has an active account; fall back to legacy behavior
+        strategy = getattr(_config, "unprefixed_provider_strategy", "round_robin")
+        default_provider = _select_default_provider(strategy)
+        provider = provider_for_model(model, default_provider=default_provider, provider_priority=priority) if model else default_provider
         if not _account_pool or len(_account_pool.accounts) <= 1:
-            return None, "ollama"
-        account = _account_pool.get_account(model=model)
+            return None, provider
+        account = _account_pool.get_account(provider=provider, model=model)
+        if not account.api_key:
+            return None, account.name
         return account.api_key, account.name
 
     def _history_kwargs(request: Request, messages=None, output_text=None) -> dict:
@@ -461,63 +570,139 @@ def create_router(client: OllamaClient, analytics=None, config=None, account_poo
 
     @router.get("/v1/models")
     async def list_models(request: Request):
-        """List available models by querying Ollama Cloud dynamically."""
-        try:
-            models = await client.list_models()
-            # Fetch real usage levels from ollama.com library pages
-            model_names = [m.get("name", m.get("model", "")) for m in models]
-            usage_levels = await client.fetch_usage_levels(model_names)
+        """List available models by querying all configured providers."""
+        data = []
+        seen_ids = set()
 
-            data = []
+        # ── Dynamic provider iteration ──
+        # `client` is the MultiProviderChatClient wrapper; inspect inner providers when applicable.
+        provider_clients: dict[str, Any] = {}
+        if hasattr(client, "_clients") and isinstance(client._clients, dict):
+            provider_clients = client._clients
+        else:
+            provider_clients = {"ollama": client}
+
+        # Fetch real usage levels from ollama.com (used for Ollama models)
+        usage_levels: dict[str, int] = {}
+        if "ollama" in provider_clients and hasattr(provider_clients["ollama"], "fetch_usage_levels"):
+            try:
+                # Collect all model names across providers for level fetching
+                all_names = []
+                for pname, pclient in provider_clients.items():
+                    if hasattr(pclient, "list_models"):
+                        try:
+                            models = await pclient.list_models()
+                            for m in models:
+                                if isinstance(m, dict):
+                                    name = m.get("name", m.get("model", ""))
+                                    if name:
+                                        all_names.append(name)
+                        except Exception:
+                            pass
+                if all_names:
+                    usage_levels = await provider_clients["ollama"].fetch_usage_levels(all_names)
+            except Exception:
+                pass
+
+        for provider_name, provider_client in provider_clients.items():
+            if not provider_client or not hasattr(provider_client, "list_models"):
+                continue
+            try:
+                models = await provider_client.list_models()
+            except Exception as e:
+                log.warning("Failed to list %s models: %s", provider_name, e)
+                continue
             for m in models:
-                name = m.get("name", m.get("model", ""))
-                display_name = name.replace("-cloud", "") if name.endswith("-cloud") else name
-                details = m.get("details", {})
-                level = usage_levels.get(name, 0)
-                multiplier = level * 0.25 if level else client._get_model_multiplier(name)
-                data.append({
-                    "id": display_name,
-                    "object": "model",
-                    "created": int(time.time()),
-                    "owned_by": "ollama",
-                    "permission": [],
-                    "root": display_name,
-                    "parent": None,
-                    "capabilities": client._get_model_capabilities(name),
-                    "usage_multiplier": multiplier,
-                    "usage_level": level,  # 1-4, 0 = unknown
-                    "details": {
-                        "parameter_size": details.get("parameter_size", ""),
-                        "quantization": details.get("quantization_level", ""),
-                        "family": details.get("family", ""),
-                    },
-                })
-            # Add fallback provider models if configured
-            if _config and _config.fallback.enabled and _config.fallback.default_model:
-                fallback_models = set(_config.fallback.model_map.values())
-                if _config.fallback.default_model:
-                    fallback_models.add(_config.fallback.default_model)
-                for fm in fallback_models:
-                    if fm and not any(d["id"] == fm for d in data):
-                        data.append({
-                            "id": fm,
-                            "object": "model",
-                            "created": int(time.time()),
-                            "owned_by": "fallback",
-                            "permission": [],
-                            "root": fm,
-                            "parent": None,
-                            "details": {"family": "fallback"},
-                        })
+                if not isinstance(m, dict):
+                    continue
+                if provider_name == "ollama":
+                    name = m.get("name", m.get("model", ""))
+                    display_name = name.replace("-cloud", "") if name.endswith("-cloud") else name
+                    if display_name in seen_ids:
+                        continue
+                    seen_ids.add(display_name)
+                    details = m.get("details", {})
+                    caps = {}
+                    if hasattr(provider_client, "_get_model_capabilities"):
+                        try:
+                            caps = provider_client._get_model_capabilities(name)
+                        except Exception:
+                            pass
+                    level = usage_levels.get(name, 0)
+                    multiplier = level * 0.25 if level else client._get_model_multiplier(name)
+                    data.append({
+                        "id": display_name,
+                        "object": "model",
+                        "created": int(time.time()),
+                        "owned_by": "ollama",
+                        "permission": [],
+                        "root": display_name,
+                        "parent": None,
+                        "capabilities": caps,
+                        "usage_multiplier": multiplier,
+                        "usage_level": level,
+                        "details": {
+                            "parameter_size": details.get("parameter_size", ""),
+                            "quantization": details.get("quantization_level", ""),
+                            "family": details.get("family", ""),
+                        },
+                    })
+                elif provider_name == "opencode_go":
+                    name = m.get("id", m.get("name", m.get("model", "")))
+                    if not name:
+                        continue
+                    prefixed = f"opencode-go/{name}"
+                    if prefixed in seen_ids:
+                        continue
+                    seen_ids.add(prefixed)
+                    caps = {}
+                    if hasattr(provider_client, "_get_model_capabilities"):
+                        try:
+                            caps = provider_client._get_model_capabilities(name)
+                        except Exception:
+                            pass
+                    data.append({
+                        "id": prefixed,
+                        "object": "model",
+                        "created": int(time.time()),
+                        "owned_by": "opencode_go",
+                        "permission": [],
+                        "root": name,
+                        "parent": None,
+                        "capabilities": caps,
+                        "details": {"family": caps.get("family", "")},
+                    })
+
+        # ── Fallback provider models if configured ──
+        if _config and _config.fallback.enabled and _config.fallback.default_model:
+            fallback_models = set(_config.fallback.model_map.values())
+            if _config.fallback.default_model:
+                fallback_models.add(_config.fallback.default_model)
+            for fm in fallback_models:
+                if fm and fm not in seen_ids:
+                    seen_ids.add(fm)
+                    data.append({
+                        "id": fm,
+                        "object": "model",
+                        "created": int(time.time()),
+                        "owned_by": "fallback",
+                        "permission": [],
+                        "root": fm,
+                        "parent": None,
+                        "details": {"family": "fallback"},
+                    })
+
+        if data:
             return {"object": "list", "data": data}
-        except Exception as e:
-            if _config:
-                data = [
-                    {"id": name, "object": "model", "created": int(time.time()), "owned_by": "ollama"}
-                    for name in _config.llm.available_models
-                ]
-                return {"object": "list", "data": data}
-            raise HTTPException(status_code=502, detail=f"Cannot reach Ollama Cloud: {str(e)}")
+
+        # ── Total failure — return configured model list ──
+        if _config:
+            data = [
+                {"id": name, "object": "model", "created": int(time.time()), "owned_by": "unknown"}
+                for name in _config.llm.available_models
+            ]
+            return {"object": "list", "data": data}
+        raise HTTPException(status_code=502, detail="Cannot reach any LLM provider")
 
     @router.post("/v1/chat/completions")
     async def chat_completions(body: ChatCompletionRequest, request: Request):
@@ -525,11 +710,10 @@ def create_router(client: OllamaClient, analytics=None, config=None, account_poo
         start = time.time()
         resolved_model = _resolve_model(body.model, _config) if _config else body.model
         _hist = _history_kwargs(request, messages=body.messages)
-        _request_key, _account_name = _select_account(model=resolved_model)
-        _ollama_provider = f"ollama:{_account_name}" if _account_name != "ollama" else "ollama"
-        # Include account_name in all analytics logging
-        _hist["account_name"] = _account_name
-        
+        # Account selection is intentionally deferred until we actually call Ollama upstream.
+        # Cache hits must be account-agnostic and must not consume a rotation slot or
+        # pollute per-account usage analytics.
+
         # Convert image URLs to base64 for Ollama Cloud compatibility
         if _has_vision_content(body.messages):
             body.messages = await _convert_image_urls_to_base64(body.messages)
@@ -641,11 +825,17 @@ def create_router(client: OllamaClient, analytics=None, config=None, account_poo
         if _cache and _cache.is_enabled() and not body.stream:
             async def _fetch_from_upstream(p: dict) -> dict:
                 """Fetch from Ollama Cloud with fallback, retrying on empty response."""
+                request_key, account_name = _select_account(model=resolved_model)
+                _provider = provider_for_model(resolved_model, default_provider=_select_default_provider(getattr(_config, 'unprefixed_provider_strategy', 'round_robin')), provider_priority=([p for p in (_config.router.provider_priority or []) if p in ("ollama", "opencode_go")] if _config else None))
+                ollama_provider = f"{_provider}:{account_name}" if account_name != _provider else _provider
+                hist_kw = dict(_hist)
+                hist_kw["account_name"] = account_name
+
                 try:
                     # ── Retry on empty response ──
                     for attempt in range(MAX_EMPTY_RETRIES + 1):
                         async with _concurrency_limiter:
-                            resp = await _ollama_chat_with_primary_timeout(client, p, _config.fallback if _config else None, _concurrency_limiter, api_key=_request_key, account_name=_account_name, account_pool=_account_pool)
+                            resp = await _ollama_chat_with_primary_timeout(client, p, _config.fallback if _config else None, _concurrency_limiter, api_key=request_key, account_name=account_name, account_pool=_account_pool)
                         if not _is_empty_non_streaming_response(resp) or attempt == MAX_EMPTY_RETRIES:
                             break
                         log.warning("Empty cached-response from %s (attempt %d/%d), retrying...", resolved_model, attempt + 1, MAX_EMPTY_RETRIES + 1)
@@ -655,7 +845,6 @@ def create_router(client: OllamaClient, analytics=None, config=None, account_poo
                     usage = resp.get("usage", {})
 
                     if _analytics:
-                        hist_kw = dict(_hist)
                         out_txt = _extract_output_text(resp)
                         if out_txt and _config and _config.history.enabled and _config.history.save_output:
                             if len(out_txt) > _config.history.max_content_size:
@@ -671,7 +860,7 @@ def create_router(client: OllamaClient, analytics=None, config=None, account_poo
                             ttft_seconds=metrics.get("ttft_seconds"),
                             total_duration_seconds=elapsed,
                             load_duration_seconds=metrics.get("load_duration_ns", 0) / 1e9 if metrics.get("load_duration_ns") else None,
-                            provider=_ollama_provider,
+                            provider=ollama_provider,
                             **hist_kw,
                         )
 
@@ -704,7 +893,7 @@ def create_router(client: OllamaClient, analytics=None, config=None, account_poo
                                     provider=_config.fallback.name,
                                     fallback_for=_normalize_model_name(resolved_model),
                                     fallback_reason=f"Ollama error: {_describe_error(ollama_error)}",
-                                    **_hist,
+                                    **hist_kw,
                                 )
 
                             fallback_resp["_oct_fallback"] = True
@@ -715,23 +904,23 @@ def create_router(client: OllamaClient, analytics=None, config=None, account_poo
                         except Exception as fallback_err:
                             log.warning("Fallback to %s failed for model %s (cached path): %s", _config.fallback.name, resolved_model, _describe_error(fallback_err))
                             if _analytics:
-                                _analytics.log_llm(model=resolved_model, error=f"ollama: {_describe_error(ollama_error)}; fallback: {_describe_error(fallback_err)}", total_duration_seconds=time.time() - start, **_hist)
+                                _analytics.log_llm(model=resolved_model, error=f"ollama: {_describe_error(ollama_error)}; fallback: {_describe_error(fallback_err)}", total_duration_seconds=time.time() - start, **hist_kw)
                             raise HTTPException(status_code=502, detail=f"Ollama Cloud error: {_describe_error(ollama_error)}; Fallback error: {_describe_error(fallback_err)}")
 
                     if _analytics:
-                        _analytics.log_llm(model=resolved_model, error=str(ollama_error), total_duration_seconds=time.time() - start, **_hist)
+                        _analytics.log_llm(model=resolved_model, error=str(ollama_error), total_duration_seconds=time.time() - start, **hist_kw)
                     raise HTTPException(status_code=502, detail=f"Ollama Cloud error: {str(ollama_error)}")
 
-            # Use cache for non-streaming
+            # Use cache for non-streaming (provider-agnostic key; provider only stored as metadata)
             response = await _cache.get_or_fetch(
                 model=resolved_model,
                 messages=[m.model_dump(exclude_none=True) for m in body.messages],
                 params=payload,
                 fetch_fn=_fetch_from_upstream,
-                provider=_ollama_provider,
+                provider="ollama",
             )
 
-            # Log cache metadata in analytics
+            # Log cache metadata in analytics (no account consumed)
             if response.get("_oct_cached"):
                 elapsed = time.time() - start
                 if _analytics:
@@ -745,6 +934,11 @@ def create_router(client: OllamaClient, analytics=None, config=None, account_poo
             return response
 
         # ── Original path for streaming or cache disabled ──
+        # Select account only when actually calling Ollama upstream
+        _request_key, _account_name = _select_account(model=resolved_model)
+        _provider = provider_for_model(resolved_model, default_provider=_select_default_provider(getattr(_config, 'unprefixed_provider_strategy', 'round_robin')), provider_priority=([p for p in (_config.router.provider_priority or []) if p in ("ollama", "opencode_go")] if _config else None))
+        _ollama_provider = f"{_provider}:{_account_name}" if _account_name != _provider else _provider
+        _hist["account_name"] = _account_name
         # Try Ollama Cloud first
         try:
             if body.stream:
@@ -769,6 +963,18 @@ def create_router(client: OllamaClient, analytics=None, config=None, account_poo
                     if len(out_txt) > _config.history.max_content_size:
                         out_txt = out_txt[:_config.history.max_content_size] + "\n...[truncated]"
                     hist_kw["output_text"] = out_txt
+                # Compute estimated cost for OpenCode Go; Ollama Cloud does not report per-token prices here.
+                estimated_cost = 0.0
+                if _provider == "opencode_go":
+                    from guanaco.opencode_go_pricing import estimate_cost
+                    estimated_cost = estimate_cost(
+                        resolved_model,
+                        usage.get("prompt_tokens", 0),
+                        usage.get("completion_tokens", 0),
+                        metrics.get("prompt_cache_hit_tokens", 0),
+                        metrics.get("prompt_cache_miss_tokens", 0),
+                    )
+
                 _analytics.log_llm(
                     model=resolved_model,
                     prompt_tokens=usage.get("prompt_tokens", metrics.get("prompt_eval_count", 0)),
@@ -780,6 +986,9 @@ def create_router(client: OllamaClient, analytics=None, config=None, account_poo
                     total_duration_seconds=elapsed,
                     load_duration_seconds=metrics.get("load_duration_ns", 0) / 1e9 if metrics.get("load_duration_ns") else None,
                     provider=_ollama_provider,
+                    prompt_cache_hit_tokens=metrics.get("prompt_cache_hit_tokens"),
+                    prompt_cache_miss_tokens=metrics.get("prompt_cache_miss_tokens"),
+                    estimated_cost=estimated_cost,
                     **hist_kw,
                 )
 
@@ -844,6 +1053,7 @@ def create_router(client: OllamaClient, analytics=None, config=None, account_poo
     @router.get("/v1/usage")
     async def get_usage(request: Request):
         """Get Ollama Cloud account usage/quota information."""
+        from guanaco.config import get_config, save_config
         try:
             config = get_config()
             session_cookie = config.usage.session_cookie
@@ -1271,11 +1481,11 @@ def _is_empty_stream_buffer(chunks: list[str]) -> bool:
     return True
 
 
-async def _collect_stream_chunks(client, payload) -> tuple[list[str], dict]:
+async def _collect_stream_chunks(client, payload, api_key=None) -> tuple[list[str], dict]:
     """Collect all chunks from a stream into a buffer. Returns (chunks, metrics)."""
     chunks = []
     metrics = {}
-    async for chunk in client.chat_completion_stream(payload):
+    async for chunk in client.chat_completion_stream(payload, api_key=api_key):
         if chunk.startswith("__oct_metrics__:"):
             try:
                 metrics = json.loads(chunk.split(":", 1)[1])
@@ -1284,22 +1494,6 @@ async def _collect_stream_chunks(client, payload) -> tuple[list[str], dict]:
             continue
         chunks.append(chunk)
     return chunks, metrics
-
-
-async def _iter_stream_with_timeouts(aiter, first_chunk_timeout, inter_chunk_timeout):
-    """Wrap an async iterator with per-chunk timeouts.
-
-    - first_chunk_timeout: max seconds to wait for the FIRST chunk
-    - inter_chunk_timeout: max seconds to wait for each SUBSEQUENT chunk
-
-    Raises asyncio.TimeoutError if any deadline is missed.
-    """
-    first = True
-    async for item in aiter:
-        first = False
-        yield item
-        # After yielding, set up timeout for next chunk
-    # If we never got any item, the aiter ended normally (empty stream)
 
 
 def _extract_sse_content(chunk: str) -> str:
@@ -1336,7 +1530,7 @@ def _accumulate_history_output(accumulated: list, chunk: str, history_kwargs: di
 
 
 async def _stream_completion_openai(client, payload, model, analytics, start_time, config=None, history_kwargs=None, limiter=None, api_key=None, account_name=None, account_pool=None):
-    """Stream OpenAI-format SSE responses, with fallback and timeout support.
+    """Stream OpenAI-format SSE responses, with fallback, timeout, and multi-account 429 failover support.
 
     Key design: When fallback is configured with primary_timeout, we apply
     per-chunk timeouts to the Ollama stream. If the first chunk doesn't arrive
@@ -1350,8 +1544,16 @@ async def _stream_completion_openai(client, payload, model, analytics, start_tim
     use_timeouts = (fb and fb.enabled and fb.base_url and fb.primary_timeout
                     and fb.primary_timeout > 0)
 
-    # Build account-aware provider name for analytics
+    # Build account-aware provider name for analytics; updated on failover.
     _provider_name = f"ollama:{account_name}" if account_name and account_name != "ollama" else "ollama"
+    # Re-evaluate provider from model if account_name matches a known provider
+    if model:
+        inferred = provider_for_model(model)
+        if inferred != "ollama":
+            _provider_name = f"{inferred}:{account_name}" if account_name and account_name != inferred else inferred
+
+    # Multi-account state
+    can_failover = account_pool is not None and len(account_pool.accounts) > 1
 
     async def generate():
         stream_metrics = {}
@@ -1359,6 +1561,12 @@ async def _stream_completion_openai(client, payload, model, analytics, start_tim
         fallback_model = None
         original_error = None
         accumulated_content = []  # For history: collect output text from stream
+
+        # Multi-account state inside generate() to be bound for use in the generator
+        current_key = api_key
+        current_account = account_name
+        nonlocal _provider_name
+
         try:
             if use_timeouts:
                 chunk_timeout = fb.stream_chunk_timeout if fb.stream_chunk_timeout else 180.0
@@ -1370,19 +1578,42 @@ async def _stream_completion_openai(client, payload, model, analytics, start_tim
                 ollama_stream = None
                 stream_closed = False
                 # Wait for the first chunk with a strict timeout (triggers fallback fast)
-                # Also retry on 429 with backoff
+                # Also retry on 429 by failing over to another account if available
                 first_chunk = None
-                max_429 = limiter.max_429_retries if limiter else 0
-                for attempt in range(max_429 + 1):
+                while True:
                     try:
                         if ollama_stream is None:
-                            ollama_stream = client.chat_completion_stream(payload, api_key=api_key)
+                            ollama_stream = client.chat_completion_stream(payload, api_key=current_key)
                         first_chunk = await asyncio.wait_for(
                             ollama_stream.__anext__(), timeout=fb.primary_timeout
                         )
-                        break  # Got a chunk, exit retry loop
+                        break  # Got a chunk, exit loop
                     except httpx.HTTPStatusError as e:
-                        if attempt < max_429 and limiter and limiter.should_retry_429(e):
+                        is_429 = e.response.status_code == 429
+                        if is_429 and can_failover:
+                            if current_account:
+                                account_pool.mark_429(current_account)
+                            next_acc = account_pool.next_account_for_failover(current_account or "ollama", provider=provider_for_model(payload.get("model")), model=payload.get("model"))
+                            try:
+                                await ollama_stream.aclose()
+                            except (RuntimeError, Exception):
+                                pass
+                            ollama_stream = None
+                            if next_acc is None:
+                                # All accounts exhausted — release semaphore and re-raise
+                                if sem_ctx:
+                                    try:
+                                        await limiter.__aexit__(None, None, None)
+                                    except Exception:
+                                        pass
+                                    sem_ctx = None
+                                raise
+                            current_key = next_acc.api_key
+                            current_account = next_acc.name
+                            _provider_name = f"ollama:{current_account}" if current_account != "ollama" else "ollama"
+                            log.info("429 stream failover: trying account '%s'", current_account)
+                            continue
+                        if limiter and limiter.should_retry_429(e):
                             if account_name and account_pool:
                                 account_pool.mark_429(account_name)
                             try:
@@ -1390,7 +1621,7 @@ async def _stream_completion_openai(client, payload, model, analytics, start_tim
                             except (RuntimeError, Exception):
                                 pass
                             ollama_stream = None
-                            await limiter.backoff_and_retry(attempt)
+                            await limiter.backoff_and_retry(0)
                             continue
                         # Not a 429 or out of retries — release semaphore and re-raise
                         if sem_ctx:
@@ -1430,7 +1661,7 @@ async def _stream_completion_openai(client, payload, model, analytics, start_tim
                                 pass
                             sem_ctx = None
                         raise httpx.ReadTimeout(
-                            f"Ollama stream ended before producing any chunks"
+                            "Ollama stream ended before producing any chunks"
                         )
 
                 # Got first chunk — process it (metrics chunks are internal, not yield)
@@ -1480,12 +1711,29 @@ async def _stream_completion_openai(client, payload, model, analytics, start_tim
                         except Exception:
                             pass
             else:
-                # ── No timeout wrapping: original buffered behavior ──
-                for attempt in range(MAX_EMPTY_RETRIES + 1):
-                    chunks, stream_metrics = await _collect_stream_chunks(client, payload)
-                    if not _is_empty_stream_buffer(chunks) or attempt == MAX_EMPTY_RETRIES:
+                # ── No timeout wrapping: original buffered behavior with account failover ──
+                while True:
+                    try:
+                        chunks, stream_metrics = await _collect_stream_chunks(client, payload, api_key=current_key)
+                    except httpx.HTTPStatusError as e:
+                        if e.response.status_code == 429 and can_failover:
+                            if current_account:
+                                account_pool.mark_429(current_account)
+                            next_acc = account_pool.next_account_for_failover(current_account or "ollama", provider=provider_for_model(payload.get("model")), model=payload.get("model"))
+                            if next_acc is None:
+                                raise
+                            current_key = next_acc.api_key
+                            current_account = next_acc.name
+                            _provider_name = f"ollama:{current_account}" if current_account != "ollama" else "ollama"
+                            log.info("429 stream failover (buffered): trying account '%s'", current_account)
+                            continue
+                        raise
+
+                    if not _is_empty_stream_buffer(chunks):
                         break
-                    log.warning("Empty streaming response from %s (attempt %d/%d), retrying...", model, attempt + 1, MAX_EMPTY_RETRIES + 1)
+                    log.warning("Empty streaming response from %s, retrying...", model)
+                    # Empty retry once, then accept whatever we got
+                    break
 
                 for chunk in chunks:
                     yield chunk
@@ -1552,6 +1800,17 @@ async def _stream_completion_openai(client, payload, model, analytics, start_tim
                         **_hist_kw,
                     )
                 else:
+                    # Estimate OpenCode Go cost for streaming when provider is Go.
+                    estimated_cost = 0.0
+                    if _provider_name.startswith("opencode_go"):
+                        from guanaco.opencode_go_pricing import estimate_cost
+                        estimated_cost = estimate_cost(
+                            model,
+                            stream_metrics.get("prompt_eval_count", 0),
+                            stream_metrics.get("eval_count", 0) or 0,
+                            stream_metrics.get("prompt_cache_hit_tokens", 0),
+                            stream_metrics.get("prompt_cache_miss_tokens", 0),
+                        )
                     analytics.log_llm(
                         model=_normalize_model_name(model),
                         prompt_tokens=stream_metrics.get("prompt_eval_count", 0),
@@ -1560,6 +1819,9 @@ async def _stream_completion_openai(client, payload, model, analytics, start_tim
                         ttft_seconds=stream_metrics.get("ttft_seconds"),
                         total_duration_seconds=stream_metrics.get("elapsed_seconds", elapsed),
                         provider=_provider_name,
+                        prompt_cache_hit_tokens=stream_metrics.get("prompt_cache_hit_tokens"),
+                        prompt_cache_miss_tokens=stream_metrics.get("prompt_cache_miss_tokens"),
+                        estimated_cost=estimated_cost,
                         **_hist_kw,
                     )
 
@@ -1568,7 +1830,6 @@ async def _stream_completion_openai(client, payload, model, analytics, start_tim
 
 async def _stream_fallback_openai(payload, config, fallback_model, analytics, start_time, provider_tag="fallback", history_kwargs=None, fallback_for=None, fallback_reason=None):
     """Stream from fallback provider in OpenAI format."""
-    from fastapi.responses import StreamingResponse
 
     async def generate():
         accumulated_content = []
@@ -1677,3 +1938,24 @@ def _openai_to_anthropic_stop(reason: str) -> str:
         "content_filter": "end_turn",
     }
     return mapping.get(reason, "end_turn")
+
+def _build_history_kwargs(request, config, input_text: str = None, output_text: str = None) -> dict:
+    """Build kwargs for analytics.log_llm to capture caller info and optionally content."""
+    kwargs = {}
+    
+    # Caller info - always capture
+    if request and hasattr(request, 'client') and request.client:
+        kwargs['source_ip'] = request.client.host
+        kwargs['source_port'] = request.client.port
+    if request and request.headers:
+        kwargs['user_agent'] = request.headers.get('user-agent', '')[:500]  # Truncate
+    
+    # Content - only if history logging is enabled
+    if config and hasattr(config, 'history') and config.history.enabled:
+        max_size = getattr(config.history, 'max_content_size', 100000)
+        if input_text and config.history.save_input:
+            kwargs['input_text'] = input_text[:max_size]
+        if output_text and config.history.save_output:
+            kwargs['output_text'] = output_text[:max_size]
+    
+    return kwargs

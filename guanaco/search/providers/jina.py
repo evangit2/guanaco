@@ -113,7 +113,6 @@ class JinaProvider(ProviderEmulator):
         @router.post("/v1/rerank", response_model=JinaRerankResponse, include_in_schema=False)
         async def rerank(body: JinaRerankRequest, request: Request):
             # Use LLM for reranking — construct a prompt that scores relevance
-            import json
             top_n = body.top_n or len(body.documents)
             
             prompt = (

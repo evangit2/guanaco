@@ -58,7 +58,7 @@ async def test_fallback_non_stream_payload_includes_stream_false():
         await _call_fallback_provider(payload, config, stream=False)
 
         sent_json = mock_instance.post.call_args[1]["json"]
-        assert sent_json["stream"] == False, f"Expected stream=False, got {sent_json.get('stream')}"
+        assert sent_json["stream"] is False, f"Expected stream=False, got {sent_json.get('stream')}"
         assert sent_json["max_tokens"] == 8192
 
 
@@ -112,7 +112,7 @@ async def test_fallback_stream_payload_includes_stream_true():
         async for _ in gen:
             pass
 
-    assert captured_payload.get("stream") == True, \
+    assert captured_payload.get("stream"), \
         f"CRITICAL: stream=true not in fallback JSON body! Got {captured_payload.get('stream')}. " \
         f"Fireworks will reject max_tokens={captured_payload.get('max_tokens')} > 4096 without stream=true."
     assert captured_payload.get("max_tokens") == 8192

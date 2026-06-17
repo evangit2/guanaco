@@ -445,10 +445,6 @@ class OllamaClient:
         pct_matches = re.findall(r'(\d+(?:\.\d+)?)%\s*used', html)
         reset_matches = re.findall(r'Resets in ([^<\n]+)', html)
 
-        # Find session/weekly labels to determine which percentage is which
-        session_idx = None
-        weekly_idx = None
-
         # Look for "Session usage" label and find the nearest percentage
         session_label = re.search(r'Session usage.*?(\d+(?:\.\d+)?)%\s*used', html, re.DOTALL)
         if session_label:
@@ -569,8 +565,17 @@ class OllamaClient:
 
     # ── Chat Completions ──
 
+    def _strip_provider_prefix(self, payload: dict) -> dict:
+        """Return a payload copy with provider prefix stripped from model name."""
+        payload = dict(payload)
+        model = payload.get("model", "")
+        if model.startswith("ollama/"):
+            payload["model"] = model[len("ollama/"):]
+        return payload
+
     async def chat_completion(self, payload: dict, api_key: Optional[str] = None) -> dict:
         """Send a chat completion to Ollama Cloud (OpenAI-compatible format)."""
+        payload = self._strip_provider_prefix(payload)
         client = await self._get_client(api_key_override=api_key)
         is_temp = api_key is not None and api_key != self.api_key
         start = time.time()
@@ -617,14 +622,16 @@ class OllamaClient:
             # TTFT = load_duration + prompt_eval_duration (Ollama-native)
             prompt_dur = prompt_eval_duration_ns or 0
             metrics["ttft_seconds"] = round((load_duration_ns + prompt_dur) / 1e9, 3)
-        # Note: For non-streaming OpenAI-format responses, we can't measure true TTFT
-        # (time to first token). Only streaming responses will have accurate TTFT.
+        elif elapsed > 0:
+            # Fallback for Ollama Cloud (no native timing fields): TTFT ≈ elapsed
+            metrics["ttft_seconds"] = round(elapsed, 3)
 
         data["_oct_metrics"] = metrics
         return data
 
     async def chat_completion_stream(self, payload: dict, api_key: Optional[str] = None):
         """Stream chat completion responses from Ollama Cloud, yielding metrics via _oct_stream_metrics."""
+        payload = self._strip_provider_prefix(payload)
         client = await self._get_client(api_key_override=api_key)
         is_temp = api_key is not None and api_key != self.api_key
         payload_copy = dict(payload)
@@ -664,7 +671,7 @@ class OllamaClient:
                                 metrics["tps"] = round(final_tokens / generation_time, 2)
                             if prompt_tokens:
                                 metrics["prompt_eval_count"] = prompt_tokens
-                            yield f"data: [DONE]\n\n"
+                            yield "data: [DONE]\n\n"
                             # Store metrics on the response for analytics
                             yield f"__oct_metrics__:{json.dumps(metrics)}\n\n"
                             return  # Exit generator, don't yield another [DONE]

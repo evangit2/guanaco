@@ -126,14 +126,39 @@ def _run_setup():
 
     print("🦙 Guanaco — Setup Wizard\n")
 
-    api_key = os.environ.get("OLLAMA_API_KEY", "")
-    if not api_key:
-        api_key = input("Enter your Ollama API key: ").strip()
-    else:
-        print(f"Found OLLAMA_API_KEY in environment")
-        use_env = input("Use environment variable? [Y/n]: ").strip().lower()
-        if use_env == "n":
+    print("Which provider do you want to use?")
+    print("  1) Ollama Cloud")
+    print("  2) OpenCode Go")
+    print("  3) Both")
+    provider_choice = input("Choice [3]: ").strip() or "3"
+    use_ollama = provider_choice in ("1", "3")
+    use_go = provider_choice in ("2", "3")
+
+    api_key = ""
+    if use_ollama:
+        api_key = os.environ.get("OLLAMA_API_KEY", "")
+        if not api_key:
             api_key = input("Enter your Ollama API key: ").strip()
+        else:
+            print("Found OLLAMA_API_KEY in environment")
+            use_env = input("Use environment variable? [Y/n]: ").strip().lower()
+            if use_env == "n":
+                api_key = input("Enter your Ollama API key: ").strip()
+        if not api_key:
+            print("⚠️  No Ollama API key provided. Web search features will not be available.")
+
+    go_api_key = ""
+    if use_go:
+        go_api_key = os.environ.get("OPENCODE_GO_API_KEY", "")
+        if not go_api_key:
+            go_api_key = input("Enter your OpenCode Go API key: ").strip()
+        else:
+            print("Found OPENCODE_GO_API_KEY in environment")
+            use_env = input("Use environment variable? [Y/n]: ").strip().lower()
+            if use_env == "n":
+                go_api_key = input("Enter your OpenCode Go API key: ").strip()
+        if not go_api_key:
+            print("⚠️  No OpenCode Go API key provided. Go models will not be available.")
 
     # Auto-detect Tailscale for smarter default
     ts_ip = ""
@@ -157,18 +182,32 @@ def _run_setup():
 
     # LLM config
     print("\n📡 LLM Configuration")
-    print("   Available Ollama Cloud models: qwen3:480b, gpt-oss:120b, deepseek-v3.1, oss120b")
-    print("   Also: qwen3.5:122b, glm-5.1, minimax-m2.7, llama4:109b, etc.")
-    reranker = input("Reranker model [nemotron-3-nano:30b]: ").strip() or "nemotron-3-nano:30b"
-    scraper = input("Scraper model [nemotron-3-nano:30b]: ").strip() or "nemotron-3-nano:30b"
-    summary = input("Summary model [nemotron-3-nano:30b]: ").strip() or "nemotron-3-nano:30b"
-    default_model = input("Default chat model [nemotron-3-nano:30b]: ").strip() or "nemotron-3-nano:30b"
+    if use_go:
+        print("   OpenCode Go models: opencode-go/deepseek-v4-flash, opencode-go/kimi-k2.7-code,")
+        print("                       opencode-go/glm-5.1, opencode-go/minimax-m2.7, etc.")
+    if use_ollama:
+        print("   Ollama Cloud models: qwen3:480b, gpt-oss:120b, deepseek-v3.1, oss120b")
+        print("                        qwen3.5:122b, glm-5.1, minimax-m2.7, llama4:109b, etc.")
+    if use_go and use_ollama:
+        print("\nProvider strategy for unprefixed model names:")
+        print("  round_robin - alternate Ollama and OpenCode Go (default)")
+        print("  usage       - pick provider with more quota/lower recent usage")
+        print("  ollama      - always use Ollama Cloud")
+        print("  opencode_go - always use OpenCode Go")
+        strategy = input("Strategy [round_robin]: ").strip() or "round_robin"
+    else:
+        strategy = "opencode_go" if use_go else "ollama"
+    reranker_default = "opencode-go/deepseek-v4-flash" if use_go and not use_ollama else "nemotron-3-nano:30b"
+    reranker = input(f"Reranker model [{reranker_default}]: ").strip() or reranker_default
+    scraper = input(f"Scraper model [{reranker_default}]: ").strip() or reranker_default
+    summary = input(f"Summary model [{reranker_default}]: ").strip() or reranker_default
+    default_model = input(f"Default chat model [{reranker_default}]: ").strip() or reranker_default
     emulate_anthropic = input("Enable Anthropic /v1/messages emulation? [Y/n]: ").strip().lower() != "n"
     emulate_openai = input("Enable OpenAI /v1/chat/completions? [Y/n]: ").strip().lower() != "n"
 
     config = AppConfig(
         ollama_api_key=api_key,
-        router={"host": host, "port": port, "use_tailscale": use_tailscale},
+        router={"host": host, "port": port, "use_tailscale": use_tailscale, "unprefixed_provider_strategy": strategy},
         llm={
             "reranker_model": reranker,
             "scraper_model": scraper,
@@ -179,16 +218,20 @@ def _run_setup():
         },
     )
 
+    if go_api_key:
+        from guanaco.config import ProviderAccount
+        config.ollama_accounts.append(ProviderAccount(name="opencode-go-primary", provider="opencode_go", api_key=go_api_key))
+
     config_path = get_default_config_path()
     save_config(config, config_path)
     print(f"\n✅ Config saved to {config_path}")
-    print(f"\nEndpoints:")
+    print("\nEndpoints:")
     print(f"   LLM Router:     http://{host}:{port}/v1/chat/completions")
     if emulate_anthropic:
         print(f"   Anthropic:       http://{host}:{port}/v1/messages")
     print(f"   Search APIs:     http://{host}:{port}/<provider>/...")
     print(f"   Dashboard:       http://{host}:{port}/dashboard")
-    print(f"\nRun 'guanaco start' to begin!")
+    print("\nRun 'guanaco start' to begin!")
 
 
 def _run_install():
@@ -197,14 +240,15 @@ def _run_install():
     from guanaco.config import load_config, get_default_config_dir
 
     config = load_config()
-    host = config.router.host or "0.0.0.0"
-    port = config.router.port or 8080
-    config_dir = str(get_default_config_dir())
+    host = getattr(config.router, "host", "0.0.0.0") or "0.0.0.0"
+    port = getattr(config.router, "port", 8080) or 8080
+    config_dir = os.environ.get("GUANACO_CONFIG_DIR") or str(get_default_config_dir())
+    service_name = getattr(config.router, "service_name", "guanaco") or "guanaco"
     venv_python = os.path.join(os.path.dirname(os.path.abspath(shutil.which("python3") or "python3")), "python")
     if not os.path.exists(venv_python):
         venv_python = shutil.which("python3") or "/usr/bin/python3"
     install_dir = os.path.dirname(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-    service_name = "guanaco"
+    service_name = getattr(config.router, "service_name", "guanaco") or "guanaco"
 
     # Detect Tailscale IP for the service environment
     ts_ip = ""
@@ -255,9 +299,9 @@ WantedBy=multi-user.target
     try:
         with open(service_path, "w") as f:
             f.write(unit_file)
-        print(f"✅ Service file written")
+        print("✅ Service file written")
     except PermissionError:
-        print(f"🔑 Need sudo to write service file...")
+        print("🔑 Need sudo to write service file...")
         result = subprocess.run(["sudo", "tee", service_path], input=unit_file, text=True, capture_output=True)
         if result.returncode != 0:
             print(f"❌ Failed to write service file: {result.stderr}")
@@ -274,25 +318,26 @@ WantedBy=multi-user.target
     # Check status
     result = subprocess.run(["sudo", "systemctl", "is-active", service_name], capture_output=True, text=True)
     if result.stdout.strip() == "active":
-        print(f"✅ Guanaco service is running!")
+        print("✅ Guanaco service is running!")
         print(f"   Dashboard: http://{ts_ip or host}:{port}/dashboard/")
         print()
-        print(f"   Manage with:")
-        print(f"     sudo systemctl status guanaco")
-        print(f"     sudo systemctl stop guanaco")
-        print(f"     sudo systemctl restart guanaco")
-        print(f"     sudo journalctl -u guanaco -f")
+        print("   Manage with:")
+        print(f"     sudo systemctl status {service_name}")
+        print(f"     sudo systemctl stop {service_name}")
+        print(f"     sudo systemctl restart {service_name}")
+        print(f"     sudo journalctl -u {service_name} -f")
     else:
-        print(f"⚠ Service may not have started. Check logs:")
-        print(f"   sudo journalctl -u guanaco -n 50")
+        print("⚠ Service may not have started. Check logs:")
+        print(f"   sudo journalctl -u {service_name} -n 50")
 
 
 def _run_uninstall():
     """Remove Guanaco systemd service and clean up."""
-    from guanaco.config import get_default_config_dir
+    from guanaco.config import get_default_config_dir, load_config
 
-    config_dir = str(get_default_config_dir())
-    service_name = "guanaco"
+    config = load_config()
+    service_name = getattr(config.router, "service_name", "guanaco") or "guanaco"
+    config_dir = os.environ.get("GUANACO_CONFIG_DIR") or str(get_default_config_dir())
     service_path = f"/etc/systemd/system/{service_name}.service"
     removed = []
 
@@ -301,9 +346,9 @@ def _run_uninstall():
     result = subprocess.run(["sudo", "systemctl", "stop", service_name],
                             capture_output=True, text=True)
     if result.returncode == 0:
-        print(f"   ✅ Service stopped")
+        print("   ✅ Service stopped")
     else:
-        print(f"   ⚠ Service not running or already stopped")
+        print("   ⚠ Service not running or already stopped")
 
     # 2. Disable the service
     print(f"🔓 Disabling {service_name} service...")
@@ -315,7 +360,7 @@ def _run_uninstall():
         print(f"🗑 Removing {service_path}...")
         result = subprocess.run(["sudo", "rm", service_path], capture_output=True, text=True)
         if result.returncode == 0:
-            print(f"   ✅ Service file removed")
+            print("   ✅ Service file removed")
             removed.append(service_path)
         else:
             print(f"   ❌ Failed to remove service file: {result.stderr}")
@@ -324,23 +369,23 @@ def _run_uninstall():
 
     # 4. Reload systemd
     subprocess.run(["sudo", "systemctl", "daemon-reload"], capture_output=True, text=True)
-    print(f"   ✅ Systemd daemon reloaded")
+    print("   ✅ Systemd daemon reloaded")
 
     # 5. Also remove legacy oct service if it exists
     oct_service_path = "/etc/systemd/system/oct.service"
     if os.path.exists(oct_service_path):
-        print(f"🗑 Removing legacy oct service...")
+        print("🗑 Removing legacy oct service...")
         subprocess.run(["sudo", "systemctl", "stop", "oct"], capture_output=True, text=True)
         subprocess.run(["sudo", "systemctl", "disable", "oct"], capture_output=True, text=True)
         subprocess.run(["sudo", "rm", oct_service_path], capture_output=True, text=True)
         subprocess.run(["sudo", "systemctl", "daemon-reload"], capture_output=True, text=True)
-        print(f"   ✅ Legacy oct service removed")
+        print("   ✅ Legacy oct service removed")
         removed.append(oct_service_path)
 
     # 6. Ask about config and data
     print()
     print(f"📁 Config directory: {config_dir}")
-    print(f"   (Contains config.yaml, analytics.db, cache, API keys)")
+    print("   (Contains config.yaml, analytics.db, cache, API keys)")
     remove_config = input("Remove config and data? [y/N]: ").strip().lower()
     if remove_config == "y":
         import shutil
@@ -349,7 +394,7 @@ def _run_uninstall():
             print(f"   ✅ Removed {config_dir}")
             removed.append(config_dir)
         else:
-            print(f"   ℹ Config directory not found")
+            print("   ℹ Config directory not found")
 
     # 7. Ask about symlink (~/.oct → ~/.guanaco)
     oct_symlink = os.path.expanduser("~/.oct")
@@ -408,7 +453,8 @@ def _run_start(args):
         app = create_app(config)
 
         # Suggest installing as a service if not already running as one
-        if not os.path.exists("/etc/systemd/system/guanaco.service"):
+        service_name = getattr(config.router, "service_name", "guanaco") or "guanaco"
+        if not os.path.exists(f"/etc/systemd/system/{service_name}.service"):
             print("  💡 Tip: Run 'guanaco install' to run as a systemd service (auto-starts on boot)")
             print()
 
@@ -433,7 +479,7 @@ def _run_key(args):
         key = km.generate_key(provider=args.provider, name=args.name)
         print(f"🔑 Generated key for {args.provider}:")
         print(f"   {key}")
-        print(f"\n⚠️  Save this key now — it won't be shown again!")
+        print("\n⚠️  Save this key now — it won't be shown again!")
     elif args.action == "list":
         keys = km.list_keys()
         if not keys:
@@ -456,7 +502,7 @@ def _run_key(args):
 def _run_models(args):
     """List available Ollama Cloud models."""
     from guanaco.config import load_config
-    from guanaco.client import OllamaClient, KNOWN_CLOUD_MODELS
+    from guanaco.client import OllamaClient
 
     config = load_config()
     api_key = config.ollama_api_key_resolved
@@ -514,7 +560,7 @@ def _run_models(args):
             print(f"{name:<28} {size:>8} {family:<14} {quant:<10} {modified}")
 
     # Show current config
-    print(f"\n📡 Current model config:")
+    print("\n📡 Current model config:")
     print(f"   Default:     {config.llm.default_model}")
     print(f"   Reranker:     {config.llm.reranker_model}")
     print(f"   Scraper:      {config.llm.scraper_model}")
@@ -655,20 +701,20 @@ def _run_status(args):
 
     # Analytics summary
     an = results.get("analytics", {})
-    print(f"\n📊 Analytics:")
+    print("\n📊 Analytics:")
     print(f"   Total requests: {an.get('total_requests', 0)}")
     print(f"   Errors: {an.get('errors', 0)}")
     print(f"   Status events: {an.get('status_errors', 0)} errors, {an.get('status_warnings', 0)} warnings")
 
     if args.verbose:
-        print(f"\n📡 Endpoints:")
+        print("\n📡 Endpoints:")
         print(f"   OpenAI:   {base_url}:{port}/v1/chat/completions")
         if config.llm.emulate_anthropic:
             print(f"   Anthropic: {base_url}:{port}/v1/messages")
         print(f"   Models:    {base_url}:{port}/v1/models")
         print(f"   Usage:     {base_url}:{port}/v1/usage")
         print(f"   Health:    {base_url}:{port}/health")
-        print(f"\n📡 Model Config:")
+        print("\n📡 Model Config:")
         print(f"   Default:     {config.llm.default_model}")
         print(f"   Reranker:     {config.llm.reranker_model}")
         print(f"   Scraper:      {config.llm.scraper_model}")
@@ -728,7 +774,7 @@ def _run_analytics(args):
         print(f"  Avg TTFT:         {summary['avg_ttft']*1000:.0f}ms" if summary['avg_ttft'] else "  Avg TTFT:         —")
 
         if summary.get("models"):
-            print(f"\n📡 Per-Model Stats:")
+            print("\n📡 Per-Model Stats:")
             print(f"  {'Model':<28} {'Reqs':>6} {'PTok':>10} {'CTok':>10} {'TPS':>8} {'TTFT':>8}")
             print(f"  {'─'*28} {'─'*6} {'─'*10} {'─'*10} {'─'*8} {'─'*8}")
             for m in summary["models"][:10]:
@@ -737,7 +783,7 @@ def _run_analytics(args):
 
         if summary.get("usage"):
             u = summary["usage"]
-            print(f"\n📈 Ollama Cloud Usage:")
+            print("\n📈 Ollama Cloud Usage:")
             if u.get("plan"):
                 print(f"  Plan: {u['plan']}")
             if u.get("session_pct") is not None:
@@ -782,14 +828,13 @@ def _run_config(args):
         return
 
     # Show current config
-    import json
     print("🦙 Current Configuration\n")
     print(f"  API Key: {'*' * 8}{config.ollama_api_key_resolved[-4:]}" if config.ollama_api_key_resolved else "  API Key: (not set)")
-    print(f"\n  Router:")
+    print("\n  Router:")
     print(f"    Host: {config.router.host}")
     print(f"    Port: {config.router.port}")
     print(f"    Tailscale: {config.router.use_tailscale}")
-    print(f"\n  LLM:")
+    print("\n  LLM:")
     print(f"    Default model:     {config.llm.default_model}")
     print(f"    Reranker model:    {config.llm.reranker_model}")
     print(f"    Scraper model:     {config.llm.scraper_model}")
@@ -798,7 +843,7 @@ def _run_config(args):
     print(f"    Emulate Anthropic: {config.llm.emulate_anthropic}")
     print(f"    Emulate OpenAI:    {config.llm.emulate_openai}")
     print(f"    Available models:  {', '.join(config.llm.available_models)}")
-    print(f"\n  Providers:")
+    print("\n  Providers:")
     for name, prov in config.providers.model_dump().items():
         en = "✅" if prov.get("enabled", True) else "❌"
         key_status = "🔑" if prov.get("require_api_key") else ""
@@ -814,7 +859,6 @@ def _check_version_sanity():
     - Or installs a different version from PyPI over the editable install
     """
     import importlib.util
-    from pathlib import Path
 
     try:
         # Where does `guanaco` load from?
@@ -824,13 +868,11 @@ def _check_version_sanity():
         installed_path = Path(spec.origin).resolve()
 
         # Check if it's an editable install (points into a repo checkout)
-        is_editable = False
         repo_root = None
         if installed_path.parts:
             # Walk up to find .git
             for parent in installed_path.parents:
                 if (parent / ".git").is_dir():
-                    is_editable = True
                     repo_root = parent
                     break
 
@@ -847,7 +889,7 @@ def _check_version_sanity():
                         repo_version = line.split('=')[1].strip().strip('"').strip("'")
                         break
                 if repo_version != installed_version:
-                    print(f"⚠️  VERSION MISMATCH DETECTED")
+                    print("⚠️  VERSION MISMATCH DETECTED")
                     print(f"   Installed package: v{installed_version} at {installed_path}")
                     print(f"   Repo checkout:     v{repo_version} at {repo_root}")
                     print(f"   Fix: cd {repo_root} && pip install -e .")
@@ -855,9 +897,9 @@ def _check_version_sanity():
 
         # Also warn if installed from PyPI (site-packages) rather than editable
         elif "site-packages" in str(installed_path):
-            print(f"⚠️  Installed from PyPI/site-packages, not editable install:")
+            print("⚠️  Installed from PyPI/site-packages, not editable install:")
             print(f"   {installed_path}")
-            print(f"   If you're developing, use:  pip install -e .")
+            print("   If you're developing, use:  pip install -e .")
             print()
 
     except Exception:

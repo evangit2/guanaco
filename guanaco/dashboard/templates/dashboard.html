@@ -137,6 +137,22 @@
 
     .refresh-btn { background: transparent; border: 1px solid var(--border); color: var(--text2); padding: 4px 10px; border-radius: 6px; cursor: pointer; font-size: 12px; }
     .refresh-btn:hover { border-color: var(--accent); color: var(--text); }
+
+    /* Provider priority drag list */
+    .priority-list { list-style: none; padding: 0; margin: 0; }
+    .priority-list li {
+        display: flex; align-items: center; gap: 12px;
+        background: var(--surface2); border: 1px solid var(--border); border-radius: 10px;
+        padding: 12px 14px; margin-bottom: 8px; cursor: grab; user-select: none;
+        transition: background 0.15s, border-color 0.15s;
+    }
+    .priority-list li.dragging { opacity: 0.5; border-color: var(--accent); }
+    .priority-list li.disabled { opacity: 0.5; cursor: not-allowed; }
+    .priority-list .drag-handle { color: var(--text2); font-size: 16px; }
+    .priority-list .provider-label { flex: 1; font-size: 14px; font-weight: 500; }
+    .priority-list .provider-status { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+    .priority-list .provider-status.on { color: var(--green); }
+    .priority-list .provider-status.off { color: var(--text2); }
 </style>
 </head>
 <body>
@@ -400,7 +416,19 @@
     <!-- ─── Analytics Tab ─── -->
     <div id="tab-analytics" class="hidden">
         <div class="card">
-            <h2><span class="emoji">📊</span> Overview</h2>
+            <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;">
+                <h2><span class="emoji">📊</span> Overview</h2>
+                <div style="display:flex;align-items:center;gap:8px;">
+                    <span style="font-size:12px;color:var(--text2);">Provider:</span>
+                    <select id="analytics-provider-filter" onchange="loadAnalytics()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:6px;font-size:13px;">
+                        <option value="">All</option>
+                        <option value="ollama">LLM Provider</option>
+                        <option value="opencode_go">OpenCode Go</option>
+                        <option value="cache">Local Cache</option>
+                        <option value="fallback">Fallback</option>
+                    </select>
+                </div>
+            </div>
             <div class="metric-grid">
                 <div class="metric"><div class="metric-val" id="an-llm">0</div><div class="metric-label">LLM Calls</div></div>
                 <div class="metric"><div class="metric-val" id="an-search">0</div><div class="metric-label">Search Calls</div></div>
@@ -417,7 +445,7 @@
 
         <div class="card">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-                <h2 style="margin:0;"><span class="emoji">🔢</span> Per-Model Stats <span style="display:inline-block;cursor:help;position:relative;" onmouseenter="this.querySelector('.tip').style.display='block'" onmouseleave="this.querySelector('.tip').style.display='none'"><svg viewBox="0 0 16 16" style="width:14px;height:14px;vertical-align:middle;fill:var(--text2);"><path d="M8 1a7 7 0 110 14A7 7 0 018 1zm0 4.5a.75.75 0 110-1.5.75.75 0 010 1.5zM8 7a.75.75 0 00-.75.75v3.5a.75.75 0 001.5 0v-3.5A.75.75 0 008 7z"/></svg><span class="tip" style="display:none;position:absolute;bottom:130%;left:50%;transform:translateX(-50%);background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:8px 10px;font-size:11px;font-weight:400;color:var(--text);white-space:nowrap;z-index:10;box-shadow:0 2px 8px rgba(0,0,0,0.3);">Token counts estimated at 4 chars ≈ 1 token for consistency across tokenizers. Native usage data used when available.</span></span></h2>
+                <h2 style="margin:0;"><span class="emoji">🔢</span> Per-Model Stats</h2>
                 <div>
                     <button class="refresh-btn" onclick="loadAnalytics()">🔄</button>
                     <button class="btn btn-sm btn-outline" onclick="clearAnalytics()" style="margin-left:4px;">Reset</button>
@@ -698,79 +726,21 @@
         </div>
     </div>
 
-    <!-- ─── Cache Tab (Beta) ─── -->
+    <!-- ─── Cache Tab ─── -->
     <div id="tab-cache" class="hidden">
         <div class="card">
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
-                <h2 style="margin:0;"><span class="emoji">⚡</span> Response Cache <span style="font-size:11px;background:#f59e0b;color:#000;padding:2px 6px;border-radius:4px;margin-left:6px;">BETA</span></h2>
-                <div style="display:flex;align-items:center;gap:12px;">
-                    <span style="font-size:13px;color:var(--text2);" id="cache-hit-rate">0% hits</span>
-                    <button class="btn btn-sm btn-outline" onclick="clearCache()">Clear</button>
-                    <button class="refresh-btn" onclick="loadCacheStats()">🔄</button>
-                </div>
+            <h2><span class="emoji">💰</span> OpenCode Go Usage</h2>
+            <p style="font-size:13px;color:var(--text2);margin-bottom:16px;">Estimated spend vs subscription tiers ($12/5h · $30/week · $60/month). Costs are computed from local per-request pricing, not OpenCode's billing API.</p>
+            <div id="go-usage-content">
+                <div style="text-align:center;padding:20px;color:var(--text2);">Loading...</div>
             </div>
-
-            <!-- Beta Mode Toggle -->
-            <div style="display:flex;justify-content:space-between;align-items:center;padding:12px;background:var(--surface2);border-radius:8px;margin-bottom:16px;">
-                <div>
-                    <div style="font-weight:600;">Beta Mode</div>
-                    <div style="font-size:12px;color:var(--text2);">Enable smart response caching for non-streaming requests</div>
-                </div>
-                <label class="toggle"><input type="checkbox" id="cache-beta" onchange="toggleBetaMode()"><span class="slider"></span></label>
+        </div>
+        <div class="card" style="margin-top:16px;">
+            <h2><span class="emoji">⚡</span> OpenCode Go Cache Analytics</h2>
+            <p style="font-size:13px;color:var(--text2);margin-bottom:16px;">View cache hit rate analytics for OpenCode Go provider requests.</p>
+            <div id="cache-analytics-content">
+                <div style="text-align:center;padding:20px;color:var(--text2);">Loading...</div>
             </div>
-
-            <!-- Stats Grid -->
-            <div class="metric-grid" id="cache-stats-grid" style="grid-template-columns:repeat(4,1fr);">
-                <div class="metric"><div class="metric-value" id="cs-exact-entries">0</div><div class="metric-label">Exact Entries</div></div>
-                <div class="metric"><div class="metric-value" id="cs-prefix-entries">0</div><div class="metric-label">Prefix Entries</div></div>
-                <div class="metric"><div class="metric-value" id="cs-exact-hits">0</div><div class="metric-label">Exact Hits</div></div>
-                <div class="metric"><div class="metric-value" id="cs-prefix-hits">0</div><div class="metric-label">Prefix Hits</div></div>
-            </div>
-            <div class="metric-grid" style="grid-template-columns:repeat(4,1fr);margin-top:8px;">
-                <div class="metric"><div class="metric-value" id="cs-misses">0</div><div class="metric-label">Misses</div></div>
-                <div class="metric"><div class="metric-value" id="cs-dedup-saves">0</div><div class="metric-label">Dedup Saves</div></div>
-                <div class="metric"><div class="metric-value" id="cs-evictions">0</div><div class="metric-label">Evictions</div></div>
-                <div class="metric"><div class="metric-value" id="cs-in-flight">0</div><div class="metric-label">In-Flight</div></div>
-            </div>
-
-            <!-- Config Section -->
-            <h3 style="margin-top:20px;margin-bottom:12px;font-size:14px;">Cache Configuration</h3>
-            <div class="config-row">
-                <label>Exact Cache TTL</label>
-                <div style="display:flex;align-items:center;gap:8px;">
-                    <input type="number" id="cfg-exact-ttl" value="600" min="0" max="86400" style="width:80px;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:6px;font-size:13px;">
-                    <span style="font-size:12px;color:var(--text2);">seconds</span>
-                </div>
-            </div>
-            <div class="config-row">
-                <label>Session Prefix TTL</label>
-                <div style="display:flex;align-items:center;gap:8px;">
-                    <input type="number" id="cfg-prefix-ttl" value="3600" min="0" max="86400" style="width:80px;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:6px;font-size:13px;">
-                    <span style="font-size:12px;color:var(--text2);">seconds</span>
-                </div>
-            </div>
-            <div class="config-row">
-                <label>Max Entries</label>
-                <input type="number" id="cfg-max-entries" value="500" min="10" max="10000" style="width:80px;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:6px;font-size:13px;">
-            </div>
-            <div class="config-row">
-                <label>Min Prompt Chars</label>
-                <input type="number" id="cfg-min-chars" value="50" min="0" max="10000" style="width:80px;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:6px;font-size:13px;">
-            </div>
-            <div class="config-row">
-                <label>Exact Cache</label>
-                <label class="toggle"><input type="checkbox" id="cfg-exact-enabled" checked><span class="slider"></span></label>
-            </div>
-            <div class="config-row">
-                <label>Session Prefix</label>
-                <label class="toggle"><input type="checkbox" id="cfg-prefix-enabled" checked><span class="slider"></span></label>
-            </div>
-            <div class="config-row">
-                <label>Request Dedup</label>
-                <label class="toggle"><input type="checkbox" id="cfg-dedup-enabled" checked><span class="slider"></span></label>
-            </div>
-            <button class="btn" onclick="saveCacheConfig()" style="margin-top:8px;">Save Cache Config</button>
-            <span id="cache-save-status" style="margin-left:12px;font-size:13px;"></span>
         </div>
     </div>
 
@@ -804,21 +774,28 @@
     <!-- ─── Accounts Tab ─── -->
     <div id="tab-accounts" class="hidden">
         <div class="card">
-            <h2><span class="emoji">👤</span> Ollama Accounts</h2>
-            <p style="font-size:13px;color:var(--text2);margin-bottom:16px;">Manage multiple Ollama Cloud accounts for load-balanced rotation. The primary account (<strong>ollama</strong>) uses the API key from your config. Add additional accounts with their own keys — requests will be distributed based on availability.</p>
+            <h2><span class="emoji">👤</span> Provider Accounts</h2>
+            <p style="font-size:13px;color:var(--text2);margin-bottom:16px;">Manage LLM Provider and OpenCode Go accounts for load-balanced rotation. The primary account (<strong>ollama</strong>) uses the API key from your config. Add additional accounts with their own keys — requests are distributed per provider based on availability.</p>
             <div id="accounts-list"></div>
         </div>
 
         <div class="card" style="margin-top:16px;">
             <h2><span class="emoji">➕</span> Add Account</h2>
             <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;">
+                <div style="flex:1;min-width:120px;">
+                    <label style="font-size:12px;color:var(--text2);display:block;margin-bottom:4px;">Provider</label>
+                    <select id="new-account-provider" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg2);color:var(--text);font-size:14px;">
+                        <option value="ollama">LLM Provider</option>
+                        <option value="opencode_go">OpenCode Go</option>
+                    </select>
+                </div>
                 <div style="flex:1;min-width:140px;">
                     <label style="font-size:12px;color:var(--text2);display:block;margin-bottom:4px;">Account Name</label>
                     <input type="text" id="new-account-name" placeholder="e.g. ollama-backup" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg2);color:var(--text);font-size:14px;">
                 </div>
                 <div style="flex:2;min-width:200px;">
                     <label style="font-size:12px;color:var(--text2);display:block;margin-bottom:4px;">API Key</label>
-                    <input type="text" id="new-account-key" placeholder="Paste Ollama Cloud API key" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg2);color:var(--text);font-size:14px;">
+                    <input type="text" id="new-account-key" placeholder="Paste API key" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg2);color:var(--text);font-size:14px;">
                 </div>
                 <button class="btn" onclick="addAccount()" id="add-account-btn" style="white-space:nowrap;">Add & Test</button>
             </div>
@@ -829,6 +806,30 @@
     <!-- ─── System Tab ─── -->
     <div id="tab-system" class="hidden">
         <div class="card">
+            <h2><span class="emoji">🌐</span> Primary Provider</h2>
+            <p style="font-size:13px;color:var(--text2);margin-bottom:16px;">Drag providers into priority order. Guanaco will route unprefixed models to the first available provider, then fall back if it hits usage limits or errors.</p>
+            <ul id="provider-priority-list" class="priority-list">
+                <!-- populated by JS -->
+            </ul>
+            <div id="provider-priority-status" style="font-size:13px;margin-top:8px;"></div>
+        </div>
+
+        <div class="card" style="margin-top:16px;">
+            <h2><span class="emoji">🕹️</span> Legacy Provider Strategy</h2>
+            <p style="font-size:13px;color:var(--text2);margin-bottom:16px;">Older shorthand selector. "LLM Provider" or "OpenCode Go" will overwrite the drag-and-drop order above.</p>
+            <div class="config-row">
+                <label>Provider Strategy</label>
+                <select id="provider-strategy" onchange="saveProviderStrategy()" style="min-width:180px;">
+                    <option value="round_robin">Round Robin</option>
+                    <option value="usage">Usage Based</option>
+                    <option value="ollama">LLM Provider</option>
+                    <option value="opencode_go">OpenCode Go</option>
+                </select>
+            </div>
+            <div id="provider-strategy-status" style="font-size:13px;margin-top:8px;"></div>
+        </div>
+
+        <div class="card" style="margin-top:16px;">
             <h2><span class="emoji">⚙️</span> Autostart</h2>
             <p style="font-size:13px;color:var(--text2);margin-bottom:16px;">Configure Guanaco to start automatically when the system boots via systemd.</p>
             <div style="display:flex;align-items:center;gap:16px;margin-bottom:16px;">
@@ -908,12 +909,12 @@ function showTab(tab) {
     if (tab === 'models') loadModels();
     if (tab === 'search') loadSearchConfig();
     if (tab === 'fallback') loadFallbackConfig();
-    if (tab === 'cache') loadCacheStats();
+    if (tab === 'cache') { loadGoUsage(); loadCacheAnalytics(); }
     if (tab === 'analytics') loadAnalytics();
     if (tab === 'history') { loadHistoryConfig(); loadHistory(); loadHistoryLogs(); }
     if (tab === 'status') { checkOllamaStatus(); loadUsageConfig(); checkUsage(); loadStatusLog(); loadROIConfig(); }
     if (tab === 'accounts') { loadAccounts(); checkAllAccountUsage(); }
-    if (tab === 'system') { loadAutostart(); checkForUpdate(); }
+    if (tab === 'system') { loadAutostart(); loadProviderStrategy(); checkForUpdate(); }
 }
 
 function copyUrl(id) {
@@ -1107,6 +1108,7 @@ function loadAccounts() {
                     <div style="display:flex;align-items:center;gap:8px;">
                         <span style="font-weight:600;font-size:15px;">${isPrimary ? '🔑' : '👤'} ${a.name}</span>
                         ${isPrimary ? '<span style="background:var(--accent);color:#000;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;">Primary</span>' : ''}
+                        <span style="background:var(--surface3);color:var(--text1);padding:2px 6px;border-radius:4px;font-size:10px;font-weight:600;text-transform:uppercase;">${a.provider || 'ollama'}</span>
                         ${cookieBadge}
                     </div>
                     <div style="display:flex;gap:8px;align-items:center;">
@@ -1118,9 +1120,16 @@ function loadAccounts() {
                     </div>
                 </div>
                 ${usageBar}
-                <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">
+                <div style="margin-top:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                    <span style="font-size:12px;color:var(--text2);">Rotation:</span>
+                    <select onchange="setRotationMode('${a.name}', this.value)" style="background:var(--surface3);color:var(--text1);border:1px solid var(--border);border-radius:6px;padding:4px 8px;font-size:12px;">
+                        <option value="usage" ${a.rotation_mode === 'usage' ? 'selected' : ''}>Usage-aware</option>
+                        <option value="round_robin" ${a.rotation_mode === 'round_robin' ? 'selected' : ''}>Round-robin</option>
+                    </select>
+                    ${(a.provider || 'ollama') === 'ollama' ? `
                     <button class="btn" style="font-size:11px;padding:2px 8px;" onclick="setSessionCookie('${a.name}')">Set Session Cookie</button>
                     <button class="btn" style="font-size:11px;padding:2px 8px;" onclick="checkAccountUsage('${a.name}')">Check Usage</button>
+                    ` : ''}
                 </div>
             </div>`;
         }).join('');
@@ -1129,6 +1138,25 @@ function loadAccounts() {
         if (accounts.some(a => a.name === 'ollama')) {
             const primaryCard = container.querySelector('div');
             // Already inline with primary
+        }
+    });
+}
+
+function setRotationMode(name, mode) {
+    const resultEl = document.getElementById('add-account-result');
+    resultEl.textContent = 'Saving rotation mode...';
+    resultEl.style.color = 'var(--text2)';
+    fetch('/dashboard/api/accounts/rotation-mode', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({name: name, rotation_mode: mode})
+    }).then(r => r.json()).then(data => {
+        if (data.status === 'ok') {
+            resultEl.textContent = '✅ ' + data.message;
+            resultEl.style.color = 'var(--accent)';
+        } else {
+            resultEl.textContent = '❌ ' + data.message;
+            resultEl.style.color = '#ef4444';
         }
     });
 }
@@ -1142,7 +1170,7 @@ function showEditKey(name) {
     fetch('/dashboard/api/accounts/update-key', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({name: name, api_key: key.trim()})
+        body: JSON.stringify({name: name, api_key: key.trim(), provider: provider})
     }).then(r => r.json()).then(data => {
         if (data.status === 'ok') {
             resultEl.textContent = '✅ ' + data.message;
@@ -1158,6 +1186,7 @@ function showEditKey(name) {
 function addAccount() {
     const name = document.getElementById('new-account-name').value.trim();
     const key = document.getElementById('new-account-key').value.trim();
+    const provider = document.getElementById('new-account-provider').value;
     const resultEl = document.getElementById('add-account-result');
     const btn = document.getElementById('add-account-btn');
 
@@ -1172,7 +1201,7 @@ function addAccount() {
     fetch('/dashboard/api/accounts/add', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({name: name, api_key: key})
+        body: JSON.stringify({name: name, api_key: key.trim(), provider: provider})
     }).then(r => r.json()).then(data => {
         btn.disabled = false;
         btn.textContent = 'Add & Test';
@@ -1296,11 +1325,30 @@ let availableModels = [];
 
 function loadModels() {
     document.getElementById('models-loading').style.display = 'block';
-    fetch('/api/ollama/models').then(r => {
+    fetch('/v1/models').then(r => {
         if (!r.ok) throw new Error('API error ' + r.status);
         return r.json();
     }).then(data => {
-        const models = data.models || [];
+        const raw = data.data || [];
+        // Map /v1/models format → what renderModels/populateModelSelects expect
+        const models = raw.map(m => {
+            const id = m.id || m.name || '';
+            const ownedBy = m.owned_by || '';
+            const details = m.details || {};
+            // Capabilities can be a list (Ollama) or dict (Go) — normalize to list
+            let caps = m.capabilities;
+            if (!caps || typeof caps !== 'object' || !Array.isArray(caps)) {
+                caps = ['cloud'];
+            }
+            return {
+                name: id,
+                model: id,
+                id: id,
+                details: details,
+                capabilities: caps,
+                usage_multiplier: _getMultiplier(id),
+            };
+        });
         availableModels = models;
         document.getElementById('models-loading').style.display = 'none';
         renderModels(models);
@@ -1330,27 +1378,71 @@ function refreshModels() {
 
 function renderModels(models) {
     const grid = document.getElementById('models-grid');
-    grid.innerHTML = models.map(m => {
+    // Group by base name (strip opencode-go/ prefix) to merge overlapping models
+    const grouped = {};
+    models.forEach(m => {
         const name = m.name || m.model || 'unknown';
-        const display = name.replace('-cloud','');
-        const details = m.details || {};
+        const isGo = name.startsWith('opencode-go/');
+        const baseName = isGo ? name.replace('opencode-go/', '') : name.replace('-cloud','');
+        if (!grouped[baseName]) {
+            grouped[baseName] = { ollama: null, go: null };
+        }
+        if (isGo) grouped[baseName].go = m;
+        else grouped[baseName].ollama = m;
+    });
+
+    grid.innerHTML = Object.entries(grouped).map(([baseName, entry]) => {
+        const m = entry.ollama || entry.go;
+        const display = baseName;
+        const details = (m.details || {});
         const family = details.family || '';
         const paramSize = details.parameter_size || '';
         const quant = details.quantization_level || '';
         const caps = m.capabilities || ['cloud'];
-        const mult = typeof m.usage_multiplier === 'number' ? m.usage_multiplier : (m.usage_multiplier || 0.75);
-        const filled = Math.round(mult * 4); // 4 slots, 0.25 = 1 filled, 1.00 = 4 filled
-        const slots = [0,1,2,3].map(i => `<span class="usage-slot ${i < filled ? 'usage-active' : ''}"></span>`).join('');
-        const capHtml = caps.map(c => `<span class="cap ${c}">${c}</span>`).join('');
+        const ollamaMult = entry.ollama ? _getMultiplier(entry.ollama.name) : null;
+        const goMult = entry.go ? _getMultiplier(entry.go.name) : null;
+        const capHtml = caps.map(c => '<span class="cap ' + c + '">' + c + '</span>').join('');
+
+        // Provider tags — show both if available on both providers
+        let providerTags = '';
+        if (entry.ollama && entry.go) {
+            providerTags = '<span style="font-size:9px;font-weight:700;background:var(--surface2);color:var(--text2);padding:2px 6px;border-radius:4px;margin-left:8px;vertical-align:middle;">Ollama</span><span style="font-size:9px;font-weight:700;background:var(--surface);color:var(--green);padding:2px 6px;border-radius:4px;margin-left:4px;vertical-align:middle;">Go</span>';
+        } else if (entry.go) {
+            providerTags = '<span style="font-size:9px;font-weight:700;background:var(--surface);color:var(--green);padding:2px 6px;border-radius:4px;margin-left:8px;vertical-align:middle;">Go</span>';
+        } else {
+            providerTags = '<span style="font-size:9px;font-weight:700;background:var(--surface2);color:var(--text2);padding:2px 6px;border-radius:4px;margin-left:8px;vertical-align:middle;">Ollama</span>';
+        }
+
+        // Build usage bars — one per provider when both exist
+        function makeUsageBar(mult, label, color) {
+            const filled = Math.round(mult * 4);
+            var slots = '';
+            for (var i = 0; i < 4; i++) {
+                var cls = i < filled ? 'usage-slot usage-active' : 'usage-slot';
+                var style = i < filled ? ' style="background:' + color + '"' : '';
+                slots += '<span class="' + cls + '"' + style + '></span>';
+            }
+            return '<div class="usage-bar" title="' + label + ': ' + mult.toFixed(2) + 'x">' + slots + '<span class="usage-label">' + label + ' ' + mult.toFixed(2) + 'x</span></div>';
+        }
+
+        var usageBarsHtml;
+        if (entry.ollama && entry.go) {
+            usageBarsHtml = '<div style="display:flex;flex-direction:column;gap:4px;margin-top:6px;">' + makeUsageBar(ollamaMult, 'Ollama', 'var(--text2)') + makeUsageBar(goMult, 'Go', 'var(--green)') + '</div>';
+        } else {
+            var singleMult = goMult !== null ? goMult : (ollamaMult !== null ? ollamaMult : 0.75);
+            var singleLabel = goMult !== null ? 'Go' : 'Ollama';
+            var singleColor = goMult !== null ? 'var(--green)' : 'var(--text2)';
+            usageBarsHtml = makeUsageBar(singleMult, singleLabel, singleColor);
+        }
         return `<div class="model-card">
-            <div class="model-name">${display}</div>
+            <div class="model-name">${display}${providerTags}</div>
             <div class="model-details">
                 ${family ? `<span>📋 ${family}</span>` : ''}
                 ${paramSize ? `<span>🔢 ${paramSize}</span>` : ''}
                 ${quant ? `<span>⚡ ${quant}</span>` : ''}
             </div>
             <div class="model-caps">${capHtml}</div>
-            <div class="usage-bar" title="Usage cost multiplier: ${mult.toFixed(2)}x">${slots}<span class="usage-label">${mult.toFixed(2)}x</span></div>
+            ${usageBarsHtml}
         </div>`;
     }).join('');
 }
@@ -1408,7 +1500,9 @@ function saveEmulationConfig() {
 // ─── Analytics ───
 
 function loadAnalytics() {
-    fetch('/dashboard/api/analytics/summary').then(r => r.json()).then(data => {
+    const provider = document.getElementById('analytics-provider-filter').value;
+    const url = provider ? `/dashboard/api/analytics/summary/${provider}` : '/dashboard/api/analytics/summary';
+    fetch(url).then(r => r.json()).then(data => {
         document.getElementById('an-llm').textContent = (data.llm_calls || 0).toLocaleString();
         document.getElementById('an-search').textContent = (data.search_calls || 0).toLocaleString();
         document.getElementById('an-ptokens').textContent = (data.prompt_tokens || 0).toLocaleString();
@@ -1472,6 +1566,111 @@ function loadAnalytics() {
         document.getElementById('stat-tps').textContent = data.avg_tps || 0;
         document.getElementById('stat-ttft').textContent = data.avg_ttft ? (data.avg_ttft * 1000).toFixed(0) + 'ms' : '—';
         document.getElementById('stat-keys').textContent = KEYS.length;
+    });
+}
+
+function loadGoUsage() {
+    fetch('/dashboard/api/analytics/go-usage').then(r => r.json()).then(data => {
+        const container = document.getElementById('go-usage-content');
+        if (!data || !data.configured) {
+            container.innerHTML = '<div style="text-align:center;padding:40px 20px;color:var(--text2);"><div style="font-size:40px;margin-bottom:12px;">📭</div><div style="font-size:14px;font-weight:600;margin-bottom:8px;">OpenCode Go Not Configured</div><div style="font-size:12px;">No spend data available. Route some requests through OpenCode Go to see usage estimates.</div></div>';
+            return;
+        }
+        const fmtMoney = n => '$' + (n || 0).toFixed(4);
+        function barBlock(label, item, color) {
+            const pct = Math.min(item.pct || 0, 100);
+            return `
+            <div style="margin-bottom:14px;">
+                <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px;">
+                    <span>${label} <span style="color:var(--text2);">($${item.budget})</span></span>
+                    <span>${fmtMoney(item.cost)} · ${item.pct}%</span>
+                </div>
+                <div style="background:var(--surface2);border-radius:4px;height:10px;overflow:hidden;border:1px solid var(--border);">
+                    <div style="background:${color};height:100%;width:${pct}%;border-radius:4px;transition:width 0.5s ease;"></div>
+                </div>
+            </div>`;
+        }
+        const models = data.models || [];
+        const modelsHtml = models.length ? `
+            <h3 style="margin-top:20px;margin-bottom:12px;font-size:14px;">Per-Model Spend</h3>
+            <div style="display:grid;gap:6px;">
+                ${models.map(m => `
+                    <div style="display:grid;grid-template-columns:2fr 1fr 1fr 1fr;gap:8px;padding:10px 14px;background:var(--surface2);border-radius:8px;font-size:12px;">
+                        <div style="font-weight:600;">${m.model}</div>
+                        <div>${fmtMoney(m.cost)}</div>
+                        <div style="color:var(--text2);">${m.requests} req</div>
+                        <div style="color:var(--text2);">${((m.prompt_tokens || 0) + (m.completion_tokens || 0)).toLocaleString()} tok</div>
+                    </div>
+                `).join('')}
+            </div>
+        ` : '<div style="color:var(--text2);font-size:12px;text-align:center;padding:16px;">No per-model spend recorded yet</div>';
+        container.innerHTML = `
+            <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-bottom:16px;">
+                <div style="background:var(--surface2);border-radius:10px;padding:14px 20px;min-width:140px;text-align:center;">
+                    <div style="font-size:22px;font-weight:700;color:var(--accent);">${fmtMoney(data.total_cost)}</div>
+                    <div style="font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:0.5px;margin-top:4px;">Estimated Total</div>
+                </div>
+                <div style="flex:1;min-width:260px;">
+                    ${barBlock('5-hour window', data.five_hour, 'var(--green)')}
+                    ${barBlock('7-day window', data.weekly, 'var(--orange)')}
+                    ${barBlock('30-day window', data.monthly, 'var(--red)')}
+                </div>
+            </div>
+            ${modelsHtml}
+        `;
+    }).catch(e => {
+        const container = document.getElementById('go-usage-content');
+        container.innerHTML = '<div style="text-align:center;padding:40px 20px;color:var(--text2);"><div style="font-size:40px;margin-bottom:12px;">⚠️</div><div style="font-size:14px;font-weight:600;margin-bottom:8px;">Failed to load Go usage</div><div style="font-size:12px;">' + (e.message || 'Unknown error') + '</div></div>';
+    });
+}
+
+function loadCacheAnalytics() {
+    fetch('/dashboard/api/analytics/cache').then(r => r.json()).then(data => {
+        const container = document.getElementById('cache-analytics-content');
+        if (!data || !data.configured) {
+            container.innerHTML = '<div style="text-align:center;padding:40px 20px;color:var(--text2);"><div style="font-size:40px;margin-bottom:12px;">📭</div><div style="font-size:14px;font-weight:600;margin-bottom:8px;">OpenCode Go Not Configured</div><div style="font-size:12px;">No cache data available. Configure OpenCode Go provider to see cache analytics.</div></div>';
+            return;
+        }
+        const hitTokens = data.total_cache_hit_tokens || 0;
+        const missTokens = data.total_cache_miss_tokens || 0;
+        const total = data.total_cached_tokens || 0;
+        const hitRate = data.hit_rate || 0;
+        container.innerHTML = `
+            <div class="metric-grid" style="grid-template-columns:repeat(3,1fr);margin-bottom:16px;">
+                <div class="metric"><div class="metric-val" style="color:var(--green)">${hitRate}%</div><div class="metric-label">Cache Hit Rate</div></div>
+                <div class="metric"><div class="metric-val">${hitTokens.toLocaleString()}</div><div class="metric-label">Cache Hit Tokens</div></div>
+                <div class="metric"><div class="metric-val">${missTokens.toLocaleString()}</div><div class="metric-label">Cache Miss Tokens</div></div>
+            </div>
+            <div class="metric-grid" style="grid-template-columns:repeat(2,1fr);margin-bottom:16px;">
+                <div class="metric"><div class="metric-val">${total.toLocaleString()}</div><div class="metric-label">Total Cached Tokens</div></div>
+                <div class="metric"><div class="metric-val">${(data.total_requests || 0).toLocaleString()}</div><div class="metric-label">Total Requests</div></div>
+            </div>
+            <h3 style="margin-top:20px;margin-bottom:12px;font-size:14px;">Per-Model Cache Breakdown</h3>
+            <div id="cache-model-rows"></div>
+        `;
+        // Model breakdown
+        const models = data.models || [];
+        const modelRowsEl = document.getElementById('cache-model-rows');
+        if (models.length === 0) {
+            modelRowsEl.innerHTML = '<div style="color:var(--text2);font-size:12px;text-align:center;padding:16px;">No per-model data available</div>';
+        } else {
+            modelRowsEl.innerHTML = models.map(m => {
+                const mHit = m.cache_hit_tokens || 0;
+                const mMiss = m.cache_miss_tokens || 0;
+                const mRate = m.hit_rate || 0;
+                return `
+                    <div style="display:grid;grid-template-columns:2fr 1fr 1fr 1fr;gap:8px;padding:10px 14px;background:var(--surface2);border-radius:8px;margin-bottom:6px;font-size:12px;">
+                        <div style="font-weight:600;">${m.model}</div>
+                        <div style="color:var(--green);">${mRate}% hits</div>
+                        <div>${mHit.toLocaleString()} hit</div>
+                        <div>${mMiss.toLocaleString()} miss</div>
+                    </div>
+                `;
+            }).join('');
+        }
+    }).catch(e => {
+        const container = document.getElementById('cache-analytics-content');
+        container.innerHTML = '<div style="text-align:center;padding:40px 20px;color:var(--text2);"><div style="font-size:40px;margin-bottom:12px;">📭</div><div style="font-size:14px;font-weight:600;margin-bottom:8px;">OpenCode Go Not Configured</div><div style="font-size:12px;">No cache data available. Configure OpenCode Go provider to see cache analytics.</div></div>';
     });
 }
 
@@ -2254,9 +2453,42 @@ function _getCapabilities(modelName) {
 
 function _getMultiplier(modelName) {
     const base = modelName.split(':')[0];
+    const isGo = modelName.startsWith('opencode-go/');
+    const goBase = isGo ? modelName.replace('opencode-go/', '') : base;
+
+    // ── Go-specific multipliers ──
+    if (isGo) {
+        const goMults = {
+            'glm-5.1': 2.12,
+            'kimi-k2.6': 1.37,
+            'qwen3.7-max': 1.17,
+            'kimi-k2.7-code': 0.75,
+            'mimo-v2.5-pro': 0.63,
+            'deepseek-v4-pro': 0.54,
+            'minimax-m3': 0.46,
+            'qwen3.7-plus': 0.43,
+            'mimo-v2.5': 0.07,
+            'deepseek-v4-flash': 0.06,
+            // Inferred for remaining Go models
+            'glm-5': 2.12,
+            'kimi-k2.5': 1.37,
+            'minimax-m2.5': 0.50,
+            'minimax-m2.7': 0.50,
+            'qwen3.6-plus': 0.43,
+            'qwen3.5-plus': 0.43,
+            'mimo-v2-pro': 0.63,
+            'mimo-v2-omni': 0.63,
+            'mimo-v2.5': 0.07,
+            'hy3-preview': 0.75,
+        };
+        if (goMults[goBase]) return goMults[goBase];
+    }
+
+    // ── Ollama multipliers ──
     const mults = {
         'nemotron-3-nano': 0.25, 'ministral-3': 0.25, 'rnj-1': 0.25,
         'gemma4': 0.50, 'gemma3': 0.50, 'minimax-m2.7': 0.50, 'minimax-m2.5': 0.50, 'minimax-m2.1': 0.50, 'minimax-m2': 0.50,
+        'minimax-m3': 0.75,
         'gpt-oss': 0.50, 'devstral-small-2': 0.50, 'nemotron-3-super': 0.50, 'gemini-3-flash-preview': 0.50,
         'glm-4.7': 0.50, 'glm-4.6': 0.50,
         'qwen3-vl': 0.75, 'qwen3-coder': 0.75, 'qwen3-next': 0.75, 'devstral-2': 0.75,
@@ -2469,89 +2701,129 @@ async function toggleAutostart() {
     }
 }
 
-// ─── Cache Tab Functions ───
+// ── Provider Strategy ──
 
-async function loadCacheStats() {
-    try {
-        const resp = await fetch('/v1/cache/stats');
-        const data = await resp.json();
-
-        document.getElementById('cache-beta').checked = data.beta_mode;
-        document.getElementById('cs-exact-entries').textContent = data.exact_cache_entries;
-        document.getElementById('cs-prefix-entries').textContent = data.prefix_cache_entries;
-        document.getElementById('cs-exact-hits').textContent = data.stats.exact_hits;
-        document.getElementById('cs-prefix-hits').textContent = data.stats.prefix_hits;
-        document.getElementById('cs-misses').textContent = data.stats.misses;
-        document.getElementById('cs-dedup-saves').textContent = data.stats.dedup_saves;
-        document.getElementById('cs-evictions').textContent = data.stats.evictions;
-        document.getElementById('cs-in-flight').textContent = data.in_flight_requests;
-        document.getElementById('cache-hit-rate').textContent = data.stats.hit_rate_pct + '% hits';
-
-        // Populate config fields
-        if (data.config) {
-            document.getElementById('cfg-exact-ttl').value = data.config.exact_cache_ttl;
-            document.getElementById('cfg-prefix-ttl').value = data.config.session_prefix_ttl;
-            document.getElementById('cfg-max-entries').value = data.config.max_entries;
-            document.getElementById('cfg-min-chars').value = data.config.min_prompt_chars;
-            document.getElementById('cfg-exact-enabled').checked = data.config.exact_cache_enabled;
-            document.getElementById('cfg-prefix-enabled').checked = data.config.session_prefix_enabled;
-            document.getElementById('cfg-dedup-enabled').checked = data.config.dedup_enabled;
+function loadProviderStrategy() {
+    fetch('/dashboard/api/config/provider-priority').then(r => r.json()).then(data => {
+        renderProviderPriority(data);
+        // Also keep legacy select in sync when a 1:1 mapping exists
+        const priority = data.provider_priority || [];
+        const sel = document.getElementById('provider-strategy');
+        if (sel) {
+            if (priority.length === 2 && priority[0] === 'ollama' && priority[1] === 'opencode_go') {
+                sel.value = 'ollama';
+            } else if (priority.length === 2 && priority[0] === 'opencode_go' && priority[1] === 'ollama') {
+                sel.value = 'opencode_go';
+            }
         }
-    } catch (e) {
-        console.error('Cache stats load failed:', e);
-    }
+    }).catch(() => {});
 }
 
-async function toggleBetaMode() {
-    const enabled = document.getElementById('cache-beta').checked;
-    try {
-        const resp = await fetch('/v1/config/cache', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({beta_mode: enabled})
-        });
-        const data = await resp.json();
-        document.getElementById('cache-save-status').textContent = enabled ? '✓ Beta mode enabled' : '✓ Beta mode disabled';
-        setTimeout(() => { document.getElementById('cache-save-status').textContent = ''; }, 3000);
-        loadCacheStats();
-    } catch (e) {
-        document.getElementById('cache-save-status').textContent = '✗ Failed: ' + e.message;
-    }
-}
-
-async function saveCacheConfig() {
-    const config = {
-        exact_cache_ttl: parseInt(document.getElementById('cfg-exact-ttl').value),
-        session_prefix_ttl: parseInt(document.getElementById('cfg-prefix-ttl').value),
-        max_entries: parseInt(document.getElementById('cfg-max-entries').value),
-        min_prompt_chars: parseInt(document.getElementById('cfg-min-chars').value),
-        exact_cache_enabled: document.getElementById('cfg-exact-enabled').checked,
-        session_prefix_enabled: document.getElementById('cfg-prefix-enabled').checked,
-        dedup_enabled: document.getElementById('cfg-dedup-enabled').checked,
+function renderProviderPriority(data) {
+    const list = document.getElementById('provider-priority-list');
+    if (!list) return;
+    const priority = data.provider_priority || [];
+    const configured = data.configured || {};
+    const labels = {
+        ollama: 'Ollama Cloud',
+        opencode_go: 'OpenCode Go',
+        fallback: 'Fallback OpenAI Provider',
     };
-    try {
-        const resp = await fetch('/v1/config/cache', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify(config)
-        });
-        const data = await resp.json();
-        document.getElementById('cache-save-status').textContent = '✓ Saved';
-        setTimeout(() => { document.getElementById('cache-save-status').textContent = ''; }, 3000);
-        loadCacheStats();
-    } catch (e) {
-        document.getElementById('cache-save-status').textContent = '✗ Failed: ' + e.message;
-    }
+    const icons = {
+        ollama: '🦙',
+        opencode_go: '⚡',
+        fallback: '🔁',
+    };
+    list.innerHTML = '';
+    priority.forEach((provider, index) => {
+        const li = document.createElement('li');
+        const isConfigured = configured[provider];
+        li.draggable = isConfigured;
+        if (!isConfigured) li.classList.add('disabled');
+        li.dataset.provider = provider;
+        li.innerHTML = `
+            <span class="drag-handle">☰</span>
+            <span class="emoji">${icons[provider] || '🔹'}</span>
+            <span class="provider-label">${labels[provider] || provider}</span>
+            <span class="provider-status ${isConfigured ? 'on' : 'off'}">${isConfigured ? 'ready' : 'not configured'}</span>
+        `;
+        list.appendChild(li);
+    });
+    initDragAndDrop(list, (newOrder) => saveProviderPriority(newOrder));
 }
 
-async function clearCache() {
-    if (!confirm('Clear all cached responses?')) return;
-    try {
-        await fetch('/v1/cache/clear', {method: 'POST'});
-        loadCacheStats();
-    } catch (e) {
-        alert('Failed to clear cache: ' + e.message);
-    }
+function initDragAndDrop(listEl, onReorder) {
+    let dragging = null;
+    listEl.querySelectorAll('li').forEach(item => {
+        if (item.classList.contains('disabled')) return;
+        item.addEventListener('dragstart', () => {
+            dragging = item;
+            item.classList.add('dragging');
+        });
+        item.addEventListener('dragend', () => {
+            if (dragging) dragging.classList.remove('dragging');
+            dragging = null;
+            const order = Array.from(listEl.children).map(li => li.dataset.provider);
+            onReorder(order);
+        });
+        item.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            if (!dragging || dragging === item) return;
+            const rect = item.getBoundingClientRect();
+            const offset = e.clientY - rect.top - rect.height / 2;
+            if (offset < 0) listEl.insertBefore(dragging, item);
+            else listEl.insertBefore(dragging, item.nextSibling);
+        });
+    });
+}
+
+function saveProviderPriority(order) {
+    const statusEl = document.getElementById('provider-priority-status');
+    fetch('/dashboard/api/config/provider-priority', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({provider_priority: order})
+    }).then(r => r.json()).then(data => {
+        if (data.provider_priority) {
+            statusEl.textContent = '✓ Priority saved: ' + data.provider_priority.join(' → ');
+            statusEl.style.color = '#4ade80';
+        } else {
+            statusEl.textContent = '✗ Save failed';
+            statusEl.style.color = '#f87171';
+        }
+        setTimeout(() => { statusEl.textContent = ''; }, 3000);
+    }).catch(e => {
+        statusEl.textContent = '✗ Failed: ' + e.message;
+        statusEl.style.color = '#f87171';
+    });
+}
+
+function saveProviderStrategy() {
+    const strategy = document.getElementById('provider-strategy').value;
+    const statusEl = document.getElementById('provider-strategy-status');
+    fetch('/dashboard/api/config/strategy', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({strategy: strategy})
+    }).then(r => r.json()).then(data => {
+        if (data.provider_priority) {
+            fetch('/dashboard/api/config/provider-priority')
+                .then(r => r.json())
+                .then(renderProviderPriority)
+                .catch(() => {});
+        }
+        if (data.strategy) {
+            statusEl.textContent = '✓ Strategy saved: ' + data.strategy;
+            statusEl.style.color = '#4ade80';
+        } else {
+            statusEl.textContent = '✓ Strategy updated';
+            statusEl.style.color = '#4ade80';
+        }
+        setTimeout(() => { statusEl.textContent = ''; }, 3000);
+    }).catch(e => {
+        statusEl.textContent = '✗ Failed: ' + e.message;
+        statusEl.style.color = '#f87171';
+    });
 }
 
 // ── Update Functions ──

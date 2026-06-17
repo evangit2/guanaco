@@ -1,4 +1,4 @@
-"""guanaco — maximize your Ollama Cloud subscription."""
+"""guanaco — multi-provider LLM router."""
 
 # Single source of truth for version.
 # importlib.metadata can return stale values after git-pull without re-pip-install,
