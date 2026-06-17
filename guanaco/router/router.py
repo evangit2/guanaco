@@ -499,7 +499,7 @@ def create_router(client, analytics=None, config=None, account_pool=None) -> API
         'opencode-go/...'), use that provider's account directly. Otherwise fall
         back to provider_priority selection.
         """
-        explicit_provider = provider_for_model(model) if model else None
+        explicit_provider = provider_for_model(model, provider_priority=(_config.router.provider_priority if _config else None)) if model else None
         if explicit_provider not in ("ollama", "opencode_go", "umans"):
             explicit_provider = None
 
