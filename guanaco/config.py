@@ -315,7 +315,7 @@ def load_config(path: Optional[Path] = None) -> AppConfig:
         if acc.name == "ollama":
             acc.provider = "ollama"
         else:
-            inferred = infer_provider_from_key(acc.api_key, acc.provider)
+            inferred = infer_provider_from_key(acc.api_key)
             if inferred != acc.provider:
                 acc.provider = inferred
     if not any(a.name == "ollama" for a in _config.ollama_accounts):
