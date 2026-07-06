@@ -380,7 +380,15 @@ class UmansClient:
                             final_tokens = completion_tokens or (estimated_content_tokens + estimated_reasoning_tokens)
                             elapsed = time.time() - start
                             ttft = (first_token_time - start) if first_token_time else None
-                            generation_time = (elapsed - ttft) if ttft and elapsed > ttft else elapsed
+                            # Guard against providers that batch the whole response into one
+                            # chunk (or set first_token_time very late). If generation_time
+                            # collapses to near zero, fall back to total elapsed so TPS doesn't
+                            # explode into hundreds of thousands.
+                            _MIN_GENERATION_TIME = 0.05
+                            if ttft is not None and (elapsed - ttft) > _MIN_GENERATION_TIME:
+                                generation_time = elapsed - ttft
+                            else:
+                                generation_time = elapsed
 
                             metrics = {
                                 "eval_count": final_tokens,
@@ -390,7 +398,9 @@ class UmansClient:
                                 "ttft_seconds": round(ttft, 3) if ttft else None,
                             }
                             if final_tokens and generation_time > 0:
-                                metrics["tps"] = round(final_tokens / generation_time, 2)
+                                # Realistic ceiling: no provider serves >1000 completion tokens/sec
+                                raw_tps = final_tokens / generation_time
+                                metrics["tps"] = round(min(raw_tps, 1000.0), 2)
                             usage_chunk = {
                                 "id": "chatcmpl-final",
                                 "object": "chat.completion.chunk",
@@ -434,7 +444,12 @@ class UmansClient:
                 final_tokens = completion_tokens or (estimated_content_tokens + estimated_reasoning_tokens)
                 elapsed = time.time() - start
                 ttft = (first_token_time - start) if first_token_time else None
-                generation_time = (elapsed - ttft) if ttft and elapsed > ttft else elapsed
+                _MIN_GENERATION_TIME = 0.05
+                if ttft is not None and (elapsed - ttft) > _MIN_GENERATION_TIME:
+                    generation_time = elapsed - ttft
+                else:
+                    generation_time = elapsed
+
                 metrics = {
                     "eval_count": final_tokens,
                     "prompt_eval_count": prompt_tokens,
@@ -443,7 +458,8 @@ class UmansClient:
                     "ttft_seconds": round(ttft, 3) if ttft else None,
                 }
                 if final_tokens and generation_time > 0:
-                    metrics["tps"] = round(final_tokens / generation_time, 2)
+                    raw_tps = final_tokens / generation_time
+                    metrics["tps"] = round(min(raw_tps, 1000.0), 2)
                 usage_chunk = {
                     "id": "chatcmpl-final",
                     "object": "chat.completion.chunk",
