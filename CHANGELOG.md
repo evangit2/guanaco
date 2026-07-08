@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.7.1] - 2026-07-08
+
+### Added
+- **Cline Pass provider.** Full integration as a fourth built-in provider alongside Ollama Cloud, OpenCode Go, and UMANS. Cline Pass is a $9.99/mo subscription offering 10 open-weight models (GLM-5.2, Kimi K2.7 Code, DeepSeek V4 Pro/Flash, MiMo v2.5, MiniMax M3, Qwen3.7 Max/Plus, Kimi K2.6).
+  - New `ClinePassClient` (`guanaco/cline_client.py`) with SSE streaming, reasoning delta support, static model fallback, and `test_key()`.
+  - `sk_` prefix detection in `infer_provider_from_key()` (distinct from OpenCode Go's `sk-` prefix).
+  - `cline/` model prefix routing for explicit provider selection.
+  - Config migration adds `cline` to `provider_priority` for existing installs.
+  - Install script: Cline Pass as option 4 with API key validation against `api.cline.bot`.
+  - Dashboard: Accounts tab "Add Account" dropdown now shows all four providers (previously missing UMANS and Cline Pass).
+  - Provider priority drag-and-drop list shows all four providers with labels and icons.
+  - `/v1/models` endpoint renders `cline/` prefixed models with `owned_by: "cline"`.
+  - 22 new tests covering key inference, model routing, payload normalization, config migration, and account pool handling.
+
+## [0.7.0] - 2026-07-08
+
+### Added
+- **UMANS provider integration.** Full UMANS subscription support as a third built-in provider.
+- **Provider priority system.** Drag-and-drop provider ordering in the dashboard with automatic fallback.
+- **Multi-provider account management.** Per-provider account pools with usage-aware rotation.
+
 ## [0.6.3] - 2026-06-18
 
 ### Fixed
