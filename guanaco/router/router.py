@@ -411,6 +411,31 @@ def create_router(client, analytics=None, config=None, account_pool=None) -> API
                         "capabilities": caps,
                         "details": {"family": caps.get("family", "")},
                     })
+                elif provider_name == "cline":
+                    name = m.get("id", m.get("name", m.get("model", "")))
+                    if not name:
+                        continue
+                    prefixed = f"cline/{name}"
+                    if prefixed in seen_ids:
+                        continue
+                    seen_ids.add(prefixed)
+                    caps = {}
+                    if hasattr(provider_client, "_get_model_capabilities"):
+                        try:
+                            caps = provider_client._get_model_capabilities(name)
+                        except Exception:
+                            pass
+                    data.append({
+                        "id": prefixed,
+                        "object": "model",
+                        "created": int(time.time()),
+                        "owned_by": "cline",
+                        "permission": [],
+                        "root": name,
+                        "parent": None,
+                        "capabilities": caps,
+                        "details": {"family": caps.get("family", "")},
+                    })
 
         # ── Fallback provider models if configured ──
         if _config and _config.fallback.enabled and _config.fallback.default_model:

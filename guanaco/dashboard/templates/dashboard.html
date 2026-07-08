@@ -777,8 +777,10 @@
                 <div style="flex:1;min-width:120px;">
                     <label style="font-size:12px;color:var(--text2);display:block;margin-bottom:4px;">Provider</label>
                     <select id="new-account-provider" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg2);color:var(--text);font-size:14px;">
-                        <option value="ollama">LLM Provider</option>
+                        <option value="ollama">Ollama Cloud</option>
                         <option value="opencode_go">OpenCode Go</option>
+                        <option value="umans">UMANS</option>
+                        <option value="cline">Cline Pass</option>
                     </select>
                 </div>
                 <div style="flex:1;min-width:140px;">
@@ -2770,11 +2772,15 @@ function renderProviderPriority(data) {
     const labels = {
         ollama: 'Ollama Cloud',
         opencode_go: 'OpenCode Go',
+        umans: 'UMANS',
+        cline: 'Cline Pass',
         fallback: 'Fallback OpenAI Provider',
     };
     const icons = {
         ollama: '🦙',
         opencode_go: '⚡',
+        umans: '🧠',
+        cline: '🎯',
         fallback: '🔁',
     };
     list.innerHTML = '';

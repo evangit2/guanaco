@@ -44,7 +44,7 @@ class MultiProviderChatClient:
             client = self._clients.get(prefix)
         if client is None:
             # Provider requested but not configured — fall back to whatever is available.
-            for fallback_provider in ("ollama", "opencode_go", "umans"):
+            for fallback_provider in ("ollama", "opencode_go", "umans", "cline"):
                 client = self._clients.get(fallback_provider)
                 if client is not None:
                     break
@@ -66,10 +66,12 @@ class MultiProviderChatClient:
             payload["model"] = model[len("opencode-go/"):]
         if client is self._clients.get("umans") and (model.startswith("umans/") or model.lower().startswith("umans-")):
             payload["model"] = model
+        if client is self._clients.get("cline") and model.lower().startswith("cline/"):
+            payload["model"] = model[len("cline/"):] if model.startswith("cline/") else model
         # Strip custom provider prefix (e.g. "openrouter/anthropic/..." → "anthropic/...")
         if "/" in model:
             prefix = model.split("/")[0]
-            if prefix in self._clients and prefix not in ("ollama", "opencode-go", "umans"):
+            if prefix in self._clients and prefix not in ("ollama", "opencode-go", "umans", "cline"):
                 # Only strip the first prefix segment
                 payload["model"] = model[len(prefix)+1:]
         return await client.chat_completion(payload, api_key=api_key)
@@ -84,9 +86,11 @@ class MultiProviderChatClient:
             payload["model"] = model[len("opencode-go/"):]
         if client is self._clients.get("umans") and (model.startswith("umans/") or model.lower().startswith("umans-")):
             payload["model"] = model
+        if client is self._clients.get("cline") and model.lower().startswith("cline/"):
+            payload["model"] = model[len("cline/"):] if model.startswith("cline/") else model
         if "/" in model:
             prefix = model.split("/")[0]
-            if prefix in self._clients and prefix not in ("ollama", "opencode-go", "umans"):
+            if prefix in self._clients and prefix not in ("ollama", "opencode-go", "umans", "cline"):
                 payload["model"] = model[len(prefix)+1:]
         async for chunk in client.chat_completion_stream(payload, api_key=api_key):
             yield chunk
@@ -143,6 +147,8 @@ class MultiProviderChatClient:
                     display_id = f"opencode-go/{raw_id}"
                 elif provider == "umans":
                     display_id = f"umans/{raw_id}"
+                elif provider == "cline":
+                    display_id = f"cline/{raw_id}"
                 elif provider not in ("ollama",):
                     # Custom providers get their name as prefix
                     display_id = f"{provider}/{raw_id}"

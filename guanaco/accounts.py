@@ -17,6 +17,7 @@ PREMIUM_MODELS = {"kimi-k2.6", "glm-5.1"}
 OPENCODE_GO_PREFIXES = ("opencode-go/",)
 OLLAMA_PREFIXES = ("ollama/",)
 UMANS_PREFIXES = ("umans/", "umans-")
+CLINE_PREFIXES = ("cline/",)
 
 # Known unprefixed OpenCode Go model names that should default to the Go provider.
 KNOWN_GO_MODELS = {
@@ -52,11 +53,19 @@ KNOWN_UMANS_MODELS = {
     "qwen3-7-max", "qwen3-7-plus", "qwen3-6-plus",
 }
 
+# Known Cline Pass model names that should default to the Cline provider.
+KNOWN_CLINE_MODELS = {
+    "glm-5.2", "kimi-k2.7-code", "kimi-k2.6",
+    "deepseek-v4-pro", "deepseek-v4-flash",
+    "mimo-v2.5", "mimo-v2.5-pro",
+    "minimax-m3", "qwen3.7-max", "qwen3.7-plus",
+}
+
 
 def _normalize_model_for_provider(model: str) -> str:
     """Return a canonical lowercased identifier for provider detection."""
     m = model.lower().strip()
-    for prefix in OPENCODE_GO_PREFIXES + OLLAMA_PREFIXES + UMANS_PREFIXES:
+    for prefix in OPENCODE_GO_PREFIXES + OLLAMA_PREFIXES + UMANS_PREFIXES + CLINE_PREFIXES:
         if m.startswith(prefix):
             m = m[len(prefix):]
     return m.split(":")[0].replace("_", "-")
@@ -79,17 +88,22 @@ def provider_for_model(model: str, default_provider: str = "ollama", provider_pr
     for prefix in UMANS_PREFIXES:
         if m.startswith(prefix):
             return "umans"
+    for prefix in CLINE_PREFIXES:
+        if m.startswith(prefix):
+            return "cline"
     canon = _normalize_model_for_provider(model)
     if canon in KNOWN_GO_MODELS:
         return "opencode_go"
     if canon in KNOWN_UMANS_MODELS:
         return "umans"
+    if canon in KNOWN_CLINE_MODELS:
+        return "cline"
     if canon in KNOWN_OLLAMA_MODELS:
         return "ollama"
     # If provider_priority is set, prefer the first configured provider
     if provider_priority:
         for p in provider_priority:
-            if p in ("ollama", "opencode_go", "umans"):
+            if p in ("ollama", "opencode_go", "umans", "cline"):
                 return p
     return default_provider
 
@@ -274,4 +288,4 @@ class AccountPool:
 
     def is_reserved_name(self, name: str) -> bool:
         """Check if a name is reserved (case-insensitive)."""
-        return name.lower() in ("ollama", "opencode_go", "umans", "primary", "default")
+        return name.lower() in ("ollama", "opencode_go", "umans", "cline", "primary", "default")

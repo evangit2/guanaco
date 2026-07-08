@@ -53,7 +53,7 @@ class RouterConfig(BaseModel):
     # Ordered list of providers to try for unprefixed models. Earlier entries are preferred.
     # Built-in providers: "ollama", "opencode_go", "umans". A configured fallback OpenAI-compatible
     # provider can be included as "fallback".
-    provider_priority: list[str] = Field(default_factory=lambda: ["ollama", "opencode_go", "umans"])
+    provider_priority: list[str] = Field(default_factory=lambda: ["ollama", "opencode_go", "umans", "cline"])
 
 
 class SearchConfig(BaseModel):
@@ -234,6 +234,20 @@ class UmansConfig(BaseModel):
     max_concurrent_streams: int = 0
 
 
+class ClineConfig(BaseModel):
+    """Cline Pass subscription provider settings.
+
+    Cline Pass is a flat-rate monthly subscription ($9.99/mo) providing
+    OpenAI-compatible access to 10 open-weight models via Cline's gateway.
+    Zero per-token cost — subscription-based.
+    """
+    enabled: bool = False
+    # Override base URL for testing (default: https://api.cline.bot/api/v1)
+    base_url: str = ""
+    # Max concurrent streams (0 = unlimited)
+    max_concurrent_streams: int = 0
+
+
 # Backward-compatible alias
 OllamaAccount = ProviderAccount
 
@@ -243,11 +257,14 @@ def infer_provider_from_key(api_key: str, provider_hint: Optional[str] = None) -
 
     OpenCode Go keys start with ``sk-``; Ollama keys do not.
     UMANS keys are long hex-ish strings (no uniform prefix, but too long for Go/Ollama).
+    Cline Pass keys start with ``sk_`` (underscore, not hyphen).
     If ``provider_hint`` is provided and valid, it is respected.
     """
     key = api_key.strip()
-    if provider_hint in ("ollama", "opencode_go", "umans"):
+    if provider_hint in ("ollama", "opencode_go", "umans", "cline"):
         return provider_hint
+    if key.startswith("sk_"):
+        return "cline"
     if key.lower().startswith("sk-"):
         return "opencode_go"
     if len(key) >= 64 and not key.startswith("ollama"):
@@ -269,6 +286,7 @@ class AppConfig(BaseModel):
     search: SearchConfig = Field(default_factory=SearchConfig)
     history: HistoryConfig = Field(default_factory=HistoryConfig)
     umans: UmansConfig = Field(default_factory=UmansConfig)
+    cline: ClineConfig = Field(default_factory=ClineConfig)
     custom_providers: list[CustomProviderConfig] = Field(default_factory=list)
 
     @property
@@ -363,6 +381,15 @@ def load_config(path: Optional[Path] = None) -> AppConfig:
     # v0.5.6+: ensure umans config exists for migration
     if "umans" not in data:
         data["umans"] = {}
+
+    # v0.7.1+: ensure cline config exists for migration
+    if "cline" not in data:
+        data["cline"] = {}
+
+    # v0.7.1+: ensure provider_priority includes "cline" if missing
+    if "provider_priority" in router and isinstance(router["provider_priority"], list):
+        if "cline" not in router["provider_priority"]:
+            router["provider_priority"].append("cline")
 
     # v0.6.0+: visibility setting controls host binding
     if "visibility" not in router:
