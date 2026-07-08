@@ -1,4 +1,10 @@
-"""OpenAI-compatible and Anthropic-compatible LLM router with usage tracking, analytics, and fallback."""
+"""OpenAI-compatible and Anthropic-compatible LLM router with usage tracking, analytics, and fallback.
+
+This module is the main entry point — ``create_router()`` builds all FastAPI
+route handlers. Models, helpers, and fallback logic have been extracted into
+sub-modules (``models.py``, ``helpers.py``, ``fallback.py``) and re-exported
+here for backward compatibility.
+"""
 
 from __future__ import annotations
 
@@ -20,381 +26,47 @@ from guanaco.cache import CacheEngine
 from guanaco.accounts import provider_for_model
 from guanaco.concurrency import OllamaConcurrencyLimiter
 
+# Re-export extracted modules for backward compatibility
+from guanaco.router.models import (
+    ChatMessage,
+    ChatCompletionRequest,
+    AnthropicMessage,
+    AnthropicRequest,
+)
+from guanaco.router.helpers import (
+    _describe_error,
+    _is_empty_non_streaming_response,
+    _ensure_content_field,
+    _has_vision_content,
+    _convert_image_urls_to_base64,
+    _resolve_model,
+    _map_model_to_fallback,
+    _is_quota_full,
+    _refresh_usage_background,
+    _is_empty_stream_buffer,
+    _extract_sse_content,
+    _accumulate_history_output,
+    _collect_stream_chunks,
+    _openai_to_anthropic_stop,
+    _build_history_kwargs,
+    MAX_EMPTY_RETRIES,
+)
+from guanaco.router.fallback import (
+    _ollama_chat_with_primary_timeout,
+    _call_fallback_provider,
+)
+
 log = logging.getLogger("guanaco.router")
 
 # In-memory TTL cache for /v1/models to avoid hammering upstream provider APIs.
 _MODEL_LIST_CACHE_TTL_SECONDS = 60
 _model_list_cache: dict[str, Any] = {"data": None, "cached_at": 0.0}
 
-
-def _describe_error(exc: Exception) -> str:
-    """Return a human-readable description for an exception, handling httpx
-    timeout/connect errors whose str() is often empty or unhelpful."""
-    if isinstance(exc, httpx.ReadTimeout):
-        return "ReadTimeout: server did not respond within timeout"
-    if isinstance(exc, httpx.ConnectTimeout):
-        return "ConnectTimeout: could not establish connection within timeout"
-    if isinstance(exc, httpx.WriteTimeout):
-        return "WriteTimeout: could not send data within timeout"
-    if isinstance(exc, httpx.PoolTimeout):
-        return "PoolTimeout: connection pool exhausted"
-    if isinstance(exc, httpx.ConnectError):
-        return f"ConnectError: {exc}"
-    if isinstance(exc, httpx.HTTPStatusError):
-        try:
-            body = exc.response.text[:200]
-        except Exception:
-            body = "(response body not available)"
-        return f"HTTP {exc.response.status_code}: {body}"
-    msg = str(exc)
-    if msg:
-        return msg
-    # Fallback: use the exception class name if str() is empty
-    return f"{type(exc).__name__}: (no message)"
-
-
-async def _ollama_chat_with_primary_timeout(client, payload, fallback_config=None, limiter=None, api_key=None, account_name=None, account_pool=None):
-    """Call Ollama Cloud chat completion with a primary timeout and optional concurrency limit.
-
-    When fallback is configured, we use a shorter primary_timeout so that
-    slow/unresponsive Ollama responses trigger fallback quickly instead of
-    hanging for the full 120s client timeout.
-
-    Args:
-        client: OllamaClient instance
-        payload: Request payload
-        fallback_config: FallbackProviderConfig for timeout settings
-        limiter: Optional OllamaConcurrencyLimiter for concurrency control and 429 retry
-        api_key: Optional API key override for multi-account rotation
-        account_name: Optional account name for analytics logging
-        account_pool: Optional AccountPool for marking 429s against specific accounts
-    """
-    async def _do_call():
-        """Execute the actual Ollama call with 429 retry logic."""
-        current_key = api_key
-        current_account = account_name
-        while True:
-            try:
-                return await client.chat_completion(payload, api_key=current_key)
-            except Exception as e:
-                # Only handle 429s when a pool with multiple accounts is available
-                should_failover = (
-                    isinstance(e, httpx.HTTPStatusError)
-                    and e.response.status_code == 429
-                    and account_pool is not None
-                    and len(account_pool.accounts) > 1
-                )
-                if should_failover:
-                    if current_account:
-                        account_pool.mark_429(current_account)
-                    next_acc = account_pool.next_account_for_failover(current_account or "ollama", provider=provider_for_model(payload.get("model")), model=payload.get("model"))
-                    if next_acc is None:
-                        # All accounts exhausted — preserve original error semantics
-                        raise
-                    current_key = next_acc.api_key
-                    current_account = next_acc.name
-                    log.info("429 failover: trying account '%s'", current_account)
-                    continue
-                # Let the concurrency limiter handle its own retry/backoff only when no failover happened
-                if limiter and limiter.should_retry_429(e):
-                    await limiter.backoff_and_retry(0)
-                    continue
-                raise
-
-    if fallback_config and fallback_config.enabled and fallback_config.primary_timeout:
-        try:
-            return await asyncio.wait_for(
-                _do_call(),
-                timeout=fallback_config.primary_timeout,
-            )
-        except asyncio.TimeoutError:
-            raise httpx.ReadTimeout(
-                f"Ollama did not respond within {fallback_config.primary_timeout}s primary timeout"
-            )
-    return await _do_call()
-
 # Module-level reference to the active concurrency limiter (for dashboard/status API)
-_concurrency_limiter_instance: OllamaConcurrencyLimiter = None
+_concurrency_limiter_instance: Optional[OllamaConcurrencyLimiter] = None
 
 def get_concurrency_limiter() -> Optional[OllamaConcurrencyLimiter]:
     return _concurrency_limiter_instance
-
-# ── Empty Response Retry ──
-MAX_EMPTY_RETRIES = 1  # How many times to retry on empty responses
-
-
-def _is_empty_non_streaming_response(resp: dict) -> bool:
-    """Check if a non-streaming chat completion response has no content."""
-    choices = resp.get("choices", [])
-    if not choices:
-        return True
-    for choice in choices:
-        msg = choice.get("message", {})
-        content = msg.get("content")
-        if content and str(content).strip():
-            return False
-        # Some models (GLM) put output in reasoning_content while content is empty
-        reasoning = msg.get("reasoning_content")
-        if reasoning and str(reasoning).strip():
-            return False
-        # Check for tool_calls — those count as non-empty
-        if msg.get("tool_calls"):
-            return False
-    return True
-
-
-def _ensure_content_field(resp: dict) -> dict:
-    """Copy reasoning_content into content for clients that expect it.
-
-    Providers such as UMANS and OpenCode Go sometimes leave content empty and
-    populate reasoning_content or reasoning. We surface that as content so the
-    response is usable with standard OpenAI clients.
-    """
-    for choice in resp.get("choices", []):
-        msg = choice.get("message") if isinstance(choice, dict) else None
-        if not isinstance(msg, dict):
-            continue
-        content = msg.get("content")
-        if content not in (None, ""):
-            continue
-        reasoning = msg.get("reasoning_content") or msg.get("reasoning")
-        if reasoning:
-            msg["content"] = reasoning
-    return resp
-
-
-# ── Request/Response Models ──
-
-class ChatMessage(BaseModel):
-    role: str
-    content: str | list | None = None
-    name: Optional[str] = None
-    tool_calls: Optional[list] = None
-    tool_call_id: Optional[str] = None
-
-
-def _has_vision_content(messages: list[ChatMessage]) -> bool:
-    """Check if any message contains image/multimodal content that requires a vision-capable model."""
-    for msg in messages:
-        if isinstance(msg.content, list):
-            for part in msg.content:
-                if isinstance(part, dict) and part.get("type") in ("image_url", "image"):
-                    return True
-    return False
-
-
-async def _convert_image_urls_to_base64(messages: list) -> list:
-    """Download image URLs and convert to base64 data URIs for Ollama Cloud compatibility.
-    
-    Ollama Cloud doesn't support image URLs — it requires base64-encoded data URIs.
-    This transforms {"type": "image_url", "image_url": {"url": "https://..."}} 
-    into {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}
-    """
-    import base64
-    import mimetypes
-    
-    converted = []
-    async with httpx.AsyncClient(timeout=15, follow_redirects=True, headers={"User-Agent": "Guanaco/0.3"}) as img_client:
-        for msg in messages:
-            if not isinstance(msg.content, list):
-                converted.append(msg)
-                continue
-            
-            new_parts = []
-            changed = False
-            for part in msg.content:
-                if isinstance(part, dict) and part.get("type") == "image_url":
-                    url = part.get("image_url", {}).get("url", "")
-                    if url and url.startswith("http"):
-                        # Download and convert to base64
-                        try:
-                            resp = await img_client.get(url)
-                            if resp.status_code == 200:
-                                content_type = resp.headers.get("content-type", "")
-                                if not content_type or "image" not in content_type:
-                                    # Guess from URL extension
-                                    ext = url.rsplit(".", 1)[-1].split("?")[0].lower()
-                                    content_type = mimetypes.guess_type(f"img.{ext}")[0] or "image/png"
-                                b64 = base64.b64encode(resp.content).decode("ascii")
-                                data_uri = f"data:{content_type};base64,{b64}"
-                                new_parts.append({
-                                    "type": "image_url",
-                                    "image_url": {"url": data_uri}
-                                })
-                                changed = True
-                            else:
-                                log.warning("Failed to download image URL for base64 conversion: HTTP %d for %s", resp.status_code, url[:80])
-                                new_parts.append(part)
-                        except Exception as e:
-                            log.warning("Error downloading image URL for base64 conversion: %s", _describe_error(e))
-                            new_parts.append(part)
-                    else:
-                        new_parts.append(part)
-                else:
-                    new_parts.append(part)
-            
-            if changed:
-                new_msg = msg.model_copy(update={"content": new_parts})
-                converted.append(new_msg)
-            else:
-                converted.append(msg)
-    return converted
-
-
-class ChatCompletionRequest(BaseModel):
-    model: str
-    messages: list[ChatMessage]
-    temperature: Optional[float] = None
-    top_p: Optional[float] = None
-    max_tokens: Optional[int] = None
-    stream: bool = False
-    stop: Optional[list[str]] = None
-    presence_penalty: Optional[float] = None
-    frequency_penalty: Optional[float] = None
-    tools: Optional[list[dict]] = None
-    tool_choice: Optional[str | dict] = None
-    response_format: Optional[dict] = None
-    reasoning_effort: Optional[str] = None
-    extra_body: Optional[dict] = None
-
-
-# ── Anthropic Request Models ──
-
-class AnthropicMessage(BaseModel):
-    role: str
-    content: str | list
-
-
-class AnthropicRequest(BaseModel):
-    model: str
-    max_tokens: int = 4096
-    messages: list[AnthropicMessage]
-    system: Optional[str | list] = None
-    temperature: Optional[float] = None
-    top_p: Optional[float] = None
-    stream: bool = False
-    stop_sequences: Optional[list[str]] = None
-    tools: Optional[list[dict]] = None
-    tool_choice: Optional[dict] = None
-    reasoning_effort: Optional[str] = None
-    extra_body: Optional[dict] = None
-
-
-def _resolve_model(model: str, config) -> str:
-    """Resolve model name for Ollama Cloud API."""
-    normalized = model
-    # Strip routing suffixes used by Hermes/clients: :cloud, :local, -cloud
-    if normalized.endswith(":cloud"):
-        normalized = normalized[:-6]
-    elif normalized.endswith(":local"):
-        normalized = normalized[:-6]
-    elif normalized.endswith("-cloud"):
-        normalized = normalized[:-6]
-
-    if normalized in config.llm.available_models:
-        return normalized
-
-    for available in config.llm.available_models:
-        base = available.split(":")[0]
-        if normalized == base:
-            return available
-
-    return normalized
-
-
-def _map_model_to_fallback(model: str, fallback_config) -> str:
-    """Map an Ollama model name to the corresponding fallback model."""
-    if model in fallback_config.model_map:
-        return fallback_config.model_map[model]
-    base = model.split(":")[0]
-    if base in fallback_config.model_map:
-        return fallback_config.model_map[base]
-    return fallback_config.default_model or model
-
-
-def _is_quota_full(config) -> bool:
-    """Check if Ollama Cloud usage quota is near or at limit (>= 99.5%)."""
-    if not config or not config.usage.redirect_on_full:
-        return False
-    s = config.usage.last_session_pct
-    w = config.usage.last_weekly_pct
-    if s is not None and s >= 99.5:
-        return True
-    if w is not None and w >= 99.5:
-        return True
-    return False
-
-async def _refresh_usage_background(client, config):
-    """Background refresh of usage quota so we notice when it resets."""
-    try:
-        cookie = config.usage.session_cookie
-        if not cookie:
-            return
-        usage = await client.get_usage(session_cookie=cookie)
-        if usage.get("source") != "unavailable":
-            config.usage.last_session_pct = usage.get("session_pct")
-            config.usage.last_weekly_pct = usage.get("weekly_pct")
-            config.usage.last_plan = usage.get("plan")
-            config.usage.last_session_reset = usage.get("session_reset")
-            config.usage.last_weekly_reset = usage.get("weekly_reset")
-            config.usage.last_checked = time.time()
-            from guanaco.config import save_config
-            save_config(config)
-            if not _is_quota_full(config):
-                log.info("Quota recovered — session=%.1f%%, weekly=%.1f%%, routing back to Ollama",
-                         config.usage.last_session_pct or 0, config.usage.last_weekly_pct or 0)
-    except Exception as e:
-        log.debug("Background usage refresh failed: %s", e)
-
-
-async def _call_fallback_provider(payload: dict, fallback_config, stream: bool = False):
-    """Send a request to the fallback OpenAI-compatible provider."""
-    base_url = fallback_config.base_url.rstrip("/")
-    # Strip /chat/completions if user accidentally included the full path
-    if base_url.endswith("/chat/completions"):
-        base_url = base_url[: -len("/chat/completions")]
-    url = f"{base_url}/chat/completions"
-    headers = {
-        "Content-Type": "application/json",
-    }
-    if fallback_config.api_key:
-        headers["Authorization"] = f"Bearer {fallback_config.api_key}"
-
-    # Ensure the payload has the correct stream value — some providers (e.g. Fireworks)
-    # require "stream": true in the JSON body when max_tokens > 4096
-    payload = dict(payload)
-    payload["stream"] = stream
-
-    # Inject fallback max_tokens if not already set in the payload
-    if fallback_config.max_tokens and "max_tokens" not in payload:
-        payload["max_tokens"] = fallback_config.max_tokens
-
-    timeout = fallback_config.timeout or 60.0
-    # For streaming, use a long connect timeout but generous read timeout for thinking models
-    connect_timeout = min(timeout, 30.0)
-    read_timeout = max(timeout, 120.0)
-
-    if stream:
-        # Streaming: use a long-lived client that stays open while the generator is consumed
-        # Use generous read timeout for thinking models that can pause mid-stream
-        client_timeout = httpx.Timeout(connect=connect_timeout, read=read_timeout, write=30.0, pool=30.0)
-        client = httpx.AsyncClient(timeout=client_timeout)
-
-        async def stream_from_fallback():
-            try:
-                async with client.stream("POST", url, json=payload, headers=headers) as resp:
-                    resp.raise_for_status()
-                    async for line in resp.aiter_lines():
-                        yield line + "\n"
-            finally:
-                await client.aclose()
-
-        return stream_from_fallback()
-    else:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.post(url, json=payload, headers=headers)
-            resp.raise_for_status()
-            return resp.json()
 
 
 # ── Provider creation ──
@@ -791,9 +463,17 @@ def create_router(client, analytics=None, config=None, account_pool=None) -> API
         
         payload = body.model_dump(exclude_none=True)
         payload["model"] = resolved_model
+        # Apply reasoning_effort BEFORE extra_body so extra_body can override if needed
+        # but reasoning_effort from the request is not lost
+        if body.reasoning_effort:
+            payload["reasoning_effort"] = body.reasoning_effort
         if body.extra_body:
+            # Merge extra_body but don't let it clobber reasoning_effort unless explicitly set
+            re = payload.get("reasoning_effort")
             payload.update(body.extra_body)
             payload.pop("extra_body", None)
+            if re and "reasoning_effort" not in (body.extra_body or {}):
+                payload["reasoning_effort"] = re
 
         # ── Quota-full redirect: skip Ollama entirely, go straight to fallback ──
         # Exception: vision requests should skip fallback if the provider doesn't support them
@@ -1533,79 +1213,6 @@ def create_router(client, analytics=None, config=None, account_pool=None) -> API
         return {"status": "ok", "remaining_entries": stats["exact_cache_entries"] + stats["prefix_cache_entries"]}
 
     return router
-
-
-# ── Streaming helpers ──
-
-def _is_empty_stream_buffer(chunks: list[str]) -> bool:
-    """Check if buffered streaming chunks contain no actual content."""
-    for chunk in chunks:
-        if not chunk.startswith("data: ") or chunk.strip() == "data: [DONE]":
-            continue
-        try:
-            data = json.loads(chunk[6:].strip())
-            for choice in data.get("choices", []):
-                delta = choice.get("delta", {})
-                content = delta.get("content", "")
-                reasoning = delta.get("reasoning", "") or delta.get("reasoning_content", "")
-                if content and content.strip():
-                    return False
-                if reasoning and reasoning.strip():
-                    return False
-                # tool_calls count as non-empty
-                if delta.get("tool_calls"):
-                    return False
-        except (json.JSONDecodeError, KeyError):
-            continue
-    return True
-
-
-async def _collect_stream_chunks(client, payload, api_key=None) -> tuple[list[str], dict]:
-    """Collect all chunks from a stream into a buffer. Returns (chunks, metrics)."""
-    chunks = []
-    metrics = {}
-    async for chunk in client.chat_completion_stream(payload, api_key=api_key):
-        if chunk.startswith("__oct_metrics__:"):
-            try:
-                metrics = json.loads(chunk.split(":", 1)[1])
-            except (json.JSONDecodeError, ValueError):
-                pass
-            continue
-        chunks.append(chunk)
-    return chunks, metrics
-
-
-def _extract_sse_content(chunk: str) -> str:
-    """Extract the content/reasoning text from an SSE data chunk for history logging."""
-    try:
-        if not chunk.startswith("data: ") or "__oct_metrics__" in chunk:
-            return ""
-        data_str = chunk[6:].strip()
-        if data_str == "[DONE]":
-            return ""
-        data = json.loads(data_str)
-        choices = data.get("choices", [])
-        if choices:
-            delta = choices[0].get("delta", {})
-            parts = []
-            if delta.get("content"):
-                parts.append(delta["content"])
-            reasoning = delta.get("reasoning", "") or delta.get("reasoning_content", "")
-            if reasoning:
-                parts.append(reasoning)
-            return "".join(parts)
-    except (json.JSONDecodeError, ValueError, KeyError, IndexError):
-        pass
-    return ""
-
-
-def _accumulate_history_output(accumulated: list, chunk: str, history_kwargs: dict, config=None):
-    """Extract text from an SSE chunk and append to the accumulator if history is enabled."""
-    if not history_kwargs or not config or not config.history.enabled or not config.history.save_output:
-        return
-    text = _extract_sse_content(chunk)
-    if text:
-        accumulated.append(text)
 
 
 async def _stream_completion_openai(client, payload, model, analytics, start_time, config=None, history_kwargs=None, limiter=None, api_key=None, account_name=None, account_pool=None):

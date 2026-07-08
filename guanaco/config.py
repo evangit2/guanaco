@@ -200,6 +200,20 @@ class ProviderAccount(BaseModel):
     rotation_mode: str = "usage"
 
 
+class CustomProviderConfig(BaseModel):
+    """Configuration for a custom OpenAI-compatible provider.
+
+    Lets users add any OpenAI-compatible API (OpenRouter, Together, Groq,
+    LM Studio, vLLM, etc.) as a first-class provider.
+    """
+    name: str = ""                              # Provider name (used in model prefixes)
+    base_url: str = ""                          # e.g. "https://openrouter.ai/api/v1"
+    api_key: str = ""                           # API key (empty for local servers)
+    models: list[str] = Field(default_factory=list)  # Empty = auto-discover from /v1/models
+    timeout: float = 120.0                      # Request timeout
+    max_concurrent_streams: int = 0             # 0 = unlimited (default), >0 = limit concurrent streams
+
+
 class UmansConfig(BaseModel):
     """UMANS subscription provider settings."""
     enabled: bool = False
@@ -216,6 +230,8 @@ class UmansConfig(BaseModel):
     max_images_per_request: int = 0
     # Override base URL for testing
     base_url: str = ""
+    # Max concurrent streams to UMANS (0 = unlimited)
+    max_concurrent_streams: int = 0
 
 
 # Backward-compatible alias
@@ -253,6 +269,7 @@ class AppConfig(BaseModel):
     search: SearchConfig = Field(default_factory=SearchConfig)
     history: HistoryConfig = Field(default_factory=HistoryConfig)
     umans: UmansConfig = Field(default_factory=UmansConfig)
+    custom_providers: list[CustomProviderConfig] = Field(default_factory=list)
 
     @property
     def ollama_api_key_resolved(self) -> str:

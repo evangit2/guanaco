@@ -16,9 +16,10 @@ from guanaco.config import load_config, AppConfig, get_base_url
 from guanaco.client import OllamaClient
 from guanaco.opencode_go_client import OpenCodeGoClient
 from guanaco.umans_client import UmansClient
+from guanaco.providers.custom import CustomProvider
 from guanaco.multi_provider_client import MultiProviderChatClient
 from guanaco.accounts import AccountPool
-__version__ = "0.6.4"
+__version__ = "0.7.0"
 from guanaco.router.router import create_router as create_llm_router
 from guanaco.search.providers import ALL_PROVIDERS
 from guanaco.dashboard import create_dashboard_router
@@ -96,6 +97,24 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         clients["umans"].session_label_mode = config.umans.session_label_mode
         clients["umans"].max_images_per_request = config.umans.max_images_per_request
 
+    # ── Custom OpenAI-compatible providers ──
+    for cp_config in config.custom_providers:
+        if not cp_config.name or not cp_config.base_url:
+            continue
+        try:
+            cp = CustomProvider(
+                name=cp_config.name,
+                base_url=cp_config.base_url,
+                api_key=cp_config.api_key,
+                models=cp_config.models or None,
+                timeout=cp_config.timeout,
+                max_concurrent_streams=cp_config.max_concurrent_streams,
+            )
+            clients[cp_config.name] = cp
+            logger.info("   Custom:        %s → %s (max_streams=%s)", cp_config.name, cp_config.base_url, cp_config.max_concurrent_streams or "∞")
+        except Exception as e:
+            logger.warning("Failed to create custom provider %s: %s", cp_config.name, e)
+
     chat_client = MultiProviderChatClient(clients, account_pool=account_pool)
 
     # A generic OllamaClient is still useful for web fetch/search utilities even when
@@ -148,6 +167,10 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             await clients["opencode_go"].close()
         if "umans" in clients:
             await clients["umans"].close()
+        # Close custom providers
+        for name, client in clients.items():
+            if name not in ("ollama", "opencode_go", "umans") and hasattr(client, "close"):
+                await client.close()
         if utility_client is not clients.get("ollama") and hasattr(utility_client, "close"):
             await utility_client.close()
 
