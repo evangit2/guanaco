@@ -51,9 +51,9 @@ class RouterConfig(BaseModel):
     # DEPRECATED: kept for backward compatibility. Use provider_priority for ordered fallback.
     unprefixed_provider_strategy: str = "round_robin"
     # Ordered list of providers to try for unprefixed models. Earlier entries are preferred.
-    # Built-in providers: "ollama", "opencode_go", "umans". A configured fallback OpenAI-compatible
+    # Built-in providers: "ollama", "opencode_go", "umans", "cline", "cmdcode". A configured fallback OpenAI-compatible
     # provider can be included as "fallback".
-    provider_priority: list[str] = Field(default_factory=lambda: ["ollama", "opencode_go", "umans", "cline"])
+    provider_priority: list[str] = Field(default_factory=lambda: ["ollama", "opencode_go", "umans", "cline", "cmdcode"])
 
 
 class SearchConfig(BaseModel):
@@ -248,6 +248,21 @@ class ClineConfig(BaseModel):
     max_concurrent_streams: int = 0
 
 
+class CmdCodeConfig(BaseModel):
+    """Command Code Go plan provider settings.
+
+    Command Code (commandcode.ai) offers a $1/mo Go plan with CLI access to 20+
+    open-weight models. A local proxy (cmd_proxy.py) translates OpenAI-compatible
+    requests to the CLI's internal /alpha/generate endpoint. Zero per-token cost.
+    Zero Data Retention (ZDR) enabled by default.
+    """
+    enabled: bool = False
+    # Override proxy URL (default: http://localhost:5999/v1)
+    base_url: str = ""
+    # Max concurrent streams (0 = unlimited)
+    max_concurrent_streams: int = 0
+
+
 # Backward-compatible alias
 OllamaAccount = ProviderAccount
 
@@ -261,10 +276,12 @@ def infer_provider_from_key(api_key: str, provider_hint: Optional[str] = None) -
     If ``provider_hint`` is provided and valid, it is respected.
     """
     key = api_key.strip()
-    if provider_hint in ("ollama", "opencode_go", "umans", "cline"):
+    if provider_hint in ("ollama", "opencode_go", "umans", "cline", "cmdcode"):
         return provider_hint
     if key.startswith("sk_"):
         return "cline"
+    if key.startswith("user_"):
+        return "cmdcode"
     if key.lower().startswith("sk-"):
         return "opencode_go"
     if len(key) >= 64 and not key.startswith("ollama"):
@@ -287,6 +304,7 @@ class AppConfig(BaseModel):
     history: HistoryConfig = Field(default_factory=HistoryConfig)
     umans: UmansConfig = Field(default_factory=UmansConfig)
     cline: ClineConfig = Field(default_factory=ClineConfig)
+    cmdcode: CmdCodeConfig = Field(default_factory=CmdCodeConfig)
     custom_providers: list[CustomProviderConfig] = Field(default_factory=list)
 
     @property
@@ -390,6 +408,15 @@ def load_config(path: Optional[Path] = None) -> AppConfig:
     if "provider_priority" in router and isinstance(router["provider_priority"], list):
         if "cline" not in router["provider_priority"]:
             router["provider_priority"].append("cline")
+
+    # v0.7.2+: ensure cmdcode config exists for migration
+    if "cmdcode" not in data:
+        data["cmdcode"] = {}
+
+    # v0.7.2+: ensure provider_priority includes "cmdcode" if missing
+    if "provider_priority" in router and isinstance(router["provider_priority"], list):
+        if "cmdcode" not in router["provider_priority"]:
+            router["provider_priority"].append("cmdcode")
 
     # v0.6.0+: visibility setting controls host binding
     if "visibility" not in router:

@@ -18,6 +18,7 @@ OPENCODE_GO_PREFIXES = ("opencode-go/",)
 OLLAMA_PREFIXES = ("ollama/",)
 UMANS_PREFIXES = ("umans/", "umans-")
 CLINE_PREFIXES = ("cline/",)
+CMDCODE_PREFIXES = ("cmdcode/",)
 
 # Known unprefixed OpenCode Go model names that should default to the Go provider.
 KNOWN_GO_MODELS = {
@@ -61,11 +62,23 @@ KNOWN_CLINE_MODELS = {
     "minimax-m3", "qwen3.7-max", "qwen3.7-plus",
 }
 
+# Known Command Code Go model names that should default to the cmdcode provider.
+# Only models that work with ZDR enabled (verified July 15 2026 benchmark).
+KNOWN_CMDCODE_MODELS = {
+    "deepseek-v4-pro", "deepseek-v4-flash",
+    "kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6", "kimi-k2.5",
+    "glm-5.2", "glm-5.2-fast", "glm-5.1", "glm-5",
+    "minimax-m3", "minimax-m2.7", "minimax-m2.5",
+    "mimo-v2.5-pro", "mimo-v2.5",
+    "qwen3.7-plus", "qwen3.6-plus",
+    "tencent-hy3", "nemotron-3-ultra", "step-3.5-flash",
+}
+
 
 def _normalize_model_for_provider(model: str) -> str:
     """Return a canonical lowercased identifier for provider detection."""
     m = model.lower().strip()
-    for prefix in OPENCODE_GO_PREFIXES + OLLAMA_PREFIXES + UMANS_PREFIXES + CLINE_PREFIXES:
+    for prefix in OPENCODE_GO_PREFIXES + OLLAMA_PREFIXES + UMANS_PREFIXES + CLINE_PREFIXES + CMDCODE_PREFIXES:
         if m.startswith(prefix):
             m = m[len(prefix):]
     return m.split(":")[0].replace("_", "-")
@@ -91,6 +104,9 @@ def provider_for_model(model: str, default_provider: str = "ollama", provider_pr
     for prefix in CLINE_PREFIXES:
         if m.startswith(prefix):
             return "cline"
+    for prefix in CMDCODE_PREFIXES:
+        if m.startswith(prefix):
+            return "cmdcode"
     canon = _normalize_model_for_provider(model)
     if canon in KNOWN_GO_MODELS:
         return "opencode_go"
@@ -98,12 +114,14 @@ def provider_for_model(model: str, default_provider: str = "ollama", provider_pr
         return "umans"
     if canon in KNOWN_CLINE_MODELS:
         return "cline"
+    if canon in KNOWN_CMDCODE_MODELS:
+        return "cmdcode"
     if canon in KNOWN_OLLAMA_MODELS:
         return "ollama"
     # If provider_priority is set, prefer the first configured provider
     if provider_priority:
         for p in provider_priority:
-            if p in ("ollama", "opencode_go", "umans", "cline"):
+            if p in ("ollama", "opencode_go", "umans", "cline", "cmdcode"):
                 return p
     return default_provider
 
@@ -288,4 +306,4 @@ class AccountPool:
 
     def is_reserved_name(self, name: str) -> bool:
         """Check if a name is reserved (case-insensitive)."""
-        return name.lower() in ("ollama", "opencode_go", "umans", "cline", "primary", "default")
+        return name.lower() in ("ollama", "opencode_go", "umans", "cline", "cmdcode", "primary", "default")
