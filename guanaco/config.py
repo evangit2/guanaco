@@ -247,17 +247,17 @@ class ClineConfig(BaseModel):
     # Max concurrent streams (0 = unlimited)
     max_concurrent_streams: int = 0
 
-
 class CmdCodeConfig(BaseModel):
     """Command Code Go plan provider settings.
 
     Command Code (commandcode.ai) offers a $1/mo Go plan with CLI access to 20+
-    open-weight models. A local proxy (cmd_proxy.py) translates OpenAI-compatible
-    requests to the CLI's internal /alpha/generate endpoint. Zero per-token cost.
+    open-weight models. The client talks directly to api.commandcode.ai — no
+    external proxy process is needed.
     Zero Data Retention (ZDR) enabled by default.
     """
     enabled: bool = False
-    # Override proxy URL (default: http://localhost:5999/v1)
+    # base_url is accepted for config compatibility but the client always talks
+    # directly to https://api.commandcode.ai
     base_url: str = ""
     # Max concurrent streams (0 = unlimited)
     max_concurrent_streams: int = 0

@@ -68,13 +68,12 @@ class TestCmdCodeClient:
 
     def test_init_default_base_url(self):
         client = CmdCodeClient(api_key="user_test123")
-        assert "localhost:5999" in client.base_url
-        assert client.chat_url.endswith("/chat/completions")
-        assert client.models_url.endswith("/models")
+        assert "api.commandcode.ai" in client.base_url
 
-    def test_init_custom_base_url(self):
+    def test_init_ignores_custom_base_url(self):
+        # base_url is accepted for config compat but always talks to api.commandcode.ai
         client = CmdCodeClient(api_key="user_test", base_url="http://custom:8080/v1")
-        assert "custom:8080" in client.base_url
+        assert "api.commandcode.ai" in client.base_url
 
     def test_strip_prefix(self):
         assert _strip_cmdcode_prefix("cmdcode/glm-5.2") == "glm-5.2"
@@ -140,7 +139,7 @@ class TestConfig:
     def test_cmdcode_config_with_values(self):
         config = AppConfig()
         config.cmdcode.enabled = True
-        config.cmdcode.base_url = "http://localhost:5999/v1"
+        config.cmdcode.base_url = "https://api.commandcode.ai"
         config.cmdcode.max_concurrent_streams = 4
         assert config.cmdcode.enabled is True
         assert config.cmdcode.max_concurrent_streams == 4
