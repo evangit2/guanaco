@@ -172,12 +172,12 @@ def create_router(client, analytics=None, config=None, account_pool=None) -> API
         back to provider_priority selection.
         """
         explicit_provider = provider_for_model(model, provider_priority=(_config.router.provider_priority if _config else None)) if model else None
-        if explicit_provider not in ("ollama", "opencode_go", "umans"):
+        if explicit_provider not in ("ollama", "opencode_go", "umans", "cline", "cmdcode"):
             explicit_provider = None
 
         priority = []
         if _config:
-            priority = [p for p in (_config.router.provider_priority or []) if p in ("ollama", "opencode_go", "umans")]
+            priority = [p for p in (_config.router.provider_priority or []) if p in ("ollama", "opencode_go", "umans", "cline", "cmdcode")]
         if not priority:
             strategy = getattr(_config, "unprefixed_provider_strategy", "round_robin")
             priority = [_select_default_provider(strategy)]
@@ -629,7 +629,7 @@ def create_router(client, analytics=None, config=None, account_pool=None) -> API
             async def _fetch_from_upstream(p: dict) -> dict:
                 """Fetch from Ollama Cloud with fallback, retrying on empty response."""
                 request_key, account_name = _select_account(model=resolved_model)
-                _provider = provider_for_model(resolved_model, default_provider=_select_default_provider(getattr(_config, 'unprefixed_provider_strategy', 'round_robin')), provider_priority=([p for p in (_config.router.provider_priority or []) if p in ("ollama", "opencode_go", "umans")] if _config else None))
+                _provider = provider_for_model(resolved_model, default_provider=_select_default_provider(getattr(_config, 'unprefixed_provider_strategy', 'round_robin')), provider_priority=([p for p in (_config.router.provider_priority or []) if p in ("ollama", "opencode_go", "umans", "cline", "cmdcode")] if _config else None))
                 ollama_provider = f"{_provider}:{account_name}" if account_name != _provider else _provider
                 hist_kw = dict(_hist)
                 hist_kw["account_name"] = account_name
@@ -739,7 +739,7 @@ def create_router(client, analytics=None, config=None, account_pool=None) -> API
         # ── Original path for streaming or cache disabled ──
         # Select account only when actually calling Ollama upstream
         _request_key, _account_name = _select_account(model=resolved_model)
-        _provider = provider_for_model(resolved_model, default_provider=_select_default_provider(getattr(_config, 'unprefixed_provider_strategy', 'round_robin')), provider_priority=([p for p in (_config.router.provider_priority or []) if p in ("ollama", "opencode_go", "umans")] if _config else None))
+        _provider = provider_for_model(resolved_model, default_provider=_select_default_provider(getattr(_config, 'unprefixed_provider_strategy', 'round_robin')), provider_priority=([p for p in (_config.router.provider_priority or []) if p in ("ollama", "opencode_go", "umans", "cline", "cmdcode")] if _config else None))
         _ollama_provider = f"{_provider}:{_account_name}" if _account_name != _provider else _provider
         _hist["account_name"] = _account_name
         # Try Ollama Cloud first

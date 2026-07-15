@@ -312,10 +312,9 @@ if [ "$SETUP_CMDCODE" = "y" ]; then
     echo ""
     info "Command Code Go plan: ${CYAN}https://commandcode.ai${RESET}"
     info "Command Code is \$1/mo — includes 20+ open-weight models (DeepSeek, GLM, Kimi, etc.)"
-    info "Requires a local proxy (cmd_proxy.py) running on port 5999."
     info "API key is in ~/.commandcode/auth.json after CLI login: ${CYAN}command-code login${RESET}"
     prompt CMDCODE_API_KEY "Enter your Command Code API key (user_...)" ""
-    # Skip validation — proxy may not be running yet
+    # Skip validation — requires a live API call to /alpha/generate
     if [ -z "$CMDCODE_API_KEY" ]; then
         warn "No Command Code API key provided. Set it later with: guanaco setup"
     fi
