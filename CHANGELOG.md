@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.7.2] - 2026-07-15
+
+### Added
+- **Command Code Go provider.** Full integration as a fifth built-in provider alongside Ollama Cloud, OpenCode Go, UMANS, and Cline Pass. Command Code Go is a $1/mo plan offering 20+ open-weight models (GLM-5.2, GLM-5.2-Fast, DeepSeek V4 Pro/Flash, Kimi K2.7 Code, Kimi K2.6, MiniMax M3, MiMo v2.5 Pro, Qwen3.7 Max, Tencent HY3, Nemotron 3 Ultra, Step 3.5 Flash, and more) with Zero Data Retention.
+  - New `CmdCodeClient` (`guanaco/cmdcode_client.py`) with SSE streaming, reasoning delta support, `list_models()`, and `test_key()`. Connects via local proxy on port 5999 (`cmd_proxy.py`) that translates OpenAI `/v1/chat/completions` to Command Code's `/alpha/generate` endpoint.
+  - `user_` prefix detection in `infer_provider_from_key()` (distinct from Cline's `sk_` and OpenCode Go's `sk-`).
+  - `cmdcode/` model prefix routing for explicit provider selection.
+  - Config migration adds `cmdcode` to `provider_priority` for existing installs.
+  - Install script: Command Code as option 5 with API key prompt (reads from `~/.commandcode/auth.json` if available).
+  - Dashboard: Accounts tab "Add Account" dropdown now shows all five providers. Provider priority drag-and-drop list includes Command Code with 💻 icon.
+  - `/v1/models` endpoint renders `cmdcode/` prefixed models with `owned_by: "cmdcode"`.
+  - 27 new tests covering key inference, model routing, payload normalization, config migration, account pool handling, and provider-unique model routing.
+  - Zero Data Retention (ZDR) guarantee: all requests include `x-cmd-zdr: 1` header ensuring no prompt/response data is stored upstream.
+
+### Fixed
+- **Model overlap routing disambiguation.** `provider_for_model()` now correctly handles models available from multiple providers (e.g., GLM-5.2 available on UMANS, Cline Pass, OpenCode Go, and Command Code). Users must use explicit prefixes (e.g. `cmdcode/glm-5.2`) to route to a specific provider when the model name is ambiguous.
+
+---
+
 ## [0.7.1] - 2026-07-08
 
 ### Added
