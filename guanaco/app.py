@@ -17,10 +17,11 @@ from guanaco.client import OllamaClient
 from guanaco.opencode_go_client import OpenCodeGoClient
 from guanaco.umans_client import UmansClient
 from guanaco.cline_client import ClinePassClient
+from guanaco.cmdcode_client import CmdCodeClient
 from guanaco.providers.custom import CustomProvider
 from guanaco.multi_provider_client import MultiProviderChatClient
 from guanaco.accounts import AccountPool
-__version__ = "0.7.1"
+__version__ = "0.7.2"
 from guanaco.router.router import create_router as create_llm_router
 from guanaco.search.providers import ALL_PROVIDERS
 from guanaco.dashboard import create_dashboard_router
@@ -77,11 +78,25 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     if cline_accounts and not cline_key_source:
         cline_key_source = cline_accounts[0].api_key or ""
 
+    # ── Command Code Go key resolution ──
+    cmdcode_key_source = os.getenv("CMDCODE_API_KEY", "")
+    if not cmdcode_key_source:
+        cmdcode_key_file = os.getenv("CMDCODE_API_KEY_FILE", "")
+        if cmdcode_key_file:
+            try:
+                cmdcode_key_source = Path(cmdcode_key_file).expanduser().read_text().strip()
+            except Exception as e:
+                logger.warning("Could not read CMDCODE_API_KEY_FILE %s: %s", cmdcode_key_file, e)
+    cmdcode_accounts = [a for a in config.ollama_accounts if a.provider == "cmdcode"]
+    if cmdcode_accounts and not cmdcode_key_source:
+        cmdcode_key_source = cmdcode_accounts[0].api_key or ""
+
     # Normalize provider account list. Primary Ollama account is created only when an Ollama key exists.
     has_ollama = bool(ollama_key)
     has_go = bool(go_key_source)
     has_umans = bool(umans_key_source)
     has_cline = bool(cline_key_source)
+    has_cmdcode = bool(cmdcode_key_source)
 
     if not config.ollama_accounts:
         accounts: list = []
@@ -93,6 +108,8 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             accounts.append(acc)
         for acc in cline_accounts:
             accounts.append(acc)
+        for acc in cmdcode_accounts:
+            accounts.append(acc)
         config.ollama_accounts = accounts
     else:
         if has_ollama and not any(a.name == "ollama" for a in config.ollama_accounts):
@@ -103,6 +120,10 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                     config.ollama_accounts.append(acc)
         if has_cline and not any(a.provider == "cline" for a in config.ollama_accounts):
             for acc in cline_accounts:
+                if acc.name not in {a.name for a in config.ollama_accounts}:
+                    config.ollama_accounts.append(acc)
+        if has_cmdcode and not any(a.provider == "cmdcode" for a in config.ollama_accounts):
+            for acc in cmdcode_accounts:
                 if acc.name not in {a.name for a in config.ollama_accounts}:
                     config.ollama_accounts.append(acc)
     account_pool = AccountPool(config.ollama_accounts)
@@ -119,6 +140,8 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         clients["umans"].max_images_per_request = config.umans.max_images_per_request
     if has_cline:
         clients["cline"] = ClinePassClient(api_key=cline_key_source, base_url=config.cline.base_url)
+    if has_cmdcode:
+        clients["cmdcode"] = CmdCodeClient(api_key=cmdcode_key_source, base_url=config.cmdcode.base_url)
 
     # ── Custom OpenAI-compatible providers ──
     for cp_config in config.custom_providers:
@@ -185,7 +208,11 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             logger.info("   Cline Pass:    ENABLED (%s account(s))", len(cline_accounts))
         else:
             logger.info("   Cline Pass:    DISABLED (no CLINE_API_KEY)")
-        if not has_ollama and not has_go and not has_umans and not has_cline:
+        if has_cmdcode:
+            logger.info("   Command Code:  ENABLED (%s account(s))", len(cmdcode_accounts))
+        else:
+            logger.info("   Command Code:  DISABLED (no CMDCODE_API_KEY)")
+        if not has_ollama and not has_go and not has_umans and not has_cline and not has_cmdcode:
             logger.warning("Running with no LLM provider configured. Only search APIs will work.")
         yield
         if "ollama" in clients:
@@ -196,9 +223,11 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             await clients["umans"].close()
         if "cline" in clients:
             await clients["cline"].close()
+        if "cmdcode" in clients:
+            await clients["cmdcode"].close()
         # Close custom providers
         for name, client in clients.items():
-            if name not in ("ollama", "opencode_go", "umans", "cline") and hasattr(client, "close"):
+            if name not in ("ollama", "opencode_go", "umans", "cline", "cmdcode") and hasattr(client, "close"):
                 await client.close()
         if utility_client is not clients.get("ollama") and hasattr(utility_client, "close"):
             await utility_client.close()

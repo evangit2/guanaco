@@ -679,6 +679,7 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
             configured["opencode_go"] = bool(ollama_clients.get("opencode_go"))
             configured["umans"] = bool(ollama_clients.get("umans"))
             configured["cline"] = bool(ollama_clients.get("cline"))
+            configured["cmdcode"] = bool(ollama_clients.get("cmdcode"))
         else:
             for acc in config.ollama_accounts:
                 if acc.provider == "ollama" and acc.api_key and acc.api_key not in ("***", "REPLACE_ME"):
@@ -689,29 +690,33 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
                     configured["umans"] = True
                 if acc.provider == "cline" and acc.api_key and acc.api_key not in ("***", "REPLACE_ME"):
                     configured["cline"] = True
+                if acc.provider == "cmdcode" and acc.api_key and acc.api_key not in ("***", "REPLACE_ME"):
+                    configured["cmdcode"] = True
         if getattr(config.fallback, "enabled", False):
             configured["fallback"] = True
 
-        priority = [p for p in (config.router.provider_priority or []) if p in ("ollama", "opencode_go", "umans", "cline", "fallback")]
+        priority = [p for p in (config.router.provider_priority or []) if p in ("ollama", "opencode_go", "umans", "cline", "cmdcode", "fallback")]
         if not priority:
             strat = config.router.unprefixed_provider_strategy.lower()
             if strat == "opencode_go":
-                priority = ["opencode_go", "ollama", "umans", "cline"]
+                priority = ["opencode_go", "ollama", "umans", "cline", "cmdcode"]
             elif strat == "umans":
-                priority = ["umans", "ollama", "opencode_go", "cline"]
+                priority = ["umans", "ollama", "opencode_go", "cline", "cmdcode"]
             elif strat == "cline":
-                priority = ["cline", "ollama", "opencode_go", "umans"]
+                priority = ["cline", "ollama", "opencode_go", "umans", "cmdcode"]
+            elif strat == "cmdcode":
+                priority = ["cmdcode", "ollama", "opencode_go", "umans", "cline"]
             elif strat == "ollama":
-                priority = ["ollama", "opencode_go", "umans", "cline"]
+                priority = ["ollama", "opencode_go", "umans", "cline", "cmdcode"]
             else:
-                priority = ["ollama", "opencode_go", "umans", "cline"]
+                priority = ["ollama", "opencode_go", "umans", "cline", "cmdcode"]
         if configured.get("fallback") and "fallback" not in priority:
             priority.append("fallback")
 
         return {
             "provider_priority": priority,
-            "available": ["ollama", "opencode_go", "umans", "cline", "fallback"],
-            "configured": {p: configured.get(p, False) for p in ["ollama", "opencode_go", "umans", "cline", "fallback"]},
+            "available": ["ollama", "opencode_go", "umans", "cline", "cmdcode", "fallback"],
+            "configured": {p: configured.get(p, False) for p in ["ollama", "opencode_go", "umans", "cline", "cmdcode", "fallback"]},
         }
 
     @router.post("/api/config/provider-priority")
@@ -719,7 +724,7 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
         """Save reordered provider priority list."""
         body = await request.json()
         priority = body.get("provider_priority", [])
-        valid = [p for p in priority if p in ("ollama", "opencode_go", "umans", "cline", "fallback")]
+        valid = [p for p in priority if p in ("ollama", "opencode_go", "umans", "cline", "cmdcode", "fallback")]
         if not valid:
             from fastapi import HTTPException
             raise HTTPException(status_code=400, detail="provider_priority must contain valid providers")
@@ -1238,7 +1243,7 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
         config = get_config()
 
         # Reserved names
-        if name.lower() in ("ollama", "umans", "cline", "primary", "default"):
+        if name.lower() in ("ollama", "umans", "cline", "cmdcode", "primary", "default"):
             return {"status": "error", "message": f"'{name}' is a reserved account name"}
 
         # Check duplicate

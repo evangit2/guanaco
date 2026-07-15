@@ -192,10 +192,12 @@ USE_OLLAMA="y"
 USE_OPENCODE="n"
 USE_UMANS="n"
 USE_CLINE="n"
+USE_CMDCODE="n"
 SETUP_OLLAMA_API_KEY=""
 SETUP_OPENCODE_API_KEY=""
 UMANS_API_KEY=""
 CLINE_API_KEY=""
+CMDCODE_API_KEY=""
 
 provider_status() {
     case "$1" in
@@ -203,6 +205,7 @@ provider_status() {
         opencode) [ "$USE_OPENCODE" = "y" ] && echo "[enabled]" || echo "[disabled]" ;;
         umans) [ "$USE_UMANS" = "y" ] && echo "[enabled]" || echo "[disabled]" ;;
         cline) [ "$USE_CLINE" = "y" ] && echo "[enabled]" || echo "[disabled]" ;;
+        cmdcode) [ "$USE_CMDCODE" = "y" ] && echo "[enabled]" || echo "[disabled]" ;;
     esac
 }
 
@@ -213,8 +216,9 @@ while true; do
     printf "    2) OpenCode Go                       $(provider_status opencode)\n"
     printf "    3) UMANS                             $(provider_status umans)\n"
     printf "    4) Cline Pass (\$9.99/mo, 10 models)   $(provider_status cline)\n"
-    printf "    5) Done\n"
-    prompt SELECTION "Enter number" "5"
+    printf "    5) Command Code (\$1/mo, 20+ models)   $(provider_status cmdcode)\n"
+    printf "    6) Done\n"
+    prompt SELECTION "Enter number" "6"
 
     case "$SELECTION" in
         1)
@@ -229,7 +233,10 @@ while true; do
         4)
             if [ "$USE_CLINE" = "y" ]; then USE_CLINE="n"; else USE_CLINE="y"; fi
             ;;
-        5|done|Done)
+        5)
+            if [ "$USE_CMDCODE" = "y" ]; then USE_CMDCODE="n"; else USE_CMDCODE="y"; fi
+            ;;
+        6|done|Done)
             break
             ;;
         *)
@@ -242,6 +249,7 @@ SETUP_OLLAMA="$USE_OLLAMA"
 SETUP_OPENCODE="$USE_OPENCODE"
 SETUP_UMANS="$USE_UMANS"
 SETUP_CLINE="$USE_CLINE"
+SETUP_CMDCODE="$USE_CMDCODE"
 
 validate_key() {
     local name="$1" url="$2" api_key="$3"
@@ -300,7 +308,20 @@ if [ "$SETUP_CLINE" = "y" ]; then
     validate_key "Cline Pass" "https://api.cline.bot/api/v1/models" "$CLINE_API_KEY"
 fi
 
-if [ -z "$SETUP_OLLAMA_API_KEY" ] && [ -z "$SETUP_OPENCODE_API_KEY" ] && [ -z "$UMANS_API_KEY" ] && [ -z "$CLINE_API_KEY" ]; then
+if [ "$SETUP_CMDCODE" = "y" ]; then
+    echo ""
+    info "Command Code Go plan: ${CYAN}https://commandcode.ai${RESET}"
+    info "Command Code is \$1/mo — includes 20+ open-weight models (DeepSeek, GLM, Kimi, etc.)"
+    info "Requires a local proxy (cmd_proxy.py) running on port 5999."
+    info "API key is in ~/.commandcode/auth.json after CLI login: ${CYAN}command-code login${RESET}"
+    prompt CMDCODE_API_KEY "Enter your Command Code API key (user_...)" ""
+    # Skip validation — proxy may not be running yet
+    if [ -z "$CMDCODE_API_KEY" ]; then
+        warn "No Command Code API key provided. Set it later with: guanaco setup"
+    fi
+fi
+
+if [ -z "$SETUP_OLLAMA_API_KEY" ] && [ -z "$SETUP_OPENCODE_API_KEY" ] && [ -z "$UMANS_API_KEY" ] && [ -z "$CLINE_API_KEY" ] && [ -z "$CMDCODE_API_KEY" ]; then
     echo ""
     warn "No API keys provided. You can configure providers later with: guanaco setup"
     warn "Guanaco will still install and run, but LLM requests will fail until an account is added."
@@ -443,32 +464,43 @@ if [ -n "$CLINE_API_KEY" ]; then
     api_key: \"${CLINE_API_KEY}\""
 fi
 
-if [ "$SETUP_OLLAMA" = "y" ] && [ "$SETUP_OPENCODE" = "y" ] && [ "$SETUP_UMANS" = "y" ] && [ "$SETUP_CLINE" = "y" ]; then
+if [ -n "$CMDCODE_API_KEY" ]; then
+    ACCOUNTS_YAML="${ACCOUNTS_YAML}
+  - name: cmdcode
+    provider: cmdcode
+    api_key: \"${CMDCODE_API_KEY}\""
+fi
+
+if [ "$SETUP_OLLAMA" = "y" ] && [ "$SETUP_OPENCODE" = "y" ] && [ "$SETUP_UMANS" = "y" ] && [ "$SETUP_CLINE" = "y" ] && [ "$SETUP_CMDCODE" = "y" ]; then
     prompt_yesno OLLAMA_PRIMARY "Use Ollama Cloud as the primary provider? (Cline Pass if no)" "y"
     if [ "$OLLAMA_PRIMARY" = "y" ]; then
         PRIORITY_YAML="  - ollama
   - opencode_go
   - umans
-  - cline"
+  - cline
+  - cmdcode"
     else
         prompt_yesno CLINE_PRIMARY "Use Cline Pass as the primary provider?" "y"
         if [ "$CLINE_PRIMARY" = "y" ]; then
             PRIORITY_YAML="  - cline
   - ollama
   - opencode_go
-  - umans"
+  - umans
+  - cmdcode"
         else
             prompt_yesno OPENCODE_PRIMARY "Use OpenCode Go as the primary provider? (UMANS if no)" "y"
             if [ "$OPENCODE_PRIMARY" = "y" ]; then
                 PRIORITY_YAML="  - opencode_go
   - ollama
   - umans
-  - cline"
+  - cline
+  - cmdcode"
             else
                 PRIORITY_YAML="  - umans
   - ollama
   - opencode_go
-  - cline"
+  - cline
+  - cmdcode"
             fi
         fi
     fi
@@ -489,7 +521,11 @@ else
         PRIORITY_YAML="${PRIORITY_YAML}  - cline
 "
     fi
-    if [ -z "$SETUP_OLLAMA" ] || [ -z "$SETUP_OPENCODE" ] || [ -z "$SETUP_UMANS" ] || [ -z "$SETUP_CLINE" ]; then
+    if [ "$SETUP_CMDCODE" = "y" ]; then
+        PRIORITY_YAML="${PRIORITY_YAML}  - cmdcode
+"
+    fi
+    if [ -z "$SETUP_OLLAMA" ] || [ -z "$SETUP_OPENCODE" ] || [ -z "$SETUP_UMANS" ] || [ -z "$SETUP_CLINE" ] || [ -z "$SETUP_CMDCODE" ]; then
         # fallback default if no providers chosen
         if [ -z "$PRIORITY_YAML" ]; then
             PRIORITY_YAML="  - ollama
@@ -565,6 +601,13 @@ if [ -n "$CLINE_API_KEY" ]; then
     TMP_ENV=$(mktemp)
     grep -v "^export CLINE_API_KEY=" "$INSTALL_DIR/env" 2>/dev/null > "$TMP_ENV" || true
     echo "export CLINE_API_KEY=\"${CLINE_API_KEY}\"" >> "$TMP_ENV"
+    mv "$TMP_ENV" "$INSTALL_DIR/env"
+fi
+
+if [ -n "$CMDCODE_API_KEY" ]; then
+    TMP_ENV=$(mktemp)
+    grep -v "^export CMDCODE_API_KEY=" "$INSTALL_DIR/env" 2>/dev/null > "$TMP_ENV" || true
+    echo "export CMDCODE_API_KEY=\"${CMDCODE_API_KEY}\"" >> "$TMP_ENV"
     mv "$TMP_ENV" "$INSTALL_DIR/env"
 fi
 # ── Create guanaco binary ──
