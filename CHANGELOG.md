@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.7.3] - 2026-07-15
+
+### Changed
+- **Command Code Go: eliminated external proxy.** `CmdCodeClient` now talks directly to `api.commandcode.ai/alpha/generate` — no `cmd_proxy.py`, no port 5999, no separate systemd service. All CLI header mimicry (`x-session-id`, `x-command-code-version`, `x-cmd-zdr`, etc.), OpenAI → Command Code request body translation, and SSE response parsing (`text-delta`/`reasoning-delta`/`finish` → OpenAI chunks) now happen inside the client itself, matching the architecture of ClinePassClient, UmansClient, and OpenCodeGoClient.
+
+### Fixed
+- **Router provider routing for cline and cmdcode.** `_select_account()` and `provider_for_model()` calls in `router.py` (4 locations) were missing `cline` and `cmdcode` from the allowed provider lists. This caused `cmdcode/` and `cline/` prefixed models to be silently routed to Ollama instead of their actual provider. All 4 locations now include all 5 built-in providers.
+
+---
+
 ## [0.7.2] - 2026-07-15
 
 ### Added
