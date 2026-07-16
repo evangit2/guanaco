@@ -55,6 +55,13 @@ class RouterConfig(BaseModel):
     # provider can be included as "fallback".
     provider_priority: list[str] = Field(default_factory=lambda: ["ollama", "opencode_go", "umans", "cline", "cmdcode"])
 
+    # ── Provider depletion tracking ──
+    # A background task polls each provider's usage API every N seconds.
+    # When a provider's usage hits the threshold (percentage), it is marked as
+    # "depleted" and skipped for unprefixed model routing.
+    depletion_check_interval: int = 300  # seconds (5 minutes)
+    depletion_threshold_pct: float = 99.9  # percentage of quota used to trigger depletion
+
 
 class SearchConfig(BaseModel):
     """Search provider settings — moved from Models tab to Search tab."""

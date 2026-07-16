@@ -1347,6 +1347,16 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
             return {"status": "ok", "usage": usage}
         return {"status": "unavailable", "error": "Command Code provider not configured", "usage": {}}
 
+    # ── Provider Depletion Status ──
+
+    @router.get("/api/depletion/status")
+    async def get_depletion_status(request: Request):
+        """Get the current depletion state of all providers."""
+        tracker = getattr(request.app.state, "depletion_tracker", None)
+        if tracker:
+            return {"status": "ok", "providers": tracker.status()}
+        return {"status": "unavailable", "error": "Depletion tracker not initialized"}
+
     @router.post("/api/accounts/session-cookie")
     async def set_account_session_cookie(request: Request):
         """Set the session cookie for an account (for usage scraping)."""

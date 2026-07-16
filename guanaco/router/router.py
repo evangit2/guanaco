@@ -71,11 +71,12 @@ def get_concurrency_limiter() -> Optional[OllamaConcurrencyLimiter]:
 
 # ── Provider creation ──
 
-def create_router(client, analytics=None, config=None, account_pool=None) -> APIRouter:
+def create_router(client, analytics=None, config=None, account_pool=None, depletion_tracker=None) -> APIRouter:
     router = APIRouter(tags=["LLM Router"])
     _analytics = analytics
     _config = config
     _account_pool = account_pool
+    _depletion = depletion_tracker
     _cache = CacheEngine(config.cache) if config else None
 
     # Concurrency limiter: prevents 429 "too many concurrent requests" from Ollama Cloud
@@ -115,10 +116,15 @@ def create_router(client, analytics=None, config=None, account_pool=None) -> API
 
         Provider priority list: if set in config, the first available configured
         provider is used. This enables drag-and-drop fallback ordering.
+
+        Depleted providers (usage >= threshold) are skipped for unprefixed models
+        unless explicitly requested via a model prefix.
         """
+        ALL_KNOWN = ("ollama", "opencode_go", "umans", "cline", "cmdcode", "fallback")
+
         priority = []
         if _config:
-            priority = [p for p in (_config.router.provider_priority or []) if p in ("ollama", "opencode_go", "umans", "fallback")]
+            priority = [p for p in (_config.router.provider_priority or []) if p in ALL_KNOWN]
         if priority:
             available = set()
             if _has_client("ollama"):
@@ -127,8 +133,15 @@ def create_router(client, analytics=None, config=None, account_pool=None) -> API
                 available.add("opencode_go")
             if _has_client("umans"):
                 available.add("umans")
+            if _has_client("cline"):
+                available.add("cline")
+            if _has_client("cmdcode"):
+                available.add("cmdcode")
             if _config and _config.fallback.enabled and _config.fallback.base_url:
                 available.add("fallback")
+            # Skip depleted providers — only matters for unprefixed model routing
+            if _depletion:
+                available = {p for p in available if not _depletion.is_depleted(p)}
             for p in priority:
                 if p in available:
                     return p
@@ -136,16 +149,32 @@ def create_router(client, analytics=None, config=None, account_pool=None) -> API
 
         strategy = (strategy or "round_robin").lower()
         if strategy == "ollama":
-            return "ollama"
+            if _depletion and _depletion.is_depleted("ollama"):
+                pass  # fall through to alternatives
+            else:
+                return "ollama"
         if strategy == "opencode_go":
-            return "opencode_go"
+            if _depletion and _depletion.is_depleted("opencode_go"):
+                pass
+            else:
+                return "opencode_go"
         if strategy == "umans":
-            return "umans"
+            if _depletion and _depletion.is_depleted("umans"):
+                pass
+            else:
+                return "umans"
 
         available = {"ollama"}
         if _account_pool:
             available.update({a.provider for a in _account_pool.accounts})
+        # Skip depleted providers
+        if _depletion:
+            available = {p for p in available if not _depletion.is_depleted(p)}
         available = sorted(available)
+
+        if not available:
+            # All providers depleted — return ollama as last resort (will fail with 429)
+            return "ollama"
 
         if strategy == "round_robin":
             counter = getattr(_select_default_provider, "_counter", 0)
@@ -162,7 +191,7 @@ def create_router(client, analytics=None, config=None, account_pool=None) -> API
                 return "opencode_go"
             if "umans" in available and umans_usage < ollama_usage:
                 return "umans"
-        return "ollama"
+        return available[0] if available else "ollama"
 
     def _select_account(model: str = None):
         """Select the best account for the requested provider/model.
@@ -200,6 +229,14 @@ def create_router(client, analytics=None, config=None, account_pool=None) -> API
         # Nothing in priority has an active account; fall back to legacy behavior
         strategy = getattr(_config, "unprefixed_provider_strategy", "round_robin")
         default_provider = _select_default_provider(strategy)
+        # If the default provider is depleted, _select_default_provider already
+        # skipped it — but double-check here for safety
+        if _depletion and _depletion.is_depleted(default_provider):
+            # Try to find any non-depleted provider
+            for p in ("ollama", "opencode_go", "umans", "cline", "cmdcode"):
+                if _has_client(p) and not _depletion.is_depleted(p):
+                    default_provider = p
+                    break
         provider = provider_for_model(model, default_provider=default_provider, provider_priority=priority) if model else default_provider
         if not _account_pool or len(_account_pool.accounts) <= 1:
             return None, provider
