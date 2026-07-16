@@ -2241,7 +2241,7 @@ function loadCmdcodeUsage() {
         document.getElementById('cmdcode-period').textContent = periodStart && periodEnd ? `${periodStart} → ${periodEnd}` : '—';
         // Requests
         const totalReq = u.total_requests ?? 0;
-        const successRate = u.success_rate != null ? (u.success_rate * 100).toFixed(1) + '%' : '—';
+        const successRate = u.success_rate != null ? u.success_rate.toFixed(1) + '%' : '—';
         document.getElementById('cmdcode-requests').textContent = `${totalReq} (${successRate})`;
         // Tokens
         const tokIn = u.tokens_in ?? 0;
