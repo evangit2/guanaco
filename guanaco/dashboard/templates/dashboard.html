@@ -608,6 +608,63 @@
             </div>
         </div>
 
+        <!-- Command Code Usage Card -->
+        <div class="card" id="cmdcode-usage-card" style="display:none;">
+            <h2><span class="emoji">💻</span> Command Code Usage</h2>
+            <div id="cmdcode-usage-info" class="status-check">
+                <div class="status-row"><span class="status-label">Plan</span><span class="status-value" id="cmdcode-plan">—</span></div>
+                <div class="status-row"><span class="status-label">Status</span><span class="status-value" id="cmdcode-sub-status">—</span></div>
+                <div class="status-row"><span class="status-label">Billing Period</span><span class="status-value" id="cmdcode-period" style="font-size:11px;">—</span></div>
+                <div class="status-row"><span class="status-label">Requests</span><span class="status-value" id="cmdcode-requests">—</span></div>
+                <div class="status-row"><span class="status-label">Tokens (In/Out)</span><span class="status-value" id="cmdcode-tokens" style="font-size:11px;">—</span></div>
+                <div class="status-row">
+                    <span class="status-label">Monthly Credits</span>
+                    <span class="status-value" id="cmdcode-credits-remaining">—</span>
+                </div>
+                <div style="margin:0 0 8px 0;">
+                    <div class="usage-bar-track"><div class="usage-bar-fill" id="cmdcode-credits-bar" style="width:0%;"></div></div>
+                    <div class="usage-reset" id="cmdcode-credits-label"></div>
+                </div>
+                <div class="status-row">
+                    <span class="status-label">5hr Window</span>
+                    <span class="status-value" id="cmdcode-5hr">—</span>
+                </div>
+                <div style="margin:0 0 8px 0;">
+                    <div class="usage-bar-track"><div class="usage-bar-fill" id="cmdcode-5hr-bar" style="width:0%;"></div></div>
+                </div>
+                <div class="status-row">
+                    <span class="status-label">Weekly Window</span>
+                    <span class="status-value" id="cmdcode-weekly">—</span>
+                </div>
+                <div style="margin:0 0 8px 0;">
+                    <div class="usage-bar-track"><div class="usage-bar-fill" id="cmdcode-weekly-bar" style="width:0%;"></div></div>
+                    <div class="usage-reset" id="cmdcode-weekly-reset"></div>
+                </div>
+                <div class="status-row" id="cmdcode-depleted-row" style="display:none;">
+                    <span class="status-label" style="color:var(--danger);">⚠ Depleted</span>
+                    <span class="status-value" style="color:var(--danger);font-size:11px;">Provider skipped for unprefixed models</span>
+                </div>
+            </div>
+            <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
+                <button class="btn btn-sm" onclick="loadCmdcodeUsage()">Refresh Usage</button>
+                <span id="cmdcode-usage-error" style="font-size:11px;color:var(--danger);margin-left:8px;"></span>
+            </div>
+        </div>
+
+        <!-- Depletion Tracker Card -->
+        <div class="card" id="depletion-card" style="display:none;">
+            <h2><span class="emoji">🛡️</span> Provider Depletion Status</h2>
+            <div id="depletion-info" class="status-check">
+                <div class="status-row"><span class="status-label">Check Interval</span><span class="status-value" id="depletion-interval">—</span></div>
+                <div class="status-row"><span class="status-label">Threshold</span><span class="status-value" id="depletion-threshold">—</span></div>
+                <div class="status-row"><span class="status-label">Last Poll</span><span class="status-value" id="depletion-last-poll" style="font-size:11px;">—</span></div>
+            </div>
+            <div id="depletion-providers" style="margin-top:8px;"></div>
+            <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
+                <button class="btn btn-sm" onclick="loadDepletionStatus()">Refresh</button>
+            </div>
+        </div>
+
         <!-- ROI Calculator Card -->
         <div class="card" id="roi-card" style="display:none;">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
@@ -932,7 +989,7 @@ function showTab(tab) {
     if (tab === 'cache') { loadGoUsage(); loadCacheAnalytics(); }
     if (tab === 'analytics') loadAnalytics();
     if (tab === 'history') { loadHistoryConfig(); loadHistory(); loadHistoryLogs(); }
-    if (tab === 'status') { checkOllamaStatus(); loadUsageConfig(); checkUsage(); loadStatusLog(); loadROIConfig(); }
+    if (tab === 'status') { checkOllamaStatus(); loadUsageConfig(); checkUsage(); loadStatusLog(); loadROIConfig(); loadCmdcodeUsage(); loadDepletionStatus(); }
     if (tab === 'accounts') { loadAccounts(); checkAllAccountUsage(); }
     if (tab === 'system') { loadNetworkConfig(); loadAutostart(); loadProviderStrategy(); checkForUpdate(); }
 }
@@ -2160,6 +2217,120 @@ function checkUsage() {
         planEl.textContent = 'Error';
         sessionEl.textContent = '—';
         weeklyEl.textContent = '—';
+    });
+}
+
+// ── Command Code Usage ──
+
+function loadCmdcodeUsage() {
+    const errEl = document.getElementById('cmdcode-usage-error');
+    if (errEl) errEl.textContent = '';
+    fetch('/dashboard/api/cmdcode/usage').then(r => r.json()).then(data => {
+        const card = document.getElementById('cmdcode-usage-card');
+        if (data.status === 'unavailable') {
+            if (card) card.style.display = 'none';
+            return;
+        }
+        if (card) card.style.display = '';
+        const u = data.usage || {};
+        // Plan & subscription
+        document.getElementById('cmdcode-plan').textContent = u.plan || '—';
+        document.getElementById('cmdcode-sub-status').textContent = u.subscription_status || '—';
+        const periodStart = u.period_start ? new Date(u.period_start).toLocaleDateString() : '';
+        const periodEnd = u.period_end ? new Date(u.period_end).toLocaleDateString() : '';
+        document.getElementById('cmdcode-period').textContent = periodStart && periodEnd ? `${periodStart} → ${periodEnd}` : '—';
+        // Requests
+        const totalReq = u.total_requests ?? 0;
+        const successRate = u.success_rate != null ? (u.success_rate * 100).toFixed(1) + '%' : '—';
+        document.getElementById('cmdcode-requests').textContent = `${totalReq} (${successRate})`;
+        // Tokens
+        const tokIn = u.tokens_in ?? 0;
+        const tokOut = u.tokens_out ?? 0;
+        document.getElementById('cmdcode-tokens').textContent = `${(tokIn/1000).toFixed(1)}K / ${(tokOut/1000).toFixed(1)}K`;
+        // Monthly credits
+        const remaining = u.remaining_credits ?? 0;
+        const monthlyUsed = u.monthly_credits_used ?? 0;
+        const totalCredits = remaining + monthlyUsed;
+        const usedPct = totalCredits > 0 ? (monthlyUsed / totalCredits) * 100 : 0;
+        document.getElementById('cmdcode-credits-remaining').textContent = `$${remaining.toFixed(2)} / $${totalCredits.toFixed(2)}`;
+        const creditsBar = document.getElementById('cmdcode-credits-bar');
+        creditsBar.style.width = Math.min(usedPct, 100) + '%';
+        creditsBar.style.background = usedPct > 90 ? 'var(--danger)' : usedPct > 70 ? '#f59e0b' : 'var(--accent)';
+        document.getElementById('cmdcode-credits-label').textContent = `$${monthlyUsed.toFixed(4)} used (${usedPct.toFixed(1)}%)`;
+        // 5hr window
+        const fiveHrUsed = u.five_hour_used ?? 0;
+        const fiveHrCap = u.five_hour_cap ?? 0;
+        const fiveHrPct = fiveHrCap > 0 ? (fiveHrUsed / fiveHrCap) * 100 : 0;
+        document.getElementById('cmdcode-5hr').textContent = `${fiveHrUsed.toFixed(2)} / ${fiveHrCap.toFixed(0)}`;
+        const fiveHrBar = document.getElementById('cmdcode-5hr-bar');
+        fiveHrBar.style.width = Math.min(fiveHrPct, 100) + '%';
+        fiveHrBar.style.background = fiveHrPct > 90 ? 'var(--danger)' : fiveHrPct > 70 ? '#f59e0b' : 'var(--accent)';
+        // Weekly window
+        const weeklyUsed = u.weekly_used ?? 0;
+        const weeklyCap = u.weekly_cap ?? 0;
+        const weeklyPct = weeklyCap > 0 ? (weeklyUsed / weeklyCap) * 100 : 0;
+        document.getElementById('cmdcode-weekly').textContent = `${weeklyUsed.toFixed(2)} / ${weeklyCap.toFixed(0)}`;
+        const weeklyBar = document.getElementById('cmdcode-weekly-bar');
+        weeklyBar.style.width = Math.min(weeklyPct, 100) + '%';
+        weeklyBar.style.background = weeklyPct > 90 ? 'var(--danger)' : weeklyPct > 70 ? '#f59e0b' : 'var(--accent)';
+        if (u.weekly_reset_at) {
+            const resetDate = new Date(u.weekly_reset_at);
+            document.getElementById('cmdcode-weekly-reset').textContent = '⏱ Resets ' + resetDate.toLocaleString();
+        } else {
+            document.getElementById('cmdcode-weekly-reset').textContent = '';
+        }
+        // Depletion check — query depletion status for cmdcode
+        loadDepletionStatus();
+    }).catch(err => {
+        if (errEl) errEl.textContent = 'Failed to load: ' + err.message;
+    });
+}
+
+// ── Depletion Tracker Status ──
+
+function loadDepletionStatus() {
+    fetch('/dashboard/api/depletion/status').then(r => r.json()).then(data => {
+        const card = document.getElementById('depletion-card');
+        if (data.status === 'unavailable') {
+            if (card) card.style.display = 'none';
+            return;
+        }
+        if (card) card.style.display = '';
+        const providers = data.providers || {};
+        const meta = providers._meta || {};
+        document.getElementById('depletion-interval').textContent = meta.check_interval_seconds ? (meta.check_interval_seconds / 60) + ' min' : '—';
+        document.getElementById('depletion-threshold').textContent = meta.depletion_threshold_pct ? meta.depletion_threshold_pct + '%' : '—';
+        if (meta.last_poll) {
+            const d = new Date(meta.last_poll * 1000);
+            const ago = Math.round((Date.now() - d.getTime()) / 1000);
+            document.getElementById('depletion-last-poll').textContent = ago < 60 ? ago + 's ago' : Math.round(ago / 60) + 'm ago';
+        } else {
+            document.getElementById('depletion-last-poll').textContent = '—';
+        }
+        // Render provider rows
+        const container = document.getElementById('depletion-providers');
+        const entries = Object.entries(providers).filter(([k]) => k !== '_meta');
+        if (entries.length === 0) {
+            container.innerHTML = '<div style="color:var(--text2);font-size:12px;text-align:center;padding:8px;">No providers configured</div>';
+            return;
+        }
+        container.innerHTML = entries.map(([name, info]) => {
+            const depleted = info.depleted;
+            const color = depleted ? 'var(--danger)' : 'var(--accent)';
+            const icon = depleted ? '🔴' : '🟢';
+            const note = info.note ? `<span style="font-size:10px;color:var(--text2);">${info.note}</span>` : '';
+            return `<div class="status-row" style="padding:4px 0;">
+                <span class="status-label">${icon} ${name}</span>
+                <span class="status-value" style="color:${color};font-size:11px;">${depleted ? 'DEPLETED' : 'OK'}</span>
+                ${note}
+            </div>`;
+        }).join('');
+        // Show/hide cmdcode depleted warning
+        const cmdcodeDepleted = providers.cmdcode && providers.cmdcode.depleted;
+        document.getElementById('cmdcode-depleted-row').style.display = cmdcodeDepleted ? '' : 'none';
+    }).catch(() => {
+        const card = document.getElementById('depletion-card');
+        if (card) card.style.display = 'none';
     });
 }
 
