@@ -20,6 +20,7 @@ Models: 20+ open-weight models, zero per-token cost ($1/mo flat rate)
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 import json
 import logging
@@ -36,6 +37,9 @@ logger = logging.getLogger(__name__)
 
 CMDCODE_API_BASE = "https://api.commandcode.ai"
 CMDCODE_GENERATE_URL = f"{CMDCODE_API_BASE}/alpha/generate"
+CMDCODE_USAGE_URL = f"{CMDCODE_API_BASE}/alpha/usage/summary"
+CMDCODE_CREDITS_URL = f"{CMDCODE_API_BASE}/alpha/billing/credits"
+CMDCODE_SUBSCRIPTION_URL = f"{CMDCODE_API_BASE}/alpha/billing/subscriptions"
 CMDCODE_CLI_VERSION = "0.44.1"
 
 # Static model list — Command Code Go plan offers 20+ models with ZDR support.
@@ -388,6 +392,98 @@ class CmdCodeClient(BaseProvider):
         except Exception as e:
             logger.warning("CmdCode key test failed: %s", e)
             return {"ok": False, "error": str(e)[:200]}
+
+    # ── Usage / Billing ──
+
+    async def fetch_usage(self) -> dict:
+        """Fetch monthly usage summary from Command Code.
+
+        Returns:
+            {
+                "total_requests": int,
+                "completed": int,
+                "failed": int,
+                "success_rate": float,
+                "tokens_in": int,
+                "tokens_out": int,
+                "total_tokens": int,
+                "credits_used": float,
+                "monthly_credits_used": float,
+                "remaining_credits": float,
+                "five_hour_used": float,
+                "five_hour_cap": float,
+                "weekly_used": float,
+                "weekly_cap": float,
+                "weekly_reset_at": str | None,
+                "plan": str | None,
+                "period_start": str | None,
+                "period_end": str | None,
+                "subscription_status": str | None,
+            }
+        """
+        if not self.api_key:
+            return {}
+        headers = self._build_headers()
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                # Fetch usage summary, credits, and subscription in parallel
+                usage_resp, credits_resp, sub_resp = await asyncio.gather(
+                    client.get(CMDCODE_USAGE_URL, headers=headers),
+                    client.get(CMDCODE_CREDITS_URL, headers=headers),
+                    client.get(CMDCODE_SUBSCRIPTION_URL, headers=headers),
+                    return_exceptions=True,
+                )
+
+            result: dict[str, Any] = {}
+
+            if isinstance(usage_resp, httpx.Response) and usage_resp.status_code == 200:
+                data = usage_resp.json()
+                result.update({
+                    "total_requests": data.get("totalCount", 0),
+                    "completed": data.get("completedCount", 0),
+                    "failed": data.get("failedCount", 0),
+                    "success_rate": data.get("successRate", 0),
+                    "tokens_in": data.get("totalTokensIn", 0),
+                    "tokens_out": data.get("totalTokensOut", 0),
+                    "total_tokens": data.get("totalTokens", 0),
+                    "credits_used": data.get("totalCredits", 0),
+                    "monthly_credits_used": data.get("totalMonthlyCredits", 0),
+                })
+
+            if isinstance(credits_resp, httpx.Response) and credits_resp.status_code == 200:
+                data = credits_resp.json()
+                credits = data.get("credits", {})
+                window = data.get("windowLimits", {})
+                five_hour = window.get("fiveHour", {})
+                weekly = window.get("weekly", {})
+                result.update({
+                    "remaining_credits": credits.get("monthlyCredits", 0),
+                    "five_hour_used": five_hour.get("used", 0),
+                    "five_hour_cap": five_hour.get("cap", 0),
+                    "weekly_used": weekly.get("used", 0),
+                    "weekly_cap": weekly.get("cap", 0),
+                    "weekly_reset_at": (
+                        datetime.datetime.fromtimestamp(
+                            weekly.get("resetAt", 0) / 1000,
+                            tz=datetime.timezone.utc
+                        ).isoformat() if weekly.get("resetAt") else None
+                    ),
+                })
+
+            if isinstance(sub_resp, httpx.Response) and sub_resp.status_code == 200:
+                data = sub_resp.json()
+                sub = data.get("data", {})
+                result.update({
+                    "plan": sub.get("planId"),
+                    "period_start": sub.get("currentPeriodStart"),
+                    "period_end": sub.get("currentPeriodEnd"),
+                    "subscription_status": sub.get("status"),
+                })
+
+            return result
+        except Exception as e:
+            logger.warning("CmdCode usage fetch failed: %s", e)
+            return {}
 
     # ── Capabilities ──
 

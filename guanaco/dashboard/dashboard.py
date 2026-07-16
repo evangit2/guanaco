@@ -1335,6 +1335,18 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
             return result
         return {"ok": False, "error": "No client available for this provider"}
 
+    # ── Command Code Usage ──
+
+    @router.get("/api/cmdcode/usage")
+    async def get_cmdcode_usage(request: Request):
+        """Fetch Command Code monthly usage, credits, and subscription info."""
+        app_clients = getattr(request.app.state, "clients", {})
+        cmdcode_client = app_clients.get("cmdcode")
+        if cmdcode_client and hasattr(cmdcode_client, "fetch_usage"):
+            usage = await cmdcode_client.fetch_usage()
+            return {"status": "ok", "usage": usage}
+        return {"status": "unavailable", "error": "Command Code provider not configured", "usage": {}}
+
     @router.post("/api/accounts/session-cookie")
     async def set_account_session_cookie(request: Request):
         """Set the session cookie for an account (for usage scraping)."""

@@ -21,7 +21,7 @@ from guanaco.cmdcode_client import CmdCodeClient
 from guanaco.providers.custom import CustomProvider
 from guanaco.multi_provider_client import MultiProviderChatClient
 from guanaco.accounts import AccountPool
-__version__ = "0.7.3"
+__version__ = "0.7.4"
 from guanaco.router.router import create_router as create_llm_router
 from guanaco.search.providers import ALL_PROVIDERS
 from guanaco.dashboard import create_dashboard_router
