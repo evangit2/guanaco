@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.7.4] - 2026-07-16
+
+### Added
+- **Command Code usage tracking.** `CmdCodeClient.fetch_usage()` calls three Command Code API endpoints (`/alpha/usage/summary`, `/alpha/billing/credits`, `/alpha/billing/subscriptions`) in parallel and returns a unified usage dict with: total requests, tokens in/out, credits used, remaining credits, 5-hour and weekly window limits with reset times, plan ID, and subscription billing period.
+  - New dashboard endpoint: `GET /dashboard/api/cmdcode/usage` — returns live usage data for the Command Code provider.
+
+---
+
 ## [0.7.3] - 2026-07-15
 
 ### Changed
