@@ -62,6 +62,15 @@ class RouterConfig(BaseModel):
     depletion_check_interval: int = 300  # seconds (5 minutes)
     depletion_threshold_pct: float = 99.9  # percentage of quota used to trigger depletion
 
+    # ── UMANS concurrency tracking ──
+    # A background task polls the UMANS /v1/usage endpoint every N seconds.
+    # When concurrent_sessions >= threshold, UMANS is skipped for unprefixed
+    # model routing (requests fall through to the next provider in priority).
+    # Explicit umans/ prefixed models always bypass this check.
+    concurrency_tracking_enabled: bool = True
+    concurrency_check_interval: int = 15   # seconds between polls
+    concurrency_threshold: int = 3          # skip UMANS when concurrent_sessions >= this
+
 
 class SearchConfig(BaseModel):
     """Search provider settings — moved from Models tab to Search tab."""
@@ -424,6 +433,14 @@ def load_config(path: Optional[Path] = None) -> AppConfig:
     if "provider_priority" in router and isinstance(router["provider_priority"], list):
         if "cmdcode" not in router["provider_priority"]:
             router["provider_priority"].append("cmdcode")
+
+    # v0.7.6+: ensure concurrency tracking config exists in router
+    if "concurrency_tracking_enabled" not in router:
+        router["concurrency_tracking_enabled"] = True
+    if "concurrency_check_interval" not in router:
+        router["concurrency_check_interval"] = 15
+    if "concurrency_threshold" not in router:
+        router["concurrency_threshold"] = 3
 
     # v0.6.0+: visibility setting controls host binding
     if "visibility" not in router:

@@ -23,7 +23,8 @@ from guanaco.providers.custom import CustomProvider
 from guanaco.multi_provider_client import MultiProviderChatClient
 from guanaco.accounts import AccountPool
 from guanaco.depletion import ProviderDepletionTracker
-__version__ = "0.7.5"
+from guanaco.umans_concurrency import UmansConcurrencyTracker
+__version__ = "0.7.6"
 from guanaco.router.router import create_router as create_llm_router
 from guanaco.search.providers import ALL_PROVIDERS
 from guanaco.dashboard import create_dashboard_router
@@ -173,6 +174,14 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         ollama_session_cookie=config.usage.session_cookie,
     )
 
+    # ── UMANS concurrency tracker ──
+    concurrency_tracker = UmansConcurrencyTracker(
+        clients,
+        check_interval=config.router.concurrency_check_interval,
+        saturation_threshold=config.router.concurrency_threshold,
+        enabled=config.router.concurrency_tracking_enabled,
+    )
+
     # A generic OllamaClient is still useful for web fetch/search utilities even when
     # no Ollama API key is configured for chat. It operates with an empty auth header.
     utility_client: OllamaClient = clients.get("ollama") or OllamaClient(
@@ -226,7 +235,10 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             logger.warning("Running with no LLM provider configured. Only search APIs will work.")
         # Start background depletion tracking
         await depletion_tracker.start()
+        # Start UMANS concurrency tracking
+        await concurrency_tracker.start()
         yield
+        await concurrency_tracker.stop()
         await depletion_tracker.stop()
         if "ollama" in clients:
             await clients["ollama"].close()
@@ -317,7 +329,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         return {"status": "ok", "version": __version__}
 
     # ── LLM Router ──
-    app.include_router(create_llm_router(chat_client, analytics=analytics, config=config, account_pool=account_pool, depletion_tracker=depletion_tracker))
+    app.include_router(create_llm_router(chat_client, analytics=analytics, config=config, account_pool=account_pool, depletion_tracker=depletion_tracker, concurrency_tracker=concurrency_tracker))
 
     # ── Search Providers ──
     for provider_cls in ALL_PROVIDERS:
@@ -450,6 +462,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     app.state.account_pool = account_pool
     app.state.clients = clients
     app.state.depletion_tracker = depletion_tracker
+    app.state.concurrency_tracker = concurrency_tracker
 
     # ── Ollama status & models (top-level API) ──
     @app.get("/api/ollama/status")

@@ -1357,6 +1357,16 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
             return {"status": "ok", "providers": tracker.status()}
         return {"status": "unavailable", "error": "Depletion tracker not initialized"}
 
+    # ── UMANS Concurrency Status ──
+
+    @router.get("/api/umans/concurrency")
+    async def get_umans_concurrency(request: Request):
+        """Get the current UMANS concurrency state with rolling history."""
+        tracker = getattr(request.app.state, "concurrency_tracker", None)
+        if tracker:
+            return {"status": "ok", **tracker.status()}
+        return {"status": "unavailable", "error": "Concurrency tracker not initialized"}
+
     @router.post("/api/accounts/session-cookie")
     async def set_account_session_cookie(request: Request):
         """Set the session cookie for an account (for usage scraping)."""

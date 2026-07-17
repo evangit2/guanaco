@@ -665,6 +665,33 @@
             </div>
         </div>
 
+        <!-- UMANS Concurrency Card -->
+        <div class="card" id="umans-concurrency-card" style="display:none;">
+            <h2><span class="emoji">⚡</span> UMANS Concurrency</h2>
+            <div id="umans-concurrency-info" class="status-check">
+                <div class="status-row"><span class="status-label">Current Sessions</span><span class="status-value" id="umans-conc-current">—</span></div>
+                <div class="status-row"><span class="status-label">Limit</span><span class="status-value" id="umans-conc-limit">—</span></div>
+                <div class="status-row"><span class="status-label">Threshold</span><span class="status-value" id="umans-conc-threshold">—</span></div>
+                <div class="status-row"><span class="status-label">Status</span><span class="status-value" id="umans-conc-status">—</span></div>
+                <div class="status-row"><span class="status-label">Last Poll</span><span class="status-value" id="umans-conc-last-poll" style="font-size:11px;">—</span></div>
+            </div>
+            <div id="umans-conc-bar-container" style="margin-top:12px;">
+                <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text2);margin-bottom:4px;">
+                    <span>0</span><span id="umans-conc-bar-label">Concurrent sessions</span><span id="umans-conc-bar-max">—</span>
+                </div>
+                <div style="background:var(--surface2);border-radius:8px;height:24px;overflow:hidden;position:relative;">
+                    <div id="umans-conc-bar" style="height:100%;border-radius:8px;transition:width 0.3s,background 0.3s;width:0%;background:var(--success);"></div>
+                </div>
+            </div>
+            <div id="umans-conc-sparkline" style="margin-top:12px;">
+                <div style="font-size:11px;color:var(--text2);margin-bottom:4px;">Last hour</div>
+                <canvas id="umans-conc-canvas" width="300" height="40" style="width:100%;height:40px;"></canvas>
+            </div>
+            <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
+                <button class="btn btn-sm" onclick="loadUmansConcurrency()">Refresh</button>
+            </div>
+        </div>
+
         <!-- ROI Calculator Card -->
         <div class="card" id="roi-card" style="display:none;">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
@@ -989,7 +1016,7 @@ function showTab(tab) {
     if (tab === 'cache') { loadGoUsage(); loadCacheAnalytics(); }
     if (tab === 'analytics') loadAnalytics();
     if (tab === 'history') { loadHistoryConfig(); loadHistory(); loadHistoryLogs(); }
-    if (tab === 'status') { checkOllamaStatus(); loadUsageConfig(); checkUsage(); loadStatusLog(); loadROIConfig(); loadCmdcodeUsage(); loadDepletionStatus(); }
+    if (tab === 'status') { checkOllamaStatus(); loadUsageConfig(); checkUsage(); loadStatusLog(); loadROIConfig(); loadCmdcodeUsage(); loadDepletionStatus(); loadUmansConcurrency(); }
     if (tab === 'accounts') { loadAccounts(); checkAllAccountUsage(); }
     if (tab === 'system') { loadNetworkConfig(); loadAutostart(); loadProviderStrategy(); checkForUpdate(); }
 }
@@ -2333,6 +2360,114 @@ function loadDepletionStatus() {
         if (card) card.style.display = 'none';
     });
 }
+
+// ── UMANS Concurrency Tracker ──
+
+function loadUmansConcurrency() {
+    fetch('/dashboard/api/umans/concurrency').then(r => r.json()).then(data => {
+        const card = document.getElementById('umans-concurrency-card');
+        if (data.status === 'unavailable') {
+            if (card) card.style.display = 'none';
+            return;
+        }
+        if (card) card.style.display = '';
+
+        const meta = data._meta || {};
+        const umansInfo = data.umans || {};
+        const lastCheck = umansInfo.last_check || {};
+        const concurrent = lastCheck.concurrent_sessions ?? 0;
+        const limit = lastCheck.limit ?? meta.saturation_threshold ?? 4;
+        const threshold = meta.saturation_threshold ?? 3;
+        const saturated = umansInfo.saturated ?? false;
+
+        document.getElementById('umans-conc-current').textContent = concurrent;
+        document.getElementById('umans-conc-limit').textContent = limit ?? '—';
+        document.getElementById('umans-conc-threshold').textContent = threshold;
+        document.getElementById('umans-conc-status').textContent = saturated ? '⚠️ SATURATED — routing to fallback' : '🟢 OK';
+        document.getElementById('umans-conc-status').style.color = saturated ? 'var(--warning)' : 'var(--success)';
+
+        if (meta.last_poll) {
+            const ago = Math.round(Date.now() / 1000 - meta.last_poll);
+            document.getElementById('umans-conc-last-poll').textContent = ago < 60 ? ago + 's ago' : Math.round(ago / 60) + 'm ago';
+        } else {
+            document.getElementById('umans-conc-last-poll').textContent = '—';
+        }
+
+        // Bar gauge
+        const pct = limit > 0 ? Math.min((concurrent / limit) * 100, 100) : 0;
+        const bar = document.getElementById('umans-conc-bar');
+        bar.style.width = pct + '%';
+        document.getElementById('umans-conc-bar-max').textContent = limit ?? '—';
+        if (concurrent >= threshold) {
+            bar.style.background = 'var(--danger)';
+        } else if (concurrent >= threshold - 1) {
+            bar.style.background = '#f59e0b';
+        } else {
+            bar.style.background = 'var(--success)';
+        }
+
+        // Sparkline from history
+        const history = meta.history || [];
+        drawConcSparkline(history, limit, threshold);
+    }).catch(() => {
+        const card = document.getElementById('umans-concurrency-card');
+        if (card) card.style.display = 'none';
+    });
+}
+
+function drawConcSparkline(history, limit, threshold) {
+    const canvas = document.getElementById('umans-conc-canvas');
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const w = canvas.width, h = canvas.height;
+    ctx.clearRect(0, 0, w, h);
+    if (history.length < 2) return;
+
+    const maxVal = Math.max(limit || 4, ...history.map(p => p.concurrent || 0));
+    const step = w / (history.length - 1);
+
+    // Threshold line
+    if (threshold && limit > 0) {
+        const ty = h - (threshold / maxVal) * h;
+        ctx.strokeStyle = '#f59e0b';
+        ctx.setLineDash([3, 3]);
+        ctx.beginPath();
+        ctx.moveTo(0, ty);
+        ctx.lineTo(w, ty);
+        ctx.stroke();
+        ctx.setLineDash([]);
+    }
+
+    // Area fill
+    ctx.beginPath();
+    ctx.moveTo(0, h);
+    history.forEach((p, i) => {
+        const val = p.concurrent || 0;
+        const x = i * step;
+        const y = h - (val / maxVal) * h;
+        ctx.lineTo(x, y);
+    });
+    ctx.lineTo(w, h);
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(99, 102, 241, 0.15)';
+    ctx.fill();
+
+    // Line
+    ctx.beginPath();
+    history.forEach((p, i) => {
+        const val = p.concurrent || 0;
+        const x = i * step;
+        const y = h - (val / maxVal) * h;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+    });
+    ctx.strokeStyle = 'var(--accent)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+}
+
+// Auto-refresh UMANS concurrency every 15s
+setInterval(loadUmansConcurrency, 15000);
 
 function saveSessionCookie() {
     const input = document.getElementById('session-cookie');
