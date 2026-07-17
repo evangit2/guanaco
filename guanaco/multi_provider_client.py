@@ -20,9 +20,51 @@ class MultiProviderChatClient:
         self._account_pool = account_pool
         self.api_key = ""  # Router may read this; real keys come from account_pool overrides
         self.timeout = 120.0
+        self._provider_priority: Optional[list[str]] = None
+        # Saturated/depleted providers to skip (set by router at runtime)
+        self._skip_providers: set[str] = set()
+
+    def set_provider_priority(self, priority: Optional[list[str]]):
+        """Called by the router to propagate the configured priority order."""
+        self._provider_priority = priority
+
+    def set_skip_providers(self, skip: set[str]):
+        """Called by the router to mark providers that should be skipped
+        (e.g. UMANS when saturated).  Set to empty set to clear."""
+        self._skip_providers = skip
 
     def _client_for(self, model: str):
-        provider = provider_for_model(model)
+        provider = provider_for_model(model, provider_priority=self._provider_priority)
+        # If the resolved provider is marked for skipping (saturated/depleted),
+        # try the next provider in the priority list that also claims this model.
+        # BUT: explicit provider prefixes (e.g. "umans/glm-5.2") always bypass
+        # saturation — the user explicitly requested that provider.
+        _model_lower = (model or "").lower().strip()
+        _has_explicit_prefix = any(
+            _model_lower.startswith(p)
+            for p in ("umans/", "umans-", "ollama/", "opencode-go/",
+                      "cline/", "cmdcode/")
+        )
+        if provider in self._skip_providers and self._provider_priority and not _has_explicit_prefix:
+            from guanaco.accounts import (
+                _normalize_model_for_provider,
+                KNOWN_GO_MODELS, KNOWN_OLLAMA_MODELS,
+                KNOWN_UMANS_MODELS, KNOWN_CLINE_MODELS, KNOWN_CMDCODE_MODELS,
+            )
+            canon = _normalize_model_for_provider(model)
+            claiming = []
+            if canon in KNOWN_GO_MODELS: claiming.append("opencode_go")
+            if canon in KNOWN_UMANS_MODELS: claiming.append("umans")
+            if canon in KNOWN_CLINE_MODELS: claiming.append("cline")
+            if canon in KNOWN_CMDCODE_MODELS: claiming.append("cmdcode")
+            if canon in KNOWN_OLLAMA_MODELS: claiming.append("ollama")
+            # If no provider claims this model, fall through the priority list
+            # to find any non-skipped provider.
+            search_list = claiming if claiming else list(self._provider_priority)
+            for p in self._provider_priority:
+                if p in search_list and p not in self._skip_providers:
+                    provider = p
+                    break
         client = self._clients.get(provider)
         if client is None and provider == "opencode_go":
             # If user omitted the prefix but has Go accounts, see if the model is a known Go model.
