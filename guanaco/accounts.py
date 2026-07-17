@@ -108,17 +108,31 @@ def provider_for_model(model: str, default_provider: str = "ollama", provider_pr
         if m.startswith(prefix):
             return "cmdcode"
     canon = _normalize_model_for_provider(model)
+    # Build a set of all providers that claim this model as "known".
+    claiming_providers = []
     if canon in KNOWN_GO_MODELS:
-        return "opencode_go"
+        claiming_providers.append("opencode_go")
     if canon in KNOWN_UMANS_MODELS:
-        return "umans"
+        claiming_providers.append("umans")
     if canon in KNOWN_CLINE_MODELS:
-        return "cline"
+        claiming_providers.append("cline")
     if canon in KNOWN_CMDCODE_MODELS:
-        return "cmdcode"
+        claiming_providers.append("cmdcode")
     if canon in KNOWN_OLLAMA_MODELS:
-        return "ollama"
-    # If provider_priority is set, prefer the first configured provider
+        claiming_providers.append("ollama")
+    # If only one provider claims it, use that.
+    if len(claiming_providers) == 1:
+        return claiming_providers[0]
+    # If multiple providers claim it, pick the first one in provider_priority.
+    # Falls back to the hardcoded order above if no priority list.
+    if len(claiming_providers) > 1:
+        if provider_priority:
+            for p in provider_priority:
+                if p in claiming_providers:
+                    return p
+        # No priority list — use the old hardcoded order (Go > UMANS > Cline > CmdCode > Ollama)
+        return claiming_providers[0]
+    # Model is not in any known set — use provider_priority or default
     if provider_priority:
         for p in provider_priority:
             if p in ("ollama", "opencode_go", "umans", "cline", "cmdcode"):
