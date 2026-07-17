@@ -71,12 +71,13 @@ def get_concurrency_limiter() -> Optional[OllamaConcurrencyLimiter]:
 
 # ── Provider creation ──
 
-def create_router(client, analytics=None, config=None, account_pool=None, depletion_tracker=None) -> APIRouter:
+def create_router(client, analytics=None, config=None, account_pool=None, depletion_tracker=None, concurrency_tracker=None) -> APIRouter:
     router = APIRouter(tags=["LLM Router"])
     _analytics = analytics
     _config = config
     _account_pool = account_pool
     _depletion = depletion_tracker
+    _concurrency = concurrency_tracker
     _cache = CacheEngine(config.cache) if config else None
 
     # Concurrency limiter: prevents 429 "too many concurrent requests" from Ollama Cloud
@@ -139,9 +140,11 @@ def create_router(client, analytics=None, config=None, account_pool=None, deplet
                 available.add("cmdcode")
             if _config and _config.fallback.enabled and _config.fallback.base_url:
                 available.add("fallback")
-            # Skip depleted providers — only matters for unprefixed model routing
+            # Skip depleted or concurrency-saturated providers — only matters for unprefixed model routing
             if _depletion:
                 available = {p for p in available if not _depletion.is_depleted(p)}
+            if _concurrency:
+                available = {p for p in available if not _concurrency.is_saturated(p)}
             for p in priority:
                 if p in available:
                     return p
@@ -161,15 +164,19 @@ def create_router(client, analytics=None, config=None, account_pool=None, deplet
         if strategy == "umans":
             if _depletion and _depletion.is_depleted("umans"):
                 pass
+            elif _concurrency and _concurrency.is_saturated("umans"):
+                pass
             else:
                 return "umans"
 
         available = {"ollama"}
         if _account_pool:
             available.update({a.provider for a in _account_pool.accounts})
-        # Skip depleted providers
+        # Skip depleted or saturated providers
         if _depletion:
             available = {p for p in available if not _depletion.is_depleted(p)}
+        if _concurrency:
+            available = {p for p in available if not _concurrency.is_saturated(p)}
         available = sorted(available)
 
         if not available:
@@ -229,12 +236,21 @@ def create_router(client, analytics=None, config=None, account_pool=None, deplet
         # Nothing in priority has an active account; fall back to legacy behavior
         strategy = getattr(_config, "unprefixed_provider_strategy", "round_robin")
         default_provider = _select_default_provider(strategy)
-        # If the default provider is depleted, _select_default_provider already
+        # If the default provider is depleted or saturated, _select_default_provider already
         # skipped it — but double-check here for safety
         if _depletion and _depletion.is_depleted(default_provider):
-            # Try to find any non-depleted provider
+            # Try to find any non-depleted, non-saturated provider
             for p in ("ollama", "opencode_go", "umans", "cline", "cmdcode"):
                 if _has_client(p) and not _depletion.is_depleted(p):
+                    if _concurrency and _concurrency.is_saturated(p):
+                        continue
+                    default_provider = p
+                    break
+        elif _concurrency and _concurrency.is_saturated(default_provider):
+            for p in ("ollama", "opencode_go", "umans", "cline", "cmdcode"):
+                if _has_client(p) and not _concurrency.is_saturated(p):
+                    if _depletion and _depletion.is_depleted(p):
+                        continue
                     default_provider = p
                     break
         provider = provider_for_model(model, default_provider=default_provider, provider_priority=priority) if model else default_provider
