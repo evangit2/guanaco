@@ -445,7 +445,7 @@ def create_router(client, analytics=None, config=None, account_pool=None, deplet
                         except Exception:
                             pass
                     level = usage_levels.get(name, 0)
-                    multiplier = level * 0.25 if level else client._get_model_multiplier(name)
+                    multiplier = level * 0.25 if level else (provider_client._get_model_multiplier(name) if hasattr(provider_client, "_get_model_multiplier") else 1.0)
                     data.append({
                         "id": display_name,
                         "object": "model",
