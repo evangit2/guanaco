@@ -85,14 +85,17 @@ class TestClinePassClient:
         assert client.chat_url == "https://custom.example.com/v1/chat/completions"
 
     def test_strip_cline_prefix(self):
-        assert _strip_cline_prefix("cline/glm-5.2") == "glm-5.2"
-        assert _strip_cline_prefix("glm-5.2") == "glm-5.2"
-        assert _strip_cline_prefix("cline/kimi-k2.7-code") == "kimi-k2.7-code"
+        # _strip_cline_prefix now returns modelType/model format for Cline's gateway
+        assert _strip_cline_prefix("cline/glm-5.2") == "zai/glm-5.2"
+        assert _strip_cline_prefix("glm-5.2") == "zai/glm-5.2"
+        assert _strip_cline_prefix("cline/kimi-k2.7-code") == "moonshotai/kimi-k2.7-code"
+        # Already-prefixed models pass through
+        assert _strip_cline_prefix("zai/glm-5.2") == "zai/glm-5.2"
 
     def test_prepare_payload_strips_prefix(self):
         client = ClinePassClient(api_key="sk_test")
         payload = client._prepare_payload({"model": "cline/glm-5.2", "messages": []})
-        assert payload["model"] == "glm-5.2"
+        assert payload["model"] == "zai/glm-5.2"
 
     def test_prepare_payload_strips_reasoning_content(self):
         client = ClinePassClient(api_key="sk_test")
