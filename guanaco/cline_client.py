@@ -91,23 +91,29 @@ CLINE_MODEL_TYPES: dict[str, str] = {
 
 
 def _strip_cline_prefix(model: str) -> str:
-    """Return the Cline gateway model id in modelType/model format.
+    """Return the model id in cline-pass/<model> format for subscription routing.
 
-    Cline's API requires the format 'modelType/model' (e.g. 'zai/glm-5.2').
-    This strips any 'cline/' prefix, then prepends the correct model type.
+    Cline's API accepts two routing formats:
+    - cline-pass/<model>  → routes through the Cline Pass subscription (free)
+    - <type>/<model>      → routes through Cline Credits (pay-per-use)
+
+    Using cline-pass/ ensures requests count against the subscription quota
+    instead of draining the credit balance. This function strips any existing
+    'cline/' prefix and prepends 'cline-pass/'.
     """
     model = model.strip()
     lower = model.lower()
+    # Strip Guanaco's 'cline/' prefix if present
     if lower.startswith("cline/"):
         model = model[len("cline/"):]
-    # If the model already has a provider/type prefix (e.g. "zai/glm-5.2"), use as-is
-    if "/" in model:
+    # If already in cline-pass/ format, use as-is
+    if lower.startswith("cline-pass/"):
         return model
-    # Otherwise, look up the correct model type and prepend it
-    model_type = CLINE_MODEL_TYPES.get(model.lower())
-    if model_type:
-        return f"{model_type}/{model}"
-    return model
+    # If the model has a type prefix (e.g. "zai/glm-5.2"), strip it — we want
+    # the bare model name under cline-pass/
+    if "/" in model and not model.lower().startswith("cline-pass/"):
+        model = model.split("/", 1)[-1]
+    return f"cline-pass/{model}"
 
 
 class ClinePassClient(BaseProvider):
@@ -223,9 +229,9 @@ class ClinePassClient(BaseProvider):
     def _get_model_capabilities(self, model: str) -> dict:
         """Return capability dict for a Cline Pass model."""
         canonical = _strip_cline_prefix(model)
-        # canonical may be "zai/glm-5.2" — strip the type prefix for CLINE_MODELS lookup
+        # canonical is "cline-pass/<model>" — extract bare name for CLINE_MODELS lookup
         bare = canonical.split("/", 1)[-1] if "/" in canonical else canonical
-        caps = CLINE_MODELS.get(bare, {})
+        caps = CLINE_MODELS.get(bare.lower(), {})
         return {
             "supports_vision": bool(caps.get("supports_vision", False)),
             "supports_tools": bool(caps.get("supports_tools", True)),
