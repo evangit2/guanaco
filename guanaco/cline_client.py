@@ -74,12 +74,39 @@ CLINE_MODELS: dict[str, dict[str, Any]] = {
 }
 
 
+# Cline's gateway requires the format: modelType/model (e.g. "zai/glm-5.2").
+# Each model belongs to a specific provider type. Discovered via API testing.
+CLINE_MODEL_TYPES: dict[str, str] = {
+    "glm-5.2": "zai",
+    "kimi-k2.7-code": "moonshotai",
+    "kimi-k2.6": "moonshotai",
+    "deepseek-v4-pro": "deepseek",
+    "deepseek-v4-flash": "deepseek",
+    "mimo-v2.5": "xiaomi",
+    "mimo-v2.5-pro": "xiaomi",
+    "minimax-m3": "minimax",
+    "qwen3.7-max": "qwen",
+    "qwen3.7-plus": "qwen",
+}
+
+
 def _strip_cline_prefix(model: str) -> str:
-    """Return the model id without the cline/ prefix."""
+    """Return the Cline gateway model id in modelType/model format.
+
+    Cline's API requires the format 'modelType/model' (e.g. 'zai/glm-5.2').
+    This strips any 'cline/' prefix, then prepends the correct model type.
+    """
     model = model.strip()
     lower = model.lower()
     if lower.startswith("cline/"):
         model = model[len("cline/"):]
+    # If the model already has a provider/type prefix (e.g. "zai/glm-5.2"), use as-is
+    if "/" in model:
+        return model
+    # Otherwise, look up the correct model type and prepend it
+    model_type = CLINE_MODEL_TYPES.get(model.lower())
+    if model_type:
+        return f"{model_type}/{model}"
     return model
 
 
@@ -196,7 +223,9 @@ class ClinePassClient(BaseProvider):
     def _get_model_capabilities(self, model: str) -> dict:
         """Return capability dict for a Cline Pass model."""
         canonical = _strip_cline_prefix(model)
-        caps = CLINE_MODELS.get(canonical, {})
+        # canonical may be "zai/glm-5.2" — strip the type prefix for CLINE_MODELS lookup
+        bare = canonical.split("/", 1)[-1] if "/" in canonical else canonical
+        caps = CLINE_MODELS.get(bare, {})
         return {
             "supports_vision": bool(caps.get("supports_vision", False)),
             "supports_tools": bool(caps.get("supports_tools", True)),
@@ -238,6 +267,15 @@ class ClinePassClient(BaseProvider):
         elapsed = time.time() - start
         resp.raise_for_status()
         data = resp.json()
+
+        # Cline wraps responses under a "data" key — unwrap it so the router
+        # sees the standard OpenAI format with "choices" at top level.
+        if isinstance(data, dict) and "data" in data and "choices" not in data:
+            inner = data["data"]
+            if isinstance(inner, dict):
+                # Preserve any top-level fields like "success" but use inner for choices/usage
+                inner["_oct_metrics"] = data.get("_oct_metrics", {})
+                data = inner
 
         usage = data.get("usage", {})
         metrics = {

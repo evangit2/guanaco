@@ -100,9 +100,36 @@ def create_router(client, analytics=None, config=None, account_pool=None, deplet
     else:
         _clients = {"ollama": client}
 
+    # Propagate provider priority to the MultiProviderChatClient so that
+    # _client_for() uses the same priority order as _select_account().
+    _provider_priority_config = None
+    if _config:
+        _provider_priority_config = [
+            p for p in (_config.router.provider_priority or [])
+            if p in ("ollama", "opencode_go", "umans", "cline", "cmdcode")
+        ]
+    if hasattr(client, "set_provider_priority"):
+        client.set_provider_priority(_provider_priority_config)
+
     def _has_client(name: str) -> bool:
         c = _clients.get(name)
         return c is not None and getattr(c, "api_key", None) != "***"
+
+    def _update_skip_providers():
+        """Compute the set of saturated/depleted providers and propagate it to
+        the MultiProviderChatClient so that _client_for() skips them too.
+        This ensures the actual request dispatch agrees with _select_account()."""
+        skip: set[str] = set()
+        if _depletion:
+            for p in ("ollama", "opencode_go", "umans", "cline", "cmdcode"):
+                if _depletion.is_depleted(p):
+                    skip.add(p)
+        if _concurrency:
+            for p in ("ollama", "opencode_go", "umans", "cline", "cmdcode"):
+                if _concurrency.is_saturated(p):
+                    skip.add(p)
+        if hasattr(client, "set_skip_providers"):
+            client.set_skip_providers(skip)
 
 
     def _select_default_provider(strategy: str) -> str:
@@ -218,11 +245,33 @@ def create_router(client, analytics=None, config=None, account_pool=None, deplet
             strategy = getattr(_config, "unprefixed_provider_strategy", "round_robin")
             priority = [_select_default_provider(strategy)]
 
+        # Determine if the model has an explicit provider prefix (e.g. "umans/glm-5.2").
+        # Explicit prefixes bypass saturation/depletion checks — the user asked for that
+        # specific provider.  Bare model names (e.g. "glm-5.2") that match via the
+        # known-models lookup do NOT bypass — they should respect saturation so that
+        # a saturated UMANS falls through to the next provider in the priority list.
+        _model_lower = (model or "").lower().strip()
+        _has_explicit_prefix = any(
+            _model_lower.startswith(p)
+            for p in ("umans/", "umans-", "ollama/", "opencode-go/",
+                      "cline/", "cmdcode/")
+        )
+
         # Explicit provider wins: pick its account if available.
         preferred = ([explicit_provider] if explicit_provider else []) + priority
         for provider in preferred:
             if not _has_client(provider):
                 continue
+            # Respect saturation/depletion for non-explicitly-prefixed models.
+            # This is the critical fix: bare model names like "glm-5.2" that match
+            # KNOWN_UMANS_MODELS would otherwise always route to UMANS even when
+            # saturated, because the preferred loop returned the first active account
+            # without checking concurrency state.
+            if not _has_explicit_prefix:
+                if _depletion and _depletion.is_depleted(provider):
+                    continue
+                if _concurrency and _concurrency.is_saturated(provider):
+                    continue
             if _account_pool:
                 if not _account_pool.has_active_account(provider, model=model):
                     continue
@@ -396,7 +445,7 @@ def create_router(client, analytics=None, config=None, account_pool=None, deplet
                         except Exception:
                             pass
                     level = usage_levels.get(name, 0)
-                    multiplier = level * 0.25 if level else client._get_model_multiplier(name)
+                    multiplier = level * 0.25 if level else (provider_client._get_model_multiplier(name) if hasattr(provider_client, "_get_model_multiplier") else 1.0)
                     data.append({
                         "id": display_name,
                         "object": "model",
@@ -687,6 +736,7 @@ def create_router(client, analytics=None, config=None, account_pool=None, deplet
         if _cache and _cache.is_enabled() and not body.stream:
             async def _fetch_from_upstream(p: dict) -> dict:
                 """Fetch from Ollama Cloud with fallback, retrying on empty response."""
+                _update_skip_providers()
                 request_key, account_name = _select_account(model=resolved_model)
                 _provider = provider_for_model(resolved_model, default_provider=_select_default_provider(getattr(_config, 'unprefixed_provider_strategy', 'round_robin')), provider_priority=([p for p in (_config.router.provider_priority or []) if p in ("ollama", "opencode_go", "umans", "cline", "cmdcode")] if _config else None))
                 ollama_provider = f"{_provider}:{account_name}" if account_name != _provider else _provider
@@ -797,6 +847,7 @@ def create_router(client, analytics=None, config=None, account_pool=None, deplet
 
         # ── Original path for streaming or cache disabled ──
         # Select account only when actually calling Ollama upstream
+        _update_skip_providers()
         _request_key, _account_name = _select_account(model=resolved_model)
         _provider = provider_for_model(resolved_model, default_provider=_select_default_provider(getattr(_config, 'unprefixed_provider_strategy', 'round_robin')), provider_priority=([p for p in (_config.router.provider_priority or []) if p in ("ollama", "opencode_go", "umans", "cline", "cmdcode")] if _config else None))
         _ollama_provider = f"{_provider}:{_account_name}" if _account_name != _provider else _provider
