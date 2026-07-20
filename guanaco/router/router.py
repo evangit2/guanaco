@@ -608,10 +608,16 @@ def create_router(client, analytics=None, config=None, account_pool=None, deplet
         # Cache hits must be account-agnostic and must not consume a rotation slot or
         # pollute per-account usage analytics.
 
-        # Convert image URLs to base64 for Ollama Cloud compatibility
+        # Convert image URLs to base64 for Ollama Cloud compatibility.
+        # Only Ollama Cloud needs this — it can't fetch URLs. Other providers
+        # (UMANS, Cline, CmdCode) handle image URLs natively and fail with base64.
         if _has_vision_content(body.messages):
-            body.messages = await _convert_image_urls_to_base64(body.messages)
-            log.info("Converted image URLs to base64 for vision request on model %s", resolved_model)
+            _vision_provider = provider_for_model(resolved_model)
+            if _vision_provider == "ollama":
+                body.messages = await _convert_image_urls_to_base64(body.messages)
+                log.info("Converted image URLs to base64 for vision request on model %s (provider: ollama)", resolved_model)
+            else:
+                log.debug("Skipping base64 conversion for vision request on %s (provider: %s)", resolved_model, _vision_provider)
         
         payload = body.model_dump(exclude_none=True)
         payload["model"] = resolved_model
