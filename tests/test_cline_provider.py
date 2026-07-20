@@ -8,7 +8,7 @@ from guanaco.accounts import (
     KNOWN_CLINE_MODELS,
     AccountPool,
 )
-from guanaco.cline_client import ClinePassClient, _strip_cline_prefix, CLINE_MODELS
+from guanaco.cline_client import ClinePassClient, _strip_cline_prefix, CLINE_MODELS, _parse_plan_models
 
 
 class TestClineKeyInference:
@@ -132,6 +132,43 @@ class TestClinePassClient:
         assert "kimi-k2.7-code" in model_ids
         assert "minimax-m3" in model_ids
         assert "deepseek-v4-flash" in model_ids
+
+    def test_parse_plan_models(self):
+        """_parse_plan_models extracts model IDs from plan features.included."""
+        included = [
+            "Low cost subscription pricing",
+            "Generous limits and reliable access",
+            "Built for as many programmers as possible",
+            "Includes Kimi K3, GLM 5.2, Kimi K2.6, Kimi K2.7 Code, Mimo v2.5, "
+            "Mimo v2.5 Pro, Minimax M3, Qwen3.7 Plus, Qwen3.7 Max, "
+            "DeepSeek V4 Pro, and DeepSeek V4 Flash",
+        ]
+        result = _parse_plan_models(included)
+        assert "kimi-k3" in result
+        assert "glm-5.2" in result
+        assert "kimi-k2.6" in result
+        assert "kimi-k2.7-code" in result
+        assert "mimo-v2.5" in result
+        assert "mimo-v2.5-pro" in result
+        assert "minimax-m3" in result
+        assert "qwen3.7-plus" in result
+        assert "qwen3.7-max" in result
+        assert "deepseek-v4-pro" in result
+        assert "deepseek-v4-flash" in result
+        assert len(result) == 11
+
+    def test_parse_plan_models_empty(self):
+        """_parse_plan_models returns empty list when no model string found."""
+        included = ["Low cost subscription pricing", "No models here"]
+        result = _parse_plan_models(included)
+        assert result == []
+
+    def test_parse_plan_models_unknown_model(self):
+        """_parse_plan_models handles unknown model names gracefully."""
+        included = ["Includes New Model X, GLM 5.2, and Unknown Model Y"]
+        result = _parse_plan_models(included)
+        # Should still find glm-5.2 even if unknown models are present
+        assert "glm-5.2" in result
 
 
 class TestClineConfigMigration:

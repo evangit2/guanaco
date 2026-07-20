@@ -26,10 +26,11 @@ logger = logging.getLogger(__name__)
 CLINE_BASE = "https://api.cline.bot/api/v1"
 CLINE_CHAT_URL = f"{CLINE_BASE}/chat/completions"
 CLINE_MODELS_URL = f"{CLINE_BASE}/models"
+CLINE_PLAN_URL = f"{CLINE_BASE}/users/me/plan"
 
-# Static model list — Cline Pass offers 10 models.
-# The /models endpoint returns them dynamically, but we keep a static fallback
-# for capability hints and offline use.
+# Static model list — used as fallback and for capability hints.
+# The plan endpoint is checked at startup to auto-discover new models;
+# any model found there that isn't in this dict gets sensible defaults.
 CLINE_MODELS: dict[str, dict[str, Any]] = {
     "glm-5.2": {
         "family": "glm", "supports_vision": False, "supports_tools": True,
@@ -95,6 +96,66 @@ CLINE_MODEL_TYPES: dict[str, str] = {
 }
 
 
+# Mapping from display names in the plan "included" string to model IDs.
+# The plan endpoint returns a human-readable string like:
+#   "Includes Kimi K3, GLM 5.2, Kimi K2.6, Kimi K2.7 Code, ..."
+# We parse this into model IDs for auto-discovery.
+_DISPLAY_NAME_TO_ID: dict[str, str] = {
+    "kimi k3": "kimi-k3",
+    "glm 5.2": "glm-5.2",
+    "kimi k2.6": "kimi-k2.6",
+    "kimi k2.7 code": "kimi-k2.7-code",
+    "mimo v2.5": "mimo-v2.5",
+    "mimo v2.5 pro": "mimo-v2.5-pro",
+    "minimax m3": "minimax-m3",
+    "qwen3.7 plus": "qwen3.7-plus",
+    "qwen3.7 max": "qwen3.7-max",
+    "deepseek v4 pro": "deepseek-v4-pro",
+    "deepseek v4 flash": "deepseek-v4-flash",
+}
+
+
+def _parse_plan_models(included_list: list[str]) -> list[str]:
+    """Extract model IDs from the plan features.included string list.
+
+    The plan endpoint returns features.included as a list of human-readable
+    strings. One of them contains the model names, e.g.:
+        "Includes Kimi K3, GLM 5.2, Kimi K2.6, ..."
+
+    Returns a list of model ID strings (e.g. ["kimi-k3", "glm-5.2", ...]).
+    """
+    import re
+
+    for entry in included_list:
+        if not isinstance(entry, str) or "include" not in entry.lower():
+            continue
+        # Normalize: "Includes Kimi K3, GLM 5.2, ..." → lowercase names
+        text = entry.lower()
+        # Remove leading "includes" and trailing "and"
+        text = re.sub(r"^.*?includes\s+", "", text)
+        # Split on commas and "and"
+        parts = re.split(r",\s*|\s+and\s+", text)
+        model_ids = []
+        for part in parts:
+            part = part.strip()
+            if not part:
+                continue
+            # Strip leading "and " that may remain after comma split
+            if part.startswith("and "):
+                part = part[4:].strip()
+            # Try direct lookup
+            if part in _DISPLAY_NAME_TO_ID:
+                model_ids.append(_DISPLAY_NAME_TO_ID[part])
+            else:
+                # Try fuzzy: replace spaces with hyphens
+                hyphenated = part.replace(" ", "-")
+                if hyphenated in CLINE_MODELS:
+                    model_ids.append(hyphenated)
+        if model_ids:
+            return model_ids
+    return []
+
+
 def _strip_cline_prefix(model: str) -> str:
     """Return the model id in cline-pass/<model> format for subscription routing.
 
@@ -142,9 +203,11 @@ class ClinePassClient(BaseProvider):
     # ── Model listing ──
 
     async def list_models(self, force_refresh: bool = False, api_key: Optional[str] = None) -> list[dict]:
-        """List available Cline Pass models from /models endpoint.
+        """List available Cline Pass models.
 
-        Falls back to static model list if the API is unreachable.
+        Tries the /models endpoint first, then the /users/me/plan endpoint
+        (which includes model names in a features.included string), then
+        falls back to the static model list.
         """
         now = time.time()
         if not force_refresh and not api_key and self._models_cache and (now - self._models_cache_time) < self._models_cache_ttl:
@@ -152,21 +215,20 @@ class ClinePassClient(BaseProvider):
 
         client = await self._get_client(api_key_override=api_key)
         is_temp = api_key is not None and api_key != self.api_key
+        models: list[dict] = []
         try:
+            # 1. Try /models endpoint (standard OpenAI path)
             resp = await client.get(self.models_url, timeout=15)
             if resp.status_code == 200:
                 data = resp.json()
-                models = []
                 if isinstance(data, dict) and "data" in data:
                     for item in data["data"]:
                         if isinstance(item, dict):
                             model_id = item.get("id", item.get("name", ""))
                             if model_id:
                                 models.append({
-                                    "id": model_id,
-                                    "name": model_id,
-                                    "model": model_id,
-                                    "display_name": item.get("id", model_id),
+                                    "id": model_id, "name": model_id,
+                                    "model": model_id, "display_name": item.get("id", model_id),
                                     "details": item,
                                 })
                 elif isinstance(data, list):
@@ -175,20 +237,29 @@ class ClinePassClient(BaseProvider):
                             model_id = item.get("id", item.get("name", ""))
                             if model_id:
                                 models.append({
-                                    "id": model_id,
-                                    "name": model_id,
-                                    "model": model_id,
-                                    "display_name": model_id,
+                                    "id": model_id, "name": model_id,
+                                    "model": model_id, "display_name": model_id,
                                     "details": item,
                                 })
-                else:
-                    # Unknown format — use static
-                    models = self._static_models()
-            else:
-                logger.warning("Cline /models returned HTTP %s, using static list", resp.status_code)
+
+            # 2. If /models didn't work, try /users/me/plan for model discovery
+            if not models:
+                plan_url = f"{self.base_url}/users/me/plan"
+                resp = await client.get(plan_url, timeout=15)
+                if resp.status_code == 200:
+                    plan_data = resp.json().get("data", {})
+                    included = plan_data.get("plan", {}).get("features", {}).get("included", [])
+                    discovered_ids = _parse_plan_models(included)
+                    if discovered_ids:
+                        logger.info("Cline: discovered %d models from plan endpoint", len(discovered_ids))
+                        models = self._build_models_from_ids(discovered_ids)
+
+            # 3. Fallback to static list
+            if not models:
+                logger.warning("Cline: could not discover models from API, using static list")
                 models = self._static_models()
         except Exception as e:
-            logger.warning("Cline /models fetch failed: %s, using static list", e)
+            logger.warning("Cline model discovery failed: %s, using static list", e)
             models = self._static_models()
         finally:
             if is_temp and not client.is_closed:
@@ -198,26 +269,38 @@ class ClinePassClient(BaseProvider):
         self._models_cache_time = now
         return models
 
+    def _build_models_from_ids(self, model_ids: list[str]) -> list[dict]:
+        """Build model card dicts from a list of model ID strings.
+
+        Uses CLINE_MODELS for capability hints when available, and applies
+        sensible defaults for newly discovered models not yet in the dict.
+        """
+        result = []
+        for mid in model_ids:
+            caps = CLINE_MODELS.get(mid.lower(), {})
+            result.append({
+                "id": mid, "name": mid, "model": mid,
+                "display_name": mid, "details": caps,
+            })
+        return result
+
     def _static_models(self) -> list[dict]:
         """Return static model list as fallback."""
-        return [
-            {"id": mid, "name": mid, "model": mid, "display_name": mid, "details": {}}
-            for mid in CLINE_MODELS
-        ]
+        return self._build_models_from_ids(list(CLINE_MODELS.keys()))
 
     async def test_key(self, api_key: Optional[str] = None) -> dict:
-        """Test an API key by listing models (fast, no cost)."""
+        """Test an API key by hitting the /users/me/plan endpoint."""
         client = await self._get_client(api_key_override=api_key)
         is_temp = api_key is not None and api_key != self.api_key
         try:
-            resp = await client.get(self.models_url, timeout=10)
+            # /models returns 404 on Cline, so use /users/me/plan instead
+            plan_url = f"{self.base_url}/users/me/plan"
+            resp = await client.get(plan_url, timeout=10)
             if resp.status_code == 200:
-                data = resp.json()
-                count = 0
-                if isinstance(data, dict) and "data" in data:
-                    count = len(data["data"])
-                elif isinstance(data, list):
-                    count = len(data)
+                plan_data = resp.json().get("data", {})
+                included = plan_data.get("plan", {}).get("features", {}).get("included", [])
+                discovered = _parse_plan_models(included)
+                count = len(discovered) if discovered else len(CLINE_MODELS)
                 return {"ok": True, "error": None, "model_count": count}
             if resp.status_code == 401:
                 return {"ok": False, "error": "Invalid or expired Cline Pass API key"}
