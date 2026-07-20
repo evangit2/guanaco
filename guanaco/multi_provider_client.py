@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from guanaco.accounts import AccountPool, provider_for_model
+from guanaco.accounts import AccountPool, provider_for_model, strip_provider_prefix
 
 
 class MultiProviderChatClient:
@@ -37,21 +37,20 @@ class MultiProviderChatClient:
         provider = provider_for_model(model, provider_priority=self._provider_priority)
         # If the resolved provider is marked for skipping (saturated/depleted),
         # try the next provider in the priority list that also claims this model.
-        # BUT: explicit provider prefixes (e.g. "umans/glm-5.2") always bypass
-        # saturation — the user explicitly requested that provider.
-        _model_lower = (model or "").lower().strip()
-        _has_explicit_prefix = any(
-            _model_lower.startswith(p)
-            for p in ("umans/", "umans-", "ollama/", "opencode-go/",
-                      "cline/", "cmdcode/")
-        )
-        if provider in self._skip_providers and self._provider_priority and not _has_explicit_prefix:
+        # This applies to explicit prefixes too — "umans/umans-kimi-k2.7" reroutes
+        # to Cline/CmdCode when UMANS is saturated.
+        if provider in self._skip_providers and self._provider_priority:
             from guanaco.accounts import (
                 _normalize_model_for_provider,
+                strip_provider_prefix,
                 KNOWN_GO_MODELS, KNOWN_OLLAMA_MODELS,
                 KNOWN_UMANS_MODELS, KNOWN_CLINE_MODELS, KNOWN_CMDCODE_MODELS,
             )
-            canon = _normalize_model_for_provider(model)
+            # Strip the provider prefix to get the bare model name, then check
+            # which other providers claim it.  For unknown models (not in any
+            # KNOWN set), fall through the priority list to any non-skipped provider.
+            bare_model = strip_provider_prefix(model)
+            canon = _normalize_model_for_provider(bare_model)
             claiming = []
             if canon in KNOWN_GO_MODELS: claiming.append("opencode_go")
             if canon in KNOWN_UMANS_MODELS: claiming.append("umans")
@@ -65,6 +64,13 @@ class MultiProviderChatClient:
                 if p in search_list and p not in self._skip_providers:
                     provider = p
                     break
+            else:
+                # All claiming providers are saturated — fall through to any
+                # non-skipped provider in the priority list.
+                for p in self._provider_priority:
+                    if p not in self._skip_providers:
+                        provider = p
+                        break
         client = self._clients.get(provider)
         if client is None and provider == "opencode_go":
             # If user omitted the prefix but has Go accounts, see if the model is a known Go model.
@@ -92,6 +98,44 @@ class MultiProviderChatClient:
                     break
         return client
 
+    def _strip_prefix_for_client(self, model: str, client) -> str:
+        """Strip the provider prefix from model name for the resolved client.
+
+        When a prefixed model (e.g. "umans/umans-kimi-k2.7") reroutes to a
+        different provider due to saturation, the original prefix must be
+        stripped so the fallback provider gets the bare model name.
+        """
+        # UMANS client expects the umans- prefix kept
+        if client is self._clients.get("umans"):
+            if model.lower().startswith("umans/") or model.lower().startswith("umans-"):
+                return model  # UMANS client's _strip_umans_prefix handles it
+        # Cline client expects bare name (it adds modelType/ internally)
+        if client is self._clients.get("cline"):
+            if model.lower().startswith("cline/"):
+                return model[len("cline/"):]
+            return strip_provider_prefix(model)
+        # CmdCode client expects bare name
+        if client is self._clients.get("cmdcode"):
+            if model.lower().startswith("cmdcode/"):
+                return model[len("cmdcode/"):]
+            return strip_provider_prefix(model)
+        # OpenCode Go client expects bare name
+        if client is self._clients.get("opencode_go"):
+            if model.lower().startswith("opencode-go/"):
+                return model[len("opencode-go/"):]
+            return strip_provider_prefix(model)
+        # Ollama client strips its own prefix
+        if client is self._clients.get("ollama"):
+            if model.lower().startswith("ollama/"):
+                return model[len("ollama/"):]
+            return strip_provider_prefix(model)
+        # Custom providers: strip first segment if it matches the provider name
+        if "/" in model:
+            prefix = model.split("/")[0]
+            if prefix in self._clients and prefix not in ("ollama", "opencode-go", "umans", "cline", "cmdcode"):
+                return model[len(prefix)+1:]
+        return strip_provider_prefix(model)
+
     @property
     def provider_keys(self) -> list:
         """Return configured provider names for routing introspection."""
@@ -103,21 +147,12 @@ class MultiProviderChatClient:
         client = self._client_for(model)
         if not client:
             raise RuntimeError("No LLM provider configured")
-        # Strip provider prefixes
-        if model.startswith("opencode-go/") and "opencode_go" in self._clients and client is self._clients["opencode_go"]:
-            payload["model"] = model[len("opencode-go/"):]
-        if client is self._clients.get("umans") and (model.startswith("umans/") or model.lower().startswith("umans-")):
-            payload["model"] = model
-        if client is self._clients.get("cline") and model.lower().startswith("cline/"):
-            payload["model"] = model[len("cline/"):].lower() if model.startswith("cline/") else model
-        if client is self._clients.get("cmdcode") and model.lower().startswith("cmdcode/"):
-            payload["model"] = model[len("cmdcode/"):].lower() if model.startswith("cmdcode/") else model
-        # Strip custom provider prefix (e.g. "openrouter/anthropic/..." → "anthropic/...")
-        if "/" in model:
-            prefix = model.split("/")[0]
-            if prefix in self._clients and prefix not in ("ollama", "opencode-go", "umans", "cline", "cmdcode"):
-                # Only strip the first prefix segment
-                payload["model"] = model[len(prefix)+1:]
+        # Strip provider prefixes — each provider's _prepare_payload() does its
+        # own prefix stripping, but we need to handle the case where a prefixed
+        # model rerouted to a DIFFERENT provider (e.g. "umans/umans-kimi-k2.7"
+        # rerouted to Cline due to saturation).  In that case, strip the original
+        # prefix so the fallback provider gets the bare model name.
+        payload["model"] = self._strip_prefix_for_client(model, client)
         return await client.chat_completion(payload, api_key=api_key)
 
     async def chat_completion_stream(self, payload: dict, api_key: Optional[str] = None):
@@ -127,18 +162,7 @@ class MultiProviderChatClient:
         client = self._client_for(model)
         if not client:
             raise RuntimeError("No LLM provider configured")
-        if model.startswith("opencode-go/") and "opencode_go" in self._clients and client is self._clients["opencode_go"]:
-            payload["model"] = model[len("opencode-go/"):]
-        if client is self._clients.get("umans") and (model.startswith("umans/") or model.lower().startswith("umans-")):
-            payload["model"] = model
-        if client is self._clients.get("cline") and model.lower().startswith("cline/"):
-            payload["model"] = model[len("cline/"):].lower() if model.startswith("cline/") else model
-        if client is self._clients.get("cmdcode") and model.lower().startswith("cmdcode/"):
-            payload["model"] = model[len("cmdcode/"):].lower() if model.startswith("cmdcode/") else model
-        if "/" in model:
-            prefix = model.split("/")[0]
-            if prefix in self._clients and prefix not in ("ollama", "opencode-go", "umans", "cline", "cmdcode"):
-                payload["model"] = model[len(prefix)+1:]
+        payload["model"] = self._strip_prefix_for_client(model, client)
         async for chunk in client.chat_completion_stream(payload, api_key=api_key):
             yield chunk
 

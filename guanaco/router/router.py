@@ -245,33 +245,19 @@ def create_router(client, analytics=None, config=None, account_pool=None, deplet
             strategy = getattr(_config, "unprefixed_provider_strategy", "round_robin")
             priority = [_select_default_provider(strategy)]
 
-        # Determine if the model has an explicit provider prefix (e.g. "umans/glm-5.2").
-        # Explicit prefixes bypass saturation/depletion checks — the user asked for that
-        # specific provider.  Bare model names (e.g. "glm-5.2") that match via the
-        # known-models lookup do NOT bypass — they should respect saturation so that
-        # a saturated UMANS falls through to the next provider in the priority list.
-        _model_lower = (model or "").lower().strip()
-        _has_explicit_prefix = any(
-            _model_lower.startswith(p)
-            for p in ("umans/", "umans-", "ollama/", "opencode-go/",
-                      "cline/", "cmdcode/")
-        )
-
-        # Explicit provider wins: pick its account if available.
+        # Always respect saturation/depletion — even for explicit provider
+        # prefixes.  When the requested provider is saturated, the loop falls
+        # through to the next provider in priority that can serve the model.
+        # The multi_provider_client handles stripping the prefix so the fallback
+        # provider gets the correct bare model name.
         preferred = ([explicit_provider] if explicit_provider else []) + priority
         for provider in preferred:
             if not _has_client(provider):
                 continue
-            # Respect saturation/depletion for non-explicitly-prefixed models.
-            # This is the critical fix: bare model names like "glm-5.2" that match
-            # KNOWN_UMANS_MODELS would otherwise always route to UMANS even when
-            # saturated, because the preferred loop returned the first active account
-            # without checking concurrency state.
-            if not _has_explicit_prefix:
-                if _depletion and _depletion.is_depleted(provider):
-                    continue
-                if _concurrency and _concurrency.is_saturated(provider):
-                    continue
+            if _depletion and _depletion.is_depleted(provider):
+                continue
+            if _concurrency and _concurrency.is_saturated(provider):
+                continue
             if _account_pool:
                 if not _account_pool.has_active_account(provider, model=model):
                     continue

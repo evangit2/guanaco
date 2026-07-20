@@ -84,6 +84,28 @@ def _normalize_model_for_provider(model: str) -> str:
     return m.split(":")[0].replace("_", "-")
 
 
+def strip_provider_prefix(model: str) -> str:
+    """Strip any known provider prefix from a model id, returning the bare name.
+
+    Strips repeatedly — "umans/umans-kimi-k2.7" → "kimi-k2.7" (both the
+    "umans/" provider prefix and the "umans-" model-name prefix are stripped).
+
+    Examples:
+        "umans/umans-kimi-k2.7" → "kimi-k2.7"
+        "umans-kimi-k2.7"       → "kimi-k2.7"
+        "cline/glm-5.2"         → "glm-5.2"
+        "cmdcode/deepseek-v4-flash" → "deepseek-v4-flash"
+        "kimi-k2.7"             → "kimi-k2.7"  (no prefix, unchanged)
+    """
+    m = model.strip()
+    lower = m.lower()
+    for prefix in OPENCODE_GO_PREFIXES + OLLAMA_PREFIXES + UMANS_PREFIXES + CLINE_PREFIXES + CMDCODE_PREFIXES:
+        if lower.startswith(prefix):
+            m = m[len(prefix):]
+            lower = m.lower()
+    return m
+
+
 def provider_for_model(model: str, default_provider: str = "ollama", provider_priority: Optional[list[str]] = None) -> str:
     """Infer provider from model id.
 

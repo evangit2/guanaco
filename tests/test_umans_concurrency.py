@@ -1,8 +1,9 @@
 """Tests for UMANS concurrency tracking and auto-fallback routing.
 
-When UMANS concurrent_sessions >= threshold, unprefixed model requests should
-route to the next provider in provider_priority. Explicit umans/ prefixed
-models should always bypass the saturation check.
+When UMANS concurrent_sessions >= threshold, model requests should route to
+the next provider in provider_priority. This applies to both bare model names
+AND explicit prefixed models like "umans/umans-kimi-k2.7" — the prefix is
+stripped and the bare model name is looked up on other providers.
 """
 
 import pytest
@@ -305,9 +306,36 @@ class TestRoutingWithSaturation:
             assert resp.status_code == 200
             mock_chat.assert_called_once()
 
-    def test_explicit_umans_prefix_bypasses_saturation(self):
-        """Explicit umans/ prefixed models should route to UMANS even when saturated."""
+    def test_explicit_umans_prefix_reroutes_when_saturated(self):
+        """Explicit umans/ prefixed models should reroute when UMANS is saturated.
+
+        Previously, explicit prefixes bypassed saturation. Now they respect it:
+        "umans/umans-kimi-k2.7" reroutes to the next provider in priority that
+        can serve the same model.
+        """
         tracker = _make_tracker(concurrent=3, threshold=3)
+        app = self._build_test_app(["umans", "ollama", "opencode_go"], tracker)
+
+        from fastapi.testclient import TestClient
+        client = TestClient(app)
+
+        with patch.object(_FakeClient, "chat_completion", new_callable=AsyncMock) as mock_chat:
+            mock_chat.return_value = {
+                "choices": [{"message": {"content": "rerouted"}}],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 5, "total_tokens": 10},
+            }
+            resp = client.post("/v1/chat/completions", json={
+                "model": "umans/umans-glm-5.2",
+                "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens": 5,
+            })
+            assert resp.status_code == 200
+            # Should have been called — rerouted to a non-saturated provider
+            mock_chat.assert_called_once()
+
+    def test_explicit_umans_prefix_works_when_not_saturated(self):
+        """Explicit umans/ prefixed models should route to UMANS when not saturated."""
+        tracker = _make_tracker(concurrent=0, threshold=3)
         app = self._build_test_app(["umans", "ollama", "opencode_go"], tracker)
 
         from fastapi.testclient import TestClient
@@ -324,8 +352,136 @@ class TestRoutingWithSaturation:
                 "max_tokens": 5,
             })
             assert resp.status_code == 200
-            # Should have been called — explicit prefix bypasses saturation
             mock_chat.assert_called_once()
+
+
+class TestStripProviderPrefix:
+    """Test the strip_provider_prefix helper."""
+
+    def test_strip_umans_slash_prefix(self):
+        from guanaco.accounts import strip_provider_prefix
+        assert strip_provider_prefix("umans/umans-kimi-k2.7") == "kimi-k2.7"
+
+    def test_strip_umans_dash_prefix(self):
+        from guanaco.accounts import strip_provider_prefix
+        assert strip_provider_prefix("umans-kimi-k2.7") == "kimi-k2.7"
+
+    def test_strip_cline_prefix(self):
+        from guanaco.accounts import strip_provider_prefix
+        assert strip_provider_prefix("cline/glm-5.2") == "glm-5.2"
+
+    def test_strip_cmdcode_prefix(self):
+        from guanaco.accounts import strip_provider_prefix
+        assert strip_provider_prefix("cmdcode/deepseek-v4-flash") == "deepseek-v4-flash"
+
+    def test_strip_opencode_go_prefix(self):
+        from guanaco.accounts import strip_provider_prefix
+        assert strip_provider_prefix("opencode-go/kimi-k2.7") == "kimi-k2.7"
+
+    def test_strip_ollama_prefix(self):
+        from guanaco.accounts import strip_provider_prefix
+        assert strip_provider_prefix("ollama/glm-5") == "glm-5"
+
+    def test_no_prefix_unchanged(self):
+        from guanaco.accounts import strip_provider_prefix
+        assert strip_provider_prefix("kimi-k2.7") == "kimi-k2.7"
+
+    def test_unknown_model_strips_prefix(self):
+        """Unknown models should still get their prefix stripped."""
+        from guanaco.accounts import strip_provider_prefix
+        assert strip_provider_prefix("umans/umans-newmodel-1") == "newmodel-1"
+
+
+class TestCrossProviderRerouting:
+    """Test that prefixed models reroute across providers when saturated."""
+
+    def test_umans_prefix_reroutes_to_cline_when_saturated(self):
+        """umans/umans-glm-5.2 should reroute to Cline when UMANS is saturated."""
+        from guanaco.multi_provider_client import MultiProviderChatClient
+
+        clients = {
+            "umans": _FakeClient("***"),
+            "cline": _FakeClient("***"),
+            "ollama": _FakeClient("***"),
+        }
+        chat_client = MultiProviderChatClient(clients)
+        chat_client.set_provider_priority(["umans", "cline", "ollama"])
+        chat_client.set_skip_providers({"umans"})
+
+        # glm-5.2 is in KNOWN_UMANS_MODELS and KNOWN_CLINE_MODELS
+        client = chat_client._client_for("umans/umans-glm-5.2")
+        # Should NOT be the UMANS client — should reroute to Cline
+        assert client is not clients["umans"]
+        assert client is clients["cline"]
+
+    def test_umans_prefix_reroutes_to_cmdcode_when_saturated(self):
+        """umans/umans-glm-5.2 should reroute to CmdCode when UMANS is saturated
+        and Cline is also saturated."""
+        from guanaco.multi_provider_client import MultiProviderChatClient
+
+        clients = {
+            "umans": _FakeClient("***"),
+            "cline": _FakeClient("***"),
+            "cmdcode": _FakeClient("***"),
+            "ollama": _FakeClient("***"),
+        }
+        chat_client = MultiProviderChatClient(clients)
+        chat_client.set_provider_priority(["umans", "cline", "cmdcode", "ollama"])
+        chat_client.set_skip_providers({"umans", "cline"})
+
+        # glm-5.2 is in KNOWN_UMANS_MODELS, KNOWN_CLINE_MODELS, and KNOWN_CMDCODE_MODELS
+        client = chat_client._client_for("umans/umans-glm-5.2")
+        assert client is clients["cmdcode"]
+
+    def test_unknown_model_reroutes_to_next_provider(self):
+        """Unknown umans/ model should reroute to next provider in priority."""
+        from guanaco.multi_provider_client import MultiProviderChatClient
+
+        clients = {
+            "umans": _FakeClient("***"),
+            "cline": _FakeClient("***"),
+            "ollama": _FakeClient("***"),
+        }
+        chat_client = MultiProviderChatClient(clients)
+        chat_client.set_provider_priority(["umans", "cline", "ollama"])
+        chat_client.set_skip_providers({"umans"})
+
+        # umans-newmodel-1 is not in any KNOWN set — should fall through priority
+        client = chat_client._client_for("umans/umans-newmodel-1")
+        assert client is clients["cline"]
+
+    def test_no_reroute_when_not_saturated(self):
+        """umans/ prefixed model should go to UMANS when not saturated."""
+        from guanaco.multi_provider_client import MultiProviderChatClient
+
+        clients = {
+            "umans": _FakeClient("***"),
+            "cline": _FakeClient("***"),
+        }
+        chat_client = MultiProviderChatClient(clients)
+        chat_client.set_provider_priority(["umans", "cline"])
+        chat_client.set_skip_providers(set())
+
+        client = chat_client._client_for("umans/umans-glm-5.2")
+        assert client is clients["umans"]
+
+    def test_all_providers_saturated_falls_back(self):
+        """When all claiming providers are saturated, should still return a client
+        (the last non-skipped one or the first available)."""
+        from guanaco.multi_provider_client import MultiProviderChatClient
+
+        clients = {
+            "umans": _FakeClient("***"),
+            "cline": _FakeClient("***"),
+            "ollama": _FakeClient("***"),
+        }
+        chat_client = MultiProviderChatClient(clients)
+        chat_client.set_provider_priority(["umans", "cline", "ollama"])
+        chat_client.set_skip_providers({"umans", "cline"})
+
+        # All claiming providers saturated — should fall through to ollama
+        client = chat_client._client_for("umans/umans-glm-5.2")
+        assert client is clients["ollama"]
 
 
 if __name__ == "__main__":
