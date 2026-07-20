@@ -123,10 +123,10 @@ class TestClinePassClient:
         assert caps["usage_multiplier"] == 0.0
 
     def test_static_models_count(self):
-        """Cline Pass offers 10 models."""
+        """Cline Pass offers 11 models (10 original + kimi-k3)."""
         client = ClinePassClient(api_key="sk_test")
         models = client._static_models()
-        assert len(models) == 10
+        assert len(models) == 11
         model_ids = [m["id"] for m in models]
         assert "glm-5.2" in model_ids
         assert "kimi-k2.7-code" in model_ids

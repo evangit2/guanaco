@@ -35,6 +35,10 @@ CLINE_MODELS: dict[str, dict[str, Any]] = {
         "family": "glm", "supports_vision": False, "supports_tools": True,
         "supports_thinking": True, "usage_multiplier": 0.0,
     },
+    "kimi-k3": {
+        "family": "kimi", "supports_vision": False, "supports_tools": True,
+        "supports_thinking": True, "usage_multiplier": 0.0,
+    },
     "kimi-k2.7-code": {
         "family": "kimi", "supports_vision": False, "supports_tools": True,
         "supports_thinking": True, "usage_multiplier": 0.0,
@@ -78,6 +82,7 @@ CLINE_MODELS: dict[str, dict[str, Any]] = {
 # Each model belongs to a specific provider type. Discovered via API testing.
 CLINE_MODEL_TYPES: dict[str, str] = {
     "glm-5.2": "zai",
+    "kimi-k3": "moonshotai",
     "kimi-k2.7-code": "moonshotai",
     "kimi-k2.6": "moonshotai",
     "deepseek-v4-pro": "deepseek",
