@@ -24,7 +24,7 @@ from guanaco.multi_provider_client import MultiProviderChatClient
 from guanaco.accounts import AccountPool
 from guanaco.depletion import ProviderDepletionTracker
 from guanaco.umans_concurrency import UmansConcurrencyTracker
-__version__ = "0.8.0"
+__version__ = "0.8.2"
 from guanaco.router.router import create_router as create_llm_router
 from guanaco.search.providers import ALL_PROVIDERS
 from guanaco.dashboard import create_dashboard_router
