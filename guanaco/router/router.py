@@ -33,6 +33,12 @@ from guanaco.router.models import (
     AnthropicMessage,
     AnthropicRequest,
 )
+from guanaco.router.responses import (
+    ResponsesRequest,
+    _build_chat_payload,
+    _chat_response_to_responses,
+    _stream_responses,
+)
 from guanaco.router.helpers import (
     _describe_error,
     _is_empty_non_streaming_response,
@@ -1149,6 +1155,138 @@ def create_router(client, analytics=None, config=None, account_pool=None, deplet
             if _analytics:
                 _analytics.log_llm(model=resolved_model, error=str(e), total_duration_seconds=time.time() - start, **_hist)
             raise HTTPException(status_code=502, detail=f"Ollama Cloud error: {str(e)}")
+
+    # ── OpenAI Responses API (/v1/responses) ──
+
+    @router.post("/v1/responses")
+    async def create_response(body: ResponsesRequest, request: Request):
+        """OpenAI Responses API endpoint.
+
+        Translates between the Responses API format and Guanaco's Chat
+        Completions pipeline, so all configured providers work transparently.
+        Supports streaming with proper reasoning item events.
+        """
+        start = time.time()
+        resolved_model = _resolve_model(body.model, _config) if _config else body.model
+        _hist = _history_kwargs(request)
+
+        # Convert Responses input to Chat Completions payload
+        payload = _build_chat_payload(body, resolved_model)
+
+        # Merge extra fields from the request (service_tier, user, etc.)
+        extra = body.model_dump(exclude_none=True)
+        for skip in ("model", "input", "instructions", "stream", "temperature",
+                      "top_p", "max_output_tokens", "tools", "tool_choice",
+                      "reasoning", "metadata", "store", "previous_response_id"):
+            extra.pop(skip, None)
+        # Pass through any remaining fields as extra_body
+        if extra:
+            payload.update(extra)
+
+        _update_skip_providers()
+        _request_key, _account_name = _select_account(model=resolved_model)
+        _provider = provider_for_model(resolved_model, default_provider=_select_default_provider(getattr(_config, 'unprefixed_provider_strategy', 'round_robin')), provider_priority=([p for p in (_config.router.provider_priority or []) if p in ("ollama", "opencode_go", "umans", "cline", "cmdcode")] if _config else None))
+        _ollama_provider = f"{_provider}:{_account_name}" if _account_name != _provider else _provider
+        _hist["account_name"] = _account_name
+
+        response_id = f"resp_{uuid.uuid4().hex[:24]}"
+
+        try:
+            if body.stream:
+                # Use the streaming translator
+                payload["stream"] = True
+                return await _stream_responses(
+                    client, payload, resolved_model, _analytics, start,
+                    config=_config, history_kwargs=_hist,
+                )
+
+            # Non-streaming: call chat completions, convert response
+            payload["stream"] = False
+            for attempt in range(MAX_EMPTY_RETRIES + 1):
+                async with _concurrency_limiter:
+                    resp = await _ollama_chat_with_primary_timeout(
+                        client, payload, _config.fallback if _config else None,
+                        _concurrency_limiter, api_key=_request_key,
+                        account_name=_account_name, account_pool=_account_pool,
+                    )
+                if not _is_empty_non_streaming_response(resp) or attempt == MAX_EMPTY_RETRIES:
+                    break
+                log.warning("Empty response from %s (attempt %d/%d), retrying...", resolved_model, attempt + 1, MAX_EMPTY_RETRIES + 1)
+
+            elapsed = time.time() - start
+            metrics = resp.pop("_oct_metrics", {})
+            usage = resp.get("usage", {})
+
+            # Ensure content field is populated (copies reasoning_content → content if needed)
+            _ensure_content_field(resp)
+
+            # Convert to Responses API format
+            responses_resp = _chat_response_to_responses(resp, body.model, response_id)
+
+            if _analytics:
+                hist_kw = dict(_hist)
+                # Log with analytics
+                _analytics.log_llm(
+                    model=resolved_model,
+                    prompt_tokens=usage.get("prompt_tokens", metrics.get("prompt_eval_count", 0)),
+                    completion_tokens=usage.get("completion_tokens", metrics.get("eval_count", 0)),
+                    total_tokens=usage.get("total_tokens", 0),
+                    tps=metrics.get("tps"),
+                    prompt_tps=metrics.get("prompt_tps"),
+                    ttft_seconds=metrics.get("ttft_seconds"),
+                    total_duration_seconds=elapsed,
+                    load_duration_seconds=metrics.get("load_duration_ns", 0) / 1e9 if metrics.get("load_duration_ns") else None,
+                    provider=_ollama_provider,
+                    **hist_kw,
+                )
+
+            return responses_resp
+
+        except Exception as ollama_error:
+            # Try fallback provider if configured
+            if _config and _config.fallback.enabled and _config.fallback.base_url:
+                fallback_model = _map_model_to_fallback(resolved_model, _config.fallback)
+                log.info("Ollama error for %s (responses), trying fallback %s (model: %s)", resolved_model, _config.fallback.name, fallback_model)
+                fallback_payload = dict(payload)
+                fallback_payload["model"] = fallback_model
+
+                try:
+                    if body.stream and _config.fallback.stream_fallback:
+                        return await _stream_responses(
+                            client, fallback_payload, fallback_model, _analytics, start,
+                            config=_config, history_kwargs=_hist,
+                        )
+
+                    fallback_resp = await _call_fallback_provider(fallback_payload, _config.fallback)
+                    elapsed = time.time() - start
+
+                    fb_usage = fallback_resp.get("usage", {})
+                    _ensure_content_field(fallback_resp)
+                    responses_resp = _chat_response_to_responses(fallback_resp, body.model, response_id)
+
+                    if _analytics:
+                        _analytics.log_llm(
+                            model=fallback_model,
+                            prompt_tokens=fb_usage.get("prompt_tokens", 0),
+                            completion_tokens=fb_usage.get("completion_tokens", 0),
+                            total_tokens=fb_usage.get("total_tokens", 0),
+                            total_duration_seconds=elapsed,
+                            provider=_config.fallback.name, fallback_for=resolved_model,
+                            fallback_reason=f"Ollama error: {_describe_error(ollama_error)}",
+                            **_hist,
+                        )
+
+                    return responses_resp
+
+                except Exception as fallback_err:
+                    log.warning("Fallback to %s failed for model %s (responses): %s", _config.fallback.name, resolved_model, _describe_error(fallback_err))
+                    if _analytics:
+                        _analytics.log_llm(model=resolved_model, error=f"ollama: {_describe_error(ollama_error)}; fallback: {_describe_error(fallback_err)}", total_duration_seconds=time.time() - start, **_hist)
+                    raise HTTPException(status_code=502, detail=f"Ollama Cloud error: {_describe_error(ollama_error)}; Fallback error: {_describe_error(fallback_err)}")
+
+            if _analytics:
+                _analytics.log_llm(model=resolved_model, error=_describe_error(ollama_error), total_duration_seconds=time.time() - start, **_hist)
+            raise HTTPException(status_code=502, detail=f"Ollama Cloud error: {_describe_error(ollama_error)}")
 
     # ── Model selection endpoint ──
 

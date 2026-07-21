@@ -24,7 +24,7 @@ from guanaco.multi_provider_client import MultiProviderChatClient
 from guanaco.accounts import AccountPool
 from guanaco.depletion import ProviderDepletionTracker
 from guanaco.umans_concurrency import UmansConcurrencyTracker
-__version__ = "0.8.2"
+__version__ = "0.8.3"
 from guanaco.router.router import create_router as create_llm_router
 from guanaco.search.providers import ALL_PROVIDERS
 from guanaco.dashboard import create_dashboard_router
@@ -198,6 +198,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         base_url = get_base_url(config)
         logger.info("Guanaco running on http://%s:%s", config.router.host, config.router.port)
         logger.info("   LLM Router:    %s:%s/v1/chat/completions", base_url, config.router.port)
+        logger.info("   Responses:     %s:%s/v1/responses", base_url, config.router.port)
         logger.info("   Anthropic:     %s:%s/v1/messages", base_url, config.router.port)
         logger.info("   Search APIs:    %s:%s/<provider>/...", base_url, config.router.port)
         logger.info("   Dashboard:     %s:%s/dashboard", base_url, config.router.port)
