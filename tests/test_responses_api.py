@@ -515,6 +515,166 @@ class TestStreamingEvents:
         output = completed[0]["response"]["output"]
         assert any(item["type"] == "reasoning" for item in output)
 
+    @pytest.mark.asyncio
+    async def test_streaming_tool_calls(self):
+        """Test streaming with tool calls — the bug that was fixed."""
+        # Simulates OpenAI streaming format: first chunk has id+name, then argument fragments
+        chunks = [
+            'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_abc","type":"function","function":{"name":"write_file","arguments":""}}]}}]}',
+            'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"path\\""}}]}}]}',
+            'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":": \\"test"}}]}}]}',
+            'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":".py\\""}}]}}]}',
+            'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":", \\"content\\": \\"print(1)\\"}"}}]}}]}',
+            'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}',
+            'data: [DONE]',
+        ]
+
+        async def mock_stream(payload):
+            for c in chunks:
+                yield c
+
+        mock_client = MagicMock()
+        mock_client.chat_completion_stream = mock_stream
+
+        response = await _stream_responses(
+            mock_client, {"model": "glm-5.2"}, "glm-5.2",
+            None, 0.0, config=MagicMock(),
+        )
+
+        events = []
+        event_data = []
+        async for chunk in response.body_iterator:
+            lines = chunk.split("\n")
+            for line in lines:
+                if line.startswith("event: "):
+                    events.append(line[7:])
+                if line.startswith("data: "):
+                    try:
+                        event_data.append(json.loads(line[6:].strip()))
+                    except json.JSONDecodeError:
+                        pass
+
+        # Verify function_call events are present
+        assert "response.output_item.added" in events
+        assert "response.function_call_arguments.delta" in events
+        assert "response.function_call_arguments.done" in events
+        assert "response.output_item.done" in events
+        assert "response.completed" in events
+
+        # Verify the function_call item was added with correct type
+        added_items = [d for d in event_data if d.get("type") == "response.output_item.added"]
+        fc_added = [d for d in added_items if d.get("item", {}).get("type") == "function_call"]
+        assert len(fc_added) == 1
+        assert fc_added[0]["item"]["name"] == "write_file"
+        assert fc_added[0]["item"]["call_id"] == "call_abc"
+
+        # Verify argument deltas
+        arg_deltas = [d for d in event_data if d.get("type") == "response.function_call_arguments.delta"]
+        assert len(arg_deltas) >= 4  # Multiple argument fragments
+
+        # Verify arguments.done has full arguments
+        args_done = [d for d in event_data if d.get("type") == "response.function_call_arguments.done"]
+        assert len(args_done) == 1
+        full_args = args_done[0]["arguments"]
+        assert '"path"' in full_args
+        assert "test.py" in full_args
+        assert "print(1)" in full_args
+
+        # Verify final response has function_call in output
+        completed = [d for d in event_data if d.get("type") == "response.completed"]
+        assert len(completed) == 1
+        output = completed[0]["response"]["output"]
+        fc_items = [item for item in output if item["type"] == "function_call"]
+        assert len(fc_items) == 1
+        assert fc_items[0]["name"] == "write_file"
+        assert fc_items[0]["call_id"] == "call_abc"
+        assert "test.py" in fc_items[0]["arguments"]
+
+    @pytest.mark.asyncio
+    async def test_streaming_reasoning_content_then_tool_call(self):
+        """Test streaming with reasoning + content + tool call — full Codex pattern."""
+        chunks = [
+            'data: {"choices":[{"delta":{"reasoning_content":"I need to create a file."}}]}',
+            'data: {"choices":[{"delta":{"content":"Creating file..."}}]}',
+            'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_xyz","type":"function","function":{"name":"write_file","arguments":""}}]}}]}',
+            'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"path\\":\\"a.py\\",\\"content\\":\\"x\\"}"}}]}}]}',
+            'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}',
+            'data: [DONE]',
+        ]
+
+        async def mock_stream(payload):
+            for c in chunks:
+                yield c
+
+        mock_client = MagicMock()
+        mock_client.chat_completion_stream = mock_stream
+
+        response = await _stream_responses(
+            mock_client, {"model": "glm-5.2"}, "glm-5.2",
+            None, 0.0, config=MagicMock(),
+        )
+
+        event_data = []
+        async for chunk in response.body_iterator:
+            lines = chunk.split("\n")
+            for line in lines:
+                if line.startswith("data: "):
+                    try:
+                        event_data.append(json.loads(line[6:].strip()))
+                    except json.JSONDecodeError:
+                        pass
+
+        completed = [d for d in event_data if d.get("type") == "response.completed"]
+        assert len(completed) == 1
+        output = completed[0]["response"]["output"]
+        types = [item["type"] for item in output]
+        assert "reasoning" in types
+        assert "message" in types
+        assert "function_call" in types
+
+    @pytest.mark.asyncio
+    async def test_streaming_multiple_tool_calls(self):
+        """Test streaming with multiple tool calls in one response."""
+        chunks = [
+            'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"write_file","arguments":""}}]}}]}',
+            'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"path\\":\\"a.py\\"}"}}]}}]}',
+            'data: {"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call_2","type":"function","function":{"name":"read_file","arguments":""}}]}}]}',
+            'data: {"choices":[{"delta":{"tool_calls":[{"index":1,"function":{"arguments":"{\\"path\\":\\"b.py\\"}"}}]}}]}',
+            'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}',
+            'data: [DONE]',
+        ]
+
+        async def mock_stream(payload):
+            for c in chunks:
+                yield c
+
+        mock_client = MagicMock()
+        mock_client.chat_completion_stream = mock_stream
+
+        response = await _stream_responses(
+            mock_client, {"model": "glm-5.2"}, "glm-5.2",
+            None, 0.0, config=MagicMock(),
+        )
+
+        event_data = []
+        async for chunk in response.body_iterator:
+            lines = chunk.split("\n")
+            for line in lines:
+                if line.startswith("data: "):
+                    try:
+                        event_data.append(json.loads(line[6:].strip()))
+                    except json.JSONDecodeError:
+                        pass
+
+        completed = [d for d in event_data if d.get("type") == "response.completed"]
+        assert len(completed) == 1
+        output = completed[0]["response"]["output"]
+        fc_items = [item for item in output if item["type"] == "function_call"]
+        assert len(fc_items) == 2
+        names = [fc["name"] for fc in fc_items]
+        assert "write_file" in names
+        assert "read_file" in names
+
 
 # ── Request model tests ──
 

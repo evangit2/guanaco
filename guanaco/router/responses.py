@@ -365,6 +365,20 @@ def _chat_response_to_responses(
     return response
 
 
+def _next_output_index(reasoning_started: bool, message_started: bool) -> int:
+    """Compute the next output_index for a new output item.
+
+    Items are emitted in order: reasoning (0) → message (1) → tool calls (2+).
+    Returns the index for the next item based on what has already been started.
+    """
+    idx = 0
+    if reasoning_started:
+        idx += 1
+    if message_started:
+        idx += 1
+    return idx
+
+
 # ── Streaming: SSE event translator ──
 
 def _sse_event(event_type: str, data: dict) -> str:
@@ -409,16 +423,25 @@ async def _stream_responses(
     finish_reason: str | None = None
     final_usage: dict = {}
 
+    # Output items accumulated during streaming (used in response.completed)
+    output: list[dict] = []
+
     # State: what output items have been started
     reasoning_item_started = False
     reasoning_summary_part_started = False
     message_item_started = False
     content_part_started = False
+    message_item_closed = False  # Set when tool call handler closes message inline
+
+    # Tool call tracking: {index: {"id": call_id, "name": name, "arguments": ""}}
+    tool_calls_state: dict[int, dict] = {}
+    # Order in which tool calls first appeared (for output_index assignment)
+    tool_call_indices: list[int] = []
 
     async def generate():
         nonlocal reasoning_item_started, reasoning_summary_part_started
-        nonlocal message_item_started, content_part_started
-        nonlocal finish_reason, final_usage, stream_metrics
+        nonlocal message_item_started, content_part_started, message_item_closed
+        nonlocal finish_reason, final_usage, stream_metrics, output
 
         # 1. response.created
         base_response = {
@@ -576,10 +599,116 @@ async def _stream_responses(
                 # ── Tool calls in delta ──
                 tool_calls_delta = delta.get("tool_calls")
                 if tool_calls_delta:
-                    # Tool calls are emitted as function_call output items
-                    # For simplicity, we accumulate them and emit at the end
-                    # (most providers send tool calls in the final chunk anyway)
-                    pass
+                    for tc_delta in tool_calls_delta:
+                        if not isinstance(tc_delta, dict):
+                            continue
+                        tc_index = tc_delta.get("index", 0)
+
+                        # First chunk for this tool call: has id + function.name
+                        if tc_index not in tool_calls_state:
+                            tc_id = tc_delta.get("id", f"call_{uuid.uuid4().hex[:24]}")
+                            tc_func = tc_delta.get("function", {})
+                            tc_name = tc_func.get("name", "")
+                            tool_calls_state[tc_index] = {
+                                "id": tc_id,
+                                "name": tc_name,
+                                "arguments": "",
+                            }
+                            tool_call_indices.append(tc_index)
+
+                            # Close content/reasoning items before starting tool calls
+                            if reasoning_item_started and not message_item_started:
+                                full_reasoning = "".join(accumulated_reasoning)
+                                yield _sse_event("response.reasoning_summary_text.done", {
+                                    "type": "response.reasoning_summary_text.done",
+                                    "output_index": 0,
+                                    "summary_index": 0,
+                                    "text": full_reasoning,
+                                })
+                                yield _sse_event("response.output_item.done", {
+                                    "type": "response.output_item.done",
+                                    "output_index": 0,
+                                    "item": {
+                                        "id": reasoning_id,
+                                        "type": "reasoning",
+                                        "summary": [{"type": "summary_text", "text": full_reasoning}],
+                                    },
+                                })
+
+                            if message_item_started and content_part_started:
+                                # Close message content before tool calls
+                                full_content = "".join(accumulated_content)
+                                msg_output_index = 1 if reasoning_item_started else 0
+                                yield _sse_event("response.output_text.done", {
+                                    "type": "response.output_text.done",
+                                    "output_index": msg_output_index,
+                                    "content_index": 0,
+                                    "text": full_content,
+                                })
+                                yield _sse_event("response.content_part.done", {
+                                    "type": "response.content_part.done",
+                                    "output_index": msg_output_index,
+                                    "content_index": 0,
+                                    "part": {
+                                        "type": "output_text",
+                                        "text": full_content,
+                                        "annotations": [],
+                                    },
+                                })
+                                yield _sse_event("response.output_item.done", {
+                                    "type": "response.output_item.done",
+                                    "output_index": msg_output_index,
+                                    "item": {
+                                        "id": msg_id,
+                                        "type": "message",
+                                        "role": "assistant",
+                                        "status": "completed",
+                                        "content": [{"type": "output_text", "text": full_content, "annotations": []}],
+                                    },
+                                })
+                                message_item_closed = True
+                                # Add closed message to output array
+                                output.append({
+                                    "id": msg_id,
+                                    "type": "message",
+                                    "role": "assistant",
+                                    "status": "completed",
+                                    "content": [{"type": "output_text", "text": full_content, "annotations": []}],
+                                })
+
+                            # Compute output_index for this tool call
+                            fc_output_index = _next_output_index(
+                                reasoning_item_started, message_item_started,
+                            ) + len(tool_call_indices) - 1
+
+                            fc_item_id = f"fc_{uuid.uuid4().hex[:24]}"
+                            tool_calls_state[tc_index]["item_id"] = fc_item_id
+                            tool_calls_state[tc_index]["output_index"] = fc_output_index
+
+                            yield _sse_event("response.output_item.added", {
+                                "type": "response.output_item.added",
+                                "output_index": fc_output_index,
+                                "item": {
+                                    "id": fc_item_id,
+                                    "type": "function_call",
+                                    "call_id": tc_id,
+                                    "name": tc_name,
+                                    "arguments": "",
+                                    "status": "in_progress",
+                                },
+                            })
+
+                        # Argument fragment (may come in same chunk or subsequent chunks)
+                        arg_delta = tc_delta.get("function", {}).get("arguments", "")
+                        if arg_delta:
+                            tool_calls_state[tc_index]["arguments"] += arg_delta
+                            fc_output_index = tool_calls_state[tc_index]["output_index"]
+                            yield _sse_event("response.function_call_arguments.delta", {
+                                "type": "response.function_call_arguments.delta",
+                                "output_index": fc_output_index,
+                                "item_id": tool_calls_state[tc_index]["item_id"],
+                                "delta": arg_delta,
+                            })
 
         except Exception as e:
             # Emit error event
@@ -606,7 +735,6 @@ async def _stream_responses(
         # ── Close out streaming items ──
         full_content = "".join(accumulated_content)
         full_reasoning = "".join(accumulated_reasoning)
-        output: list[dict] = []
 
         # Add reasoning item to output if reasoning was emitted
         if reasoning_item_started and full_reasoning:
@@ -635,8 +763,8 @@ async def _stream_responses(
                 },
             })
 
-        # Close message item if it was started
-        if message_item_started:
+        # Close message item if it was started and not already closed by tool call handler
+        if message_item_started and not message_item_closed:
             output_index = 1 if reasoning_item_started else 0
             # Close content part
             yield _sse_event("response.output_text.done", {
@@ -672,6 +800,40 @@ async def _stream_responses(
                 "role": "assistant",
                 "status": "completed",
                 "content": [{"type": "output_text", "text": full_content, "annotations": []}],
+            })
+
+        # Close tool call items and add to output
+        for tc_idx in tool_call_indices:
+            tc = tool_calls_state[tc_idx]
+            fc_output_index = tc["output_index"]
+            fc_item_id = tc["item_id"]
+            full_args = tc["arguments"]
+
+            yield _sse_event("response.function_call_arguments.done", {
+                "type": "response.function_call_arguments.done",
+                "output_index": fc_output_index,
+                "item_id": fc_item_id,
+                "arguments": full_args,
+            })
+            yield _sse_event("response.output_item.done", {
+                "type": "response.output_item.done",
+                "output_index": fc_output_index,
+                "item": {
+                    "id": fc_item_id,
+                    "type": "function_call",
+                    "call_id": tc["id"],
+                    "name": tc["name"],
+                    "arguments": full_args,
+                    "status": "completed",
+                },
+            })
+            output.append({
+                "id": fc_item_id,
+                "type": "function_call",
+                "call_id": tc["id"],
+                "name": tc["name"],
+                "arguments": full_args,
+                "status": "completed",
             })
 
         # If neither reasoning nor content was emitted, emit an empty message
