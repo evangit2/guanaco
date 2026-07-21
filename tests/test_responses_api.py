@@ -191,6 +191,25 @@ class TestPayloadBuilding:
         assert payload["temperature"] == 0.7
         assert payload["top_p"] == 0.9
 
+    def test_non_standard_tool_types_filtered(self):
+        """Non-function tools (Codex's namespace, web_search) must be dropped."""
+        body = ResponsesRequest(
+            model="glm-5.2",
+            input="Create test.py",
+            tools=[
+                {"type": "function", "name": "write_file", "description": "Write a file",
+                 "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}},
+                {"type": "web_search", "external_web_access": True},
+                {"type": "namespace", "name": "multi_agent_v1", "description": "...", "tools": []},
+                {"type": "file_search", "vector_store_ids": ["vs_123"]},
+            ],
+        )
+        payload = _build_chat_payload(body, "glm-5.2")
+        # Only the function tool should survive
+        assert len(payload["tools"]) == 1
+        assert payload["tools"][0]["type"] == "function"
+        assert payload["tools"][0]["function"]["name"] == "write_file"
+
 
 # ── Output conversion tests ──
 

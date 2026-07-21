@@ -222,8 +222,10 @@ def _build_chat_payload(body: ResponsesRequest, resolved_model: str) -> dict:
                 # Skip non-function tools — Guanaco doesn't implement them
                 pass
             else:
-                # Pass through as-is in case it's already in OpenAI format
-                openai_tools.append(tool)
+                # Skip non-standard tool types (e.g. Codex's "namespace",
+                # "web_search" with external_web_access, etc.) — upstream
+                # providers reject them with 400. Only forward type: "function".
+                pass
         if openai_tools:
             payload["tools"] = openai_tools
 
