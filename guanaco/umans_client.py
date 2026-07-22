@@ -52,7 +52,7 @@ def _normalize_model_id(model: str) -> str:
 class UmansClient:
     """Async client for UMANS subscription API."""
 
-    def __init__(self, api_key: str, timeout: float = 900.0, base_url: str = ""):
+    def __init__(self, api_key: str, timeout: float = 300.0, base_url: str = ""):
         self.api_key = api_key
         self.timeout = timeout
         self.base_url = (base_url or UMANS_BASE).rstrip("/")

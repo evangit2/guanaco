@@ -1635,12 +1635,33 @@ async def _stream_completion_openai(client, payload, model, analytics, start_tim
                             sem_ctx = None
                         raise
                     except asyncio.TimeoutError:
-                        # First chunk timeout — no data sent to client yet, can still fallback
+                        # First chunk timeout — try failover before giving up
                         try:
                             await ollama_stream.aclose()
                         except RuntimeError:
                             pass
-                        stream_closed = True
+                        ollama_stream = None
+                        if can_failover:
+                            if current_account:
+                                account_pool.mark_429(current_account)
+                            next_acc = account_pool.next_account_for_failover(
+                                current_account or "ollama",
+                                provider=_current_provider,
+                                model=payload.get("model"),
+                                provider_priority=provider_priority,
+                            )
+                            if next_acc is not None:
+                                current_key = next_acc.api_key
+                                current_account = next_acc.name
+                                if next_acc.provider != _current_provider:
+                                    _current_provider = next_acc.provider
+                                    current_stream_client = _swap_client_for_provider(client, _sub_clients, _current_provider)
+                                    payload["model"] = strip_provider_prefix(payload["model"])
+                                    log.info("Cross-provider stream failover (timeout): → %s (model=%s)", _current_provider, payload["model"])
+                                _provider_name = f"{_current_provider}:{current_account}" if current_account != _current_provider else _current_provider
+                                log.info("Timeout stream failover: trying account '%s'", current_account)
+                                continue
+                        # No failover available — release semaphore and re-raise
                         if sem_ctx:
                             try:
                                 await limiter.__aexit__(None, None, None)
@@ -1648,7 +1669,7 @@ async def _stream_completion_openai(client, payload, model, analytics, start_tim
                                 pass
                             sem_ctx = None
                         raise httpx.ReadTimeout(
-                            f"Ollama did not produce first stream chunk within {fb.primary_timeout}s"
+                            f"Provider did not produce first stream chunk within {fb.primary_timeout}s"
                         )
                     except StopAsyncIteration:
                         # Empty stream — treat as error so fallback can handle it
@@ -1739,6 +1760,29 @@ async def _stream_completion_openai(client, payload, model, analytics, start_tim
                                 log.info("Cross-provider stream failover (buffered): → %s (model=%s)", _current_provider, payload["model"])
                             _provider_name = f"{_current_provider}:{current_account}" if current_account != _current_provider else _current_provider
                             log.info("429 stream failover (buffered): trying account '%s'", current_account)
+                            continue
+                        raise
+                    except (httpx.ReadTimeout, httpx.ConnectTimeout, httpx.PoolTimeout):
+                        if can_failover:
+                            if current_account:
+                                account_pool.mark_429(current_account)
+                            next_acc = account_pool.next_account_for_failover(
+                                current_account or "ollama",
+                                provider=_current_provider,
+                                model=payload.get("model"),
+                                provider_priority=provider_priority,
+                            )
+                            if next_acc is None:
+                                raise
+                            current_key = next_acc.api_key
+                            current_account = next_acc.name
+                            if next_acc.provider != _current_provider:
+                                _current_provider = next_acc.provider
+                                current_stream_client = _swap_client_for_provider(client, _sub_clients, _current_provider)
+                                payload["model"] = strip_provider_prefix(payload["model"])
+                                log.info("Cross-provider stream failover (buffered timeout): → %s (model=%s)", _current_provider, payload["model"])
+                            _provider_name = f"{_current_provider}:{current_account}" if current_account != _current_provider else _current_provider
+                            log.info("Timeout stream failover (buffered): trying account '%s'", current_account)
                             continue
                         raise
 
