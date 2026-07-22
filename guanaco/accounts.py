@@ -10,6 +10,9 @@ from guanaco.config import ProviderAccount
 
 logger = logging.getLogger(__name__)
 
+# How long a 429-exhausted account stays marked before being eligible again.
+_EXHAUSTION_TTL_SECONDS = 60
+
 # Models that require a paid Ollama plan (not available on free tier).
 PREMIUM_MODELS = {"kimi-k2.6", "glm-5.1"}
 
@@ -197,6 +200,7 @@ class AccountPool:
         self._accounts: list[ProviderAccount] = accounts
         self._rr_index: int = 0
         self._exhausted: set[str] = set()
+        self._exhausted_ts: dict[str, float] = {}  # account name → timestamp of 429
 
     @property
     def accounts(self) -> list[ProviderAccount]:
@@ -282,15 +286,44 @@ class AccountPool:
         logger.debug(f"Selected account '{best.name}' (session: {best.last_session_pct}%)")
         return best
 
-    def next_account_for_failover(self, current_name: str, provider: str = "ollama", model: Optional[str] = None) -> Optional[ProviderAccount]:
-        """Pick the next account after a 429, skipping exhausted/current ones."""
-        self._exhausted.add(current_name)
-        active = self._active(provider=provider, model=model)
+    def next_account_for_failover(
+        self,
+        current_name: str,
+        provider: str = "ollama",
+        model: Optional[str] = None,
+        provider_priority: Optional[list[str]] = None,
+    ) -> Optional[ProviderAccount]:
+        """Pick the next account after a 429, skipping exhausted/current ones.
 
+        If the current provider has no remaining accounts, fall through to
+        the next provider in ``provider_priority`` and try its accounts.
+        This enables cross-provider failover (e.g. UMANS 429 → Cline → Ollama)
+        instead of immediately giving up when a single-provider pool is exhausted.
+        """
+        self._exhausted.add(current_name)
+        self._exhausted_ts[current_name] = time.time()
+        self._prune_expired()
+
+        # Phase 1: try other accounts within the same provider
+        active = self._active(provider=provider, model=model)
         for a in active:
             if a.name not in self._exhausted:
                 logger.info(f"Failover from '{current_name}' to account '{a.name}'")
                 return a
+
+        # Phase 2: cross-provider failover — walk the priority list
+        if provider_priority:
+            for next_provider in provider_priority:
+                if next_provider == provider:
+                    continue
+                active = self._active(provider=next_provider, model=model)
+                for a in active:
+                    if a.name not in self._exhausted:
+                        logger.info(
+                            f"Cross-provider failover: '{current_name}' (%s) → '%s' (%s)",
+                            current_name, a.name, next_provider,
+                        )
+                        return a
 
         logger.warning(f"All active accounts exhausted (last 429 from '{current_name}')")
         return None
@@ -298,6 +331,23 @@ class AccountPool:
     def reset_exhausted(self) -> None:
         """Clear the in-process 429 exhaustion set."""
         self._exhausted.clear()
+        self._exhausted_ts.clear()
+
+    def _prune_expired(self) -> None:
+        """Remove exhaustion entries that have exceeded their TTL (60s).
+
+        Without this, a single 429 permanently marks an account as exhausted
+        for the process lifetime, preventing failover even after the upstream
+        rate limit has recovered.
+        """
+        now = time.time()
+        expired = [
+            name for name, ts in list(self._exhausted_ts.items())
+            if now - ts > _EXHAUSTION_TTL_SECONDS
+        ]
+        for name in expired:
+            self._exhausted.discard(name)
+            del self._exhausted_ts[name]
 
     def update_usage(self, account_name: str, session_pct: Optional[float],
                      weekly_pct: Optional[float], plan: Optional[str] = None,
@@ -316,6 +366,7 @@ class AccountPool:
     def mark_429(self, account_name: str) -> None:
         """Mark that an account hit a 429. Temporarily deprioritize it."""
         self._exhausted.add(account_name)
+        self._exhausted_ts[account_name] = time.time()
         for a in self._accounts:
             if a.name == account_name:
                 if a.last_session_pct is not None:

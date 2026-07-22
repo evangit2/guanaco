@@ -12,7 +12,7 @@ from typing import Optional
 
 import httpx
 
-from guanaco.accounts import provider_for_model
+from guanaco.accounts import provider_for_model, strip_provider_prefix
 from guanaco.concurrency import OllamaConcurrencyLimiter
 
 log = logging.getLogger("guanaco.router")
@@ -20,7 +20,7 @@ log = logging.getLogger("guanaco.router")
 
 async def _ollama_chat_with_primary_timeout(
     client, payload, fallback_config=None, limiter=None,
-    api_key=None, account_name=None, account_pool=None
+    api_key=None, account_name=None, account_pool=None, provider_priority=None
 ):
     """Call Ollama Cloud chat completion with a primary timeout and optional concurrency limit.
 
@@ -28,13 +28,21 @@ async def _ollama_chat_with_primary_timeout(
     slow/unresponsive Ollama responses trigger fallback quickly instead of
     hanging for the full 120s client timeout.
     """
+    # Collect sub-clients for cross-provider failover
+    _sub_clients: dict = {}
+    if hasattr(client, "_clients") and isinstance(client._clients, dict):
+        _sub_clients = client._clients
+    _current_provider = provider_for_model(payload.get("model", "")) or "ollama"
+
     async def _do_call():
         """Execute the actual Ollama call with 429 retry logic."""
+        nonlocal _current_provider
         current_key = api_key
         current_account = account_name
+        current_call_client = client
         while True:
             try:
-                return await client.chat_completion(payload, api_key=current_key)
+                return await current_call_client.chat_completion(payload, api_key=current_key)
             except Exception as e:
                 should_failover = (
                     isinstance(e, httpx.HTTPStatusError)
@@ -47,13 +55,22 @@ async def _ollama_chat_with_primary_timeout(
                         account_pool.mark_429(current_account)
                     next_acc = account_pool.next_account_for_failover(
                         current_account or "ollama",
-                        provider=provider_for_model(payload.get("model")),
+                        provider=_current_provider,
                         model=payload.get("model"),
+                        provider_priority=provider_priority,
                     ) if account_pool else None
                     if next_acc is None:
                         raise
                     current_key = next_acc.api_key
                     current_account = next_acc.name
+                    # Cross-provider swap
+                    if next_acc.provider != _current_provider:
+                        _current_provider = next_acc.provider
+                        sub = _sub_clients.get(_current_provider)
+                        if sub is not None:
+                            current_call_client = sub
+                        payload["model"] = strip_provider_prefix(payload["model"])
+                        log.info("Cross-provider failover: → %s (model=%s)", _current_provider, payload["model"])
                     log.info("429 failover: trying account '%s'", current_account)
                     continue
                 if limiter and limiter.should_retry_429(e):

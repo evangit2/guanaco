@@ -23,7 +23,7 @@ from pydantic import BaseModel
 
 from guanaco.analytics import _normalize_model_name
 from guanaco.cache import CacheEngine
-from guanaco.accounts import provider_for_model
+from guanaco.accounts import provider_for_model, strip_provider_prefix
 from guanaco.concurrency import OllamaConcurrencyLimiter
 
 # Re-export extracted modules for backward compatibility
@@ -739,7 +739,7 @@ def create_router(client, analytics=None, config=None, account_pool=None, deplet
                     # ── Retry on empty response ──
                     for attempt in range(MAX_EMPTY_RETRIES + 1):
                         async with _concurrency_limiter:
-                            resp = await _ollama_chat_with_primary_timeout(client, p, _config.fallback if _config else None, _concurrency_limiter, api_key=request_key, account_name=account_name, account_pool=_account_pool)
+                            resp = await _ollama_chat_with_primary_timeout(client, p, _config.fallback if _config else None, _concurrency_limiter, api_key=request_key, account_name=account_name, account_pool=_account_pool, provider_priority=_provider_priority_config)
                         if not _is_empty_non_streaming_response(resp) or attempt == MAX_EMPTY_RETRIES:
                             break
                         log.warning("Empty cached-response from %s (attempt %d/%d), retrying...", resolved_model, attempt + 1, MAX_EMPTY_RETRIES + 1)
@@ -847,12 +847,12 @@ def create_router(client, analytics=None, config=None, account_pool=None, deplet
         # Try Ollama Cloud first
         try:
             if body.stream:
-                return await _stream_completion_openai(client, payload, resolved_model, _analytics, start, _config, history_kwargs=_hist, limiter=_concurrency_limiter, api_key=_request_key, account_name=_account_name, account_pool=_account_pool)
+                return await _stream_completion_openai(client, payload, resolved_model, _analytics, start, _config, history_kwargs=_hist, limiter=_concurrency_limiter, api_key=_request_key, account_name=_account_name, account_pool=_account_pool, provider_priority=_provider_priority_config)
 
             # ── Non-streaming: retry on empty response ──
             for attempt in range(MAX_EMPTY_RETRIES + 1):
                 async with _concurrency_limiter:
-                    resp = await _ollama_chat_with_primary_timeout(client, payload, _config.fallback if _config else None, _concurrency_limiter, api_key=_request_key, account_name=_account_name, account_pool=_account_pool)
+                    resp = await _ollama_chat_with_primary_timeout(client, payload, _config.fallback if _config else None, _concurrency_limiter, api_key=_request_key, account_name=_account_name, account_pool=_account_pool, provider_priority=_provider_priority_config)
                 if not _is_empty_non_streaming_response(resp) or attempt == MAX_EMPTY_RETRIES:
                     break
                 log.warning("Empty response from %s (attempt %d/%d), retrying...", resolved_model, attempt + 1, MAX_EMPTY_RETRIES + 1)
@@ -1208,6 +1208,7 @@ def create_router(client, analytics=None, config=None, account_pool=None, deplet
                         client, payload, _config.fallback if _config else None,
                         _concurrency_limiter, api_key=_request_key,
                         account_name=_account_name, account_pool=_account_pool,
+                        provider_priority=_provider_priority_config,
                     )
                 if not _is_empty_non_streaming_response(resp) or attempt == MAX_EMPTY_RETRIES:
                     break
@@ -1499,7 +1500,17 @@ def create_router(client, analytics=None, config=None, account_pool=None, deplet
     return router
 
 
-async def _stream_completion_openai(client, payload, model, analytics, start_time, config=None, history_kwargs=None, limiter=None, api_key=None, account_name=None, account_pool=None):
+def _swap_client_for_provider(multi_client, sub_clients: dict, target_provider: str):
+    """Return the sub-client for *target_provider*, falling back to *multi_client*.
+
+    Used during cross-provider 429 failover to swap the streaming/non-streaming
+    client when the failover account belongs to a different provider.
+    """
+    sub = sub_clients.get(target_provider)
+    return sub if sub is not None else multi_client
+
+
+async def _stream_completion_openai(client, payload, model, analytics, start_time, config=None, history_kwargs=None, limiter=None, api_key=None, account_name=None, account_pool=None, provider_priority=None):
     """Stream OpenAI-format SSE responses, with fallback, timeout, and multi-account 429 failover support.
 
     Key design: When fallback is configured with primary_timeout, we apply
@@ -1525,6 +1536,14 @@ async def _stream_completion_openai(client, payload, model, analytics, start_tim
     # Multi-account state
     can_failover = account_pool is not None and len(account_pool.accounts) > 1
 
+    # Collect sub-clients for cross-provider failover
+    _sub_clients: dict = {}
+    if hasattr(client, "_clients") and isinstance(client._clients, dict):
+        _sub_clients = client._clients
+
+    # Track the current provider for cross-provider swap detection
+    _current_provider = provider_for_model(model) if model else "ollama"
+
     async def generate():
         stream_metrics = {}
         used_fallback = False
@@ -1535,7 +1554,8 @@ async def _stream_completion_openai(client, payload, model, analytics, start_tim
         # Multi-account state inside generate() to be bound for use in the generator
         current_key = api_key
         current_account = account_name
-        nonlocal _provider_name
+        current_stream_client = client  # may be swapped on cross-provider failover
+        nonlocal _provider_name, _current_provider
 
         try:
             if use_timeouts:
@@ -1553,7 +1573,7 @@ async def _stream_completion_openai(client, payload, model, analytics, start_tim
                 while True:
                     try:
                         if ollama_stream is None:
-                            ollama_stream = client.chat_completion_stream(payload, api_key=current_key)
+                            ollama_stream = current_stream_client.chat_completion_stream(payload, api_key=current_key)
                         first_chunk = await asyncio.wait_for(
                             ollama_stream.__anext__(), timeout=fb.primary_timeout
                         )
@@ -1563,7 +1583,12 @@ async def _stream_completion_openai(client, payload, model, analytics, start_tim
                         if is_429 and can_failover:
                             if current_account:
                                 account_pool.mark_429(current_account)
-                            next_acc = account_pool.next_account_for_failover(current_account or "ollama", provider=provider_for_model(payload.get("model")), model=payload.get("model"))
+                            next_acc = account_pool.next_account_for_failover(
+                                current_account or "ollama",
+                                provider=_current_provider,
+                                model=payload.get("model"),
+                                provider_priority=provider_priority,
+                            )
                             try:
                                 await ollama_stream.aclose()
                             except (RuntimeError, Exception):
@@ -1580,7 +1605,15 @@ async def _stream_completion_openai(client, payload, model, analytics, start_tim
                                 raise
                             current_key = next_acc.api_key
                             current_account = next_acc.name
-                            _provider_name = f"ollama:{current_account}" if current_account != "ollama" else "ollama"
+                            # Cross-provider swap: if the new account is on a
+                            # different provider, swap the sub-client and strip
+                            # the original provider prefix from the model name.
+                            if next_acc.provider != _current_provider:
+                                _current_provider = next_acc.provider
+                                current_stream_client = _swap_client_for_provider(client, _sub_clients, _current_provider)
+                                payload["model"] = strip_provider_prefix(payload["model"])
+                                log.info("Cross-provider stream failover: %s → %s (model=%s)", _provider_name, _current_provider, payload["model"])
+                            _provider_name = f"{_current_provider}:{current_account}" if current_account != _current_provider else _current_provider
                             log.info("429 stream failover: trying account '%s'", current_account)
                             continue
                         if limiter and limiter.should_retry_429(e):
@@ -1684,17 +1717,27 @@ async def _stream_completion_openai(client, payload, model, analytics, start_tim
                 # ── No timeout wrapping: original buffered behavior with account failover ──
                 while True:
                     try:
-                        chunks, stream_metrics = await _collect_stream_chunks(client, payload, api_key=current_key)
+                        chunks, stream_metrics = await _collect_stream_chunks(current_stream_client, payload, api_key=current_key)
                     except httpx.HTTPStatusError as e:
                         if e.response.status_code == 429 and can_failover:
                             if current_account:
                                 account_pool.mark_429(current_account)
-                            next_acc = account_pool.next_account_for_failover(current_account or "ollama", provider=provider_for_model(payload.get("model")), model=payload.get("model"))
+                            next_acc = account_pool.next_account_for_failover(
+                                current_account or "ollama",
+                                provider=_current_provider,
+                                model=payload.get("model"),
+                                provider_priority=provider_priority,
+                            )
                             if next_acc is None:
                                 raise
                             current_key = next_acc.api_key
                             current_account = next_acc.name
-                            _provider_name = f"ollama:{current_account}" if current_account != "ollama" else "ollama"
+                            if next_acc.provider != _current_provider:
+                                _current_provider = next_acc.provider
+                                current_stream_client = _swap_client_for_provider(client, _sub_clients, _current_provider)
+                                payload["model"] = strip_provider_prefix(payload["model"])
+                                log.info("Cross-provider stream failover (buffered): → %s (model=%s)", _current_provider, payload["model"])
+                            _provider_name = f"{_current_provider}:{current_account}" if current_account != _current_provider else _current_provider
                             log.info("429 stream failover (buffered): trying account '%s'", current_account)
                             continue
                         raise
