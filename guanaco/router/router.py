@@ -1580,7 +1580,8 @@ async def _stream_completion_openai(client, payload, model, analytics, start_tim
                         break  # Got a chunk, exit loop
                     except httpx.HTTPStatusError as e:
                         is_429 = e.response.status_code == 429
-                        if is_429 and can_failover:
+                        is_auth_error = e.response.status_code in (401, 403)
+                        if (is_429 or is_auth_error) and can_failover:
                             if current_account:
                                 account_pool.mark_429(current_account)
                             next_acc = account_pool.next_account_for_failover(
@@ -1740,7 +1741,7 @@ async def _stream_completion_openai(client, payload, model, analytics, start_tim
                     try:
                         chunks, stream_metrics = await _collect_stream_chunks(current_stream_client, payload, api_key=current_key)
                     except httpx.HTTPStatusError as e:
-                        if e.response.status_code == 429 and can_failover:
+                        if (e.response.status_code == 429 or e.response.status_code in (401, 403)) and can_failover:
                             if current_account:
                                 account_pool.mark_429(current_account)
                             next_acc = account_pool.next_account_for_failover(

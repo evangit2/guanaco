@@ -49,8 +49,12 @@ async def _ollama_chat_with_primary_timeout(
                     and e.response.status_code == 429
                 )
                 is_timeout = isinstance(e, (httpx.ReadTimeout, httpx.ConnectTimeout, httpx.PoolTimeout))
+                is_auth_error = (
+                    isinstance(e, httpx.HTTPStatusError)
+                    and e.response.status_code in (401, 403)
+                )
                 should_failover = (
-                    (is_429 or is_timeout)
+                    (is_429 or is_timeout or is_auth_error)
                     and account_pool is not None
                     and len(account_pool.accounts) > 1
                 )
@@ -79,8 +83,8 @@ async def _ollama_chat_with_primary_timeout(
                         if sub is not None:
                             current_call_client = sub
                         payload["model"] = strip_provider_prefix(payload["model"])
-                        log.info("Cross-provider failover (%s): → %s (model=%s)", "429" if is_429 else "timeout", _current_provider, payload["model"])
-                    log.info("%s failover: trying account '%s'", "429" if is_429 else "timeout", current_account)
+                        log.info("Cross-provider failover (%s): → %s (model=%s)", "429" if is_429 else "timeout" if is_timeout else f"HTTP {e.response.status_code}", _current_provider, payload["model"])
+                    log.info("%s failover: trying account '%s'", "429" if is_429 else "timeout" if is_timeout else f"HTTP {e.response.status_code}", current_account)
                     continue
                 if limiter and limiter.should_retry_429(e):
                     await limiter.backoff_and_retry(0)
