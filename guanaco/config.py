@@ -214,6 +214,11 @@ class ProviderAccount(BaseModel):
     last_checked: Optional[float] = None
     # Multi-account rotation mode. "usage" = quota-aware (default). "round_robin" = round-robin.
     rotation_mode: str = "usage"
+    # Per-account concurrency sensitivity (UMANS only). When set, overrides the
+    # global router.concurrency_threshold for this account. Lower = more
+    # conservative (redirects to fallback sooner), higher = more liberal
+    # (allows more concurrent sessions before redirecting). null = use global default.
+    concurrency_threshold: Optional[int] = None
 
 
 class CustomProviderConfig(BaseModel):

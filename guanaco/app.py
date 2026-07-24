@@ -24,7 +24,7 @@ from guanaco.multi_provider_client import MultiProviderChatClient
 from guanaco.accounts import AccountPool
 from guanaco.depletion import ProviderDepletionTracker
 from guanaco.umans_concurrency import UmansConcurrencyTracker
-__version__ = "0.8.5"
+__version__ = "0.8.8"
 from guanaco.router.router import create_router as create_llm_router
 from guanaco.search.providers import ALL_PROVIDERS
 from guanaco.dashboard import create_dashboard_router
@@ -175,10 +175,15 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     )
 
     # ── UMANS concurrency tracker ──
+    # Use per-account threshold if set, otherwise fall back to global router config
+    umans_account = next((a for a in config.ollama_accounts if a.provider == "umans"), None)
+    effective_conc_threshold = config.router.concurrency_threshold
+    if umans_account and umans_account.concurrency_threshold is not None:
+        effective_conc_threshold = umans_account.concurrency_threshold
     concurrency_tracker = UmansConcurrencyTracker(
         clients,
         check_interval=config.router.concurrency_check_interval,
-        saturation_threshold=config.router.concurrency_threshold,
+        saturation_threshold=effective_conc_threshold,
         enabled=config.router.concurrency_tracking_enabled,
     )
 

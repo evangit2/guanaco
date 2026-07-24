@@ -265,9 +265,15 @@ class CmdCodeClient(BaseProvider):
         """Parse a single Command Code SSE line into an event dict.
 
         CC sends newline-delimited JSON objects (not SSE data: prefix):
+        {"type":"start"}
+        {"type":"start-step","request":{...}}
+        {"type":"reasoning-start","id":"reasoning-0"}
+        {"type":"reasoning-delta","id":"reasoning-0","text":"..."}
+        {"type":"reasoning-end","id":"reasoning-0"}
         {"type":"text-delta","text":"..."}
-        {"type":"reasoning-delta","text":"..."}
-        {"type":"finish","finishReason":"stop","usage":{...}}
+        {"type":"finish-step","finishReason":"stop","usage":{"inputTokens":N,"outputTokens":N,...}}
+        {"type":"finish","finishReason":"stop","totalUsage":{"inputTokens":N,"outputTokens":N,...}}
+        {"type":"provider-metadata","providerMetadata":{...}}
         {"type":"error","error":{"message":"..."}}
         """
         line = line.strip()
@@ -277,6 +283,37 @@ class CmdCodeClient(BaseProvider):
             return json.loads(line)
         except json.JSONDecodeError:
             return None
+
+    @staticmethod
+    def _extract_usage(event: dict) -> dict:
+        """Extract usage dict from either old or new Command Code SSE format.
+
+        New format (v0.18.10+):
+          - finish-step event has "usage" with inputTokens/outputTokens
+          - finish event has "totalUsage" with inputTokens/outputTokens
+        Old format:
+          - finish event has "usage" with promptTokens/completionTokens
+        """
+        # New format: finish-step has usage with inputTokens
+        usage = event.get("usage")
+        if usage and "inputTokens" in usage:
+            return {
+                "promptTokens": usage.get("inputTokens", 0),
+                "completionTokens": usage.get("outputTokens", 0),
+                "totalTokens": usage.get("totalTokens", 0),
+            }
+        # New format: finish event has totalUsage with inputTokens
+        total_usage = event.get("totalUsage")
+        if total_usage and "inputTokens" in total_usage:
+            return {
+                "promptTokens": total_usage.get("inputTokens", 0),
+                "completionTokens": total_usage.get("outputTokens", 0),
+                "totalTokens": total_usage.get("totalTokens", 0),
+            }
+        # Old format: finish event has usage with promptTokens
+        if usage and "promptTokens" in usage:
+            return usage
+        return {}
 
     @staticmethod
     def _make_openai_chunk(
@@ -551,9 +588,18 @@ class CmdCodeClient(BaseProvider):
                         content_parts.append(event.get("text", ""))
                     elif etype == "reasoning-delta":
                         reasoning_parts.append(event.get("text", ""))
+                    elif etype == "finish-step":
+                        # New format: per-step usage with inputTokens/outputTokens
+                        u = self._extract_usage(event)
+                        if u:
+                            usage = u
+                        # finish-step also carries finishReason sometimes
+                        fr = event.get("finishReason")
+                        if fr:
+                            finish_reason = fr
                     elif etype == "finish":
                         finish_reason = event.get("finishReason", "stop")
-                        u = event.get("usage", {})
+                        u = self._extract_usage(event)
                         if u:
                             usage = u
                     elif etype == "error":
@@ -635,9 +681,16 @@ class CmdCodeClient(BaseProvider):
                                     first_token_time = time.time()
                                 yield self._make_openai_chunk(client_model, reasoning=text)
 
+                        elif etype == "finish-step":
+                            # New format: per-step usage with inputTokens/outputTokens
+                            u = self._extract_usage(event)
+                            if u:
+                                prompt_tokens = u.get("promptTokens", prompt_tokens)
+                                completion_tokens = u.get("completionTokens", completion_tokens)
+
                         elif etype == "finish":
                             finish_reason = event.get("finishReason", "stop")
-                            u = event.get("usage", {})
+                            u = self._extract_usage(event)
                             if u:
                                 prompt_tokens = u.get("promptTokens", prompt_tokens)
                                 completion_tokens = u.get("completionTokens", completion_tokens)
