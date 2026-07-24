@@ -1224,6 +1224,8 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
                 "last_session_reset": acc.last_session_reset,
                 "last_weekly_reset": acc.last_weekly_reset,
                 "last_checked": acc.last_checked,
+                "concurrency_threshold": acc.concurrency_threshold,
+                "rotation_mode": acc.rotation_mode,
             })
         return {"accounts": accounts}
 
@@ -1430,6 +1432,51 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
             _account_pool.update_accounts(config.ollama_accounts)
 
         return {"status": "ok", "message": f"Key updated for '{name}'"}
+
+    @router.post("/api/accounts/concurrency-threshold")
+    async def set_account_concurrency_threshold(request: Request):
+        """Set the per-account concurrency sensitivity threshold (UMANS only).
+
+        Lower = more conservative (redirects to fallback sooner).
+        Higher = more liberal (allows more concurrent sessions before redirecting).
+        null = use the global router.concurrency_threshold default.
+        """
+        body = await request.json()
+        name = body.get("name", "").strip()
+        threshold = body.get("concurrency_threshold", None)
+
+        if not name:
+            return {"status": "error", "message": "Account name is required"}
+
+        config = get_config()
+        acc = next((a for a in config.ollama_accounts if a.name == name), None)
+        if not acc:
+            return {"status": "error", "message": f"Account '{name}' not found"}
+
+        if threshold is None:
+            acc.concurrency_threshold = None
+        else:
+            try:
+                threshold_int = int(threshold)
+            except (ValueError, TypeError):
+                return {"status": "error", "message": "Threshold must be an integer or null"}
+            if threshold_int < 1 or threshold_int > 20:
+                return {"status": "error", "message": "Threshold must be between 1 and 20"}
+            acc.concurrency_threshold = threshold_int
+
+        save_config(config)
+
+        # Update the running tracker if this is the active UMANS account
+        tracker = getattr(request.app.state, "concurrency_tracker", None)
+        if tracker and acc.provider == "umans":
+            effective = acc.concurrency_threshold if acc.concurrency_threshold is not None else config.router.concurrency_threshold
+            tracker.set_threshold(effective)
+
+        return {
+            "status": "ok",
+            "message": f"Concurrency threshold set to {acc.concurrency_threshold if acc.concurrency_threshold is not None else 'global default'} for '{name}'",
+            "concurrency_threshold": acc.concurrency_threshold,
+        }
 
     @router.post("/api/accounts/check-usage")
     async def check_account_usage(request: Request):

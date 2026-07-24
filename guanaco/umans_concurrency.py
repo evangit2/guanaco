@@ -99,6 +99,48 @@ class UmansConcurrencyTracker:
         last = self._last_check.get("umans", {})
         return last.get("limit")
 
+    def set_threshold(self, threshold: int) -> None:
+        """Update the saturation threshold at runtime.
+
+        Called when a user adjusts the concurrency sensitivity slider in the
+        dashboard. A lower threshold makes routing more conservative (redirects
+        to fallback providers sooner); a higher threshold is more liberal.
+        Immediately re-evaluates saturation state with the new threshold.
+        """
+        old = self._threshold
+        self._threshold = threshold
+        if old != threshold:
+            logger.info(
+                "UMANS concurrency threshold updated: %s → %s",
+                old, threshold,
+            )
+            # Re-evaluate saturation immediately with the new threshold
+            # without waiting for the next poll cycle
+            self._reevaluate_saturation()
+
+    def _reevaluate_saturation(self) -> None:
+        """Re-check saturation state based on the last known concurrency data."""
+        last = self._last_check.get("umans", {})
+        concurrent = last.get("concurrent_sessions", 0)
+        if concurrent >= self._threshold:
+            if "umans" not in self._saturated_providers:
+                logger.info(
+                    "UMANS concurrency saturated: %d/%s sessions (threshold=%s) — "
+                    "routing unprefixed models to fallback providers",
+                    concurrent,
+                    last.get("limit") or "?",
+                    self._threshold,
+                )
+            self._saturated_providers.add("umans")
+        else:
+            if "umans" in self._saturated_providers:
+                logger.info(
+                    "UMANS concurrency recovered: %d/%s sessions — resuming normal routing",
+                    concurrent,
+                    last.get("limit") or "?",
+                )
+            self._saturated_providers.discard("umans")
+
     # ── Background task ──
 
     async def start(self):

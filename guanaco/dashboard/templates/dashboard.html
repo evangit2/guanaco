@@ -1204,6 +1204,18 @@ function loadKeys() {
 // ─── Accounts ───
 
 function loadAccounts() {
+    let globalConcThreshold = 3;
+    fetch('/dashboard/api/umans/concurrency').then(r => r.json()).then(ucData => {
+        if (ucData && ucData._meta && ucData._meta.saturation_threshold) {
+            globalConcThreshold = ucData._meta.saturation_threshold;
+        }
+        _renderAccounts(globalConcThreshold);
+    }).catch(() => {
+        _renderAccounts(globalConcThreshold);
+    });
+}
+
+function _renderAccounts(globalConcThreshold) {
     fetch('/dashboard/api/accounts').then(r => r.json()).then(data => {
         const accounts = data.accounts || [];
         const container = document.getElementById('accounts-list');
@@ -1257,6 +1269,26 @@ function loadAccounts() {
                     <button class="btn" style="font-size:11px;padding:2px 8px;" onclick="checkAccountUsage('${a.name}')">Check Usage</button>
                     ` : ''}
                 </div>
+                ${a.provider === 'umans' ? `
+                <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+                        <span style="font-size:12px;font-weight:600;color:var(--text1);">⚡ Concurrency Sensitivity</span>
+                        <span style="font-size:11px;color:var(--text2);" id="conc-thresh-label-${i}">${a.concurrency_threshold !== null && a.concurrency_threshold !== undefined ? a.concurrency_threshold + ' sessions' : 'Global default (' + (globalConcThreshold || 3) + ')'}</span>
+                    </div>
+                    <div style="display:flex;align-items:center;gap:8px;">
+                        <span style="font-size:10px;color:var(--text2);min-width:60px;">Conservative</span>
+                        <input type="range" min="1" max="10" value="${a.concurrency_threshold !== null && a.concurrency_threshold !== undefined ? Math.min(Math.max(a.concurrency_threshold, 1), 10) : (globalConcThreshold || 3)}"
+                            oninput="updateConcThreshLabel(${i}, this.value)"
+                            onchange="saveConcThresh('${a.name}', this.value)"
+                            id="conc-thresh-slider-${i}"
+                            style="flex:1;accent-color:var(--accent);">
+                        <span style="font-size:10px;color:var(--text2);min-width:50px;">Liberal</span>
+                    </div>
+                    <div style="display:flex;justify-content:flex-end;margin-top:4px;">
+                        <button class="btn" style="font-size:10px;padding:2px 8px;color:var(--text2);" onclick="resetConcThresh('${a.name}', ${i})">Reset to global</button>
+                    </div>
+                </div>
+                ` : ''}
             </div>`;
         }).join('');
 
@@ -1264,6 +1296,38 @@ function loadAccounts() {
         if (accounts.some(a => a.name === 'ollama')) {
             const primaryCard = container.querySelector('div');
             // Already inline with primary
+        }
+    });
+}
+
+function updateConcThreshLabel(idx, val) {
+    const label = document.getElementById('conc-thresh-label-' + idx);
+    if (label) label.textContent = val + ' sessions';
+}
+
+function saveConcThresh(name, val) {
+    fetch('/dashboard/api/accounts/concurrency-threshold', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({name: name, concurrency_threshold: parseInt(val)})
+    }).then(r => r.json()).then(data => {
+        const resultEl = document.getElementById('add-account-result');
+        if (data.status === 'ok') {
+            if (resultEl) { resultEl.textContent = '✅ ' + data.message; resultEl.style.color = 'var(--accent)'; }
+        } else {
+            if (resultEl) { resultEl.textContent = '❌ ' + data.message; resultEl.style.color = '#ef4444'; }
+        }
+    });
+}
+
+function resetConcThresh(name, idx) {
+    fetch('/dashboard/api/accounts/concurrency-threshold', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({name: name, concurrency_threshold: null})
+    }).then(r => r.json()).then(data => {
+        if (data.status === 'ok') {
+            loadAccounts();
         }
     });
 }

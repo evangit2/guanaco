@@ -486,3 +486,55 @@ class TestCrossProviderRerouting:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+# ── Per-account concurrency threshold tests ──
+
+class TestPerAccountConcurrencyThreshold:
+    """Test per-account concurrency_threshold field and set_threshold()."""
+
+    def test_account_threshold_defaults_none(self):
+        """New accounts should have concurrency_threshold=None (use global)."""
+        acc = ProviderAccount(name="umans-1", provider="umans", api_key="***")
+        assert acc.concurrency_threshold is None
+
+    def test_account_threshold_can_be_set(self):
+        acc = ProviderAccount(name="umans-1", provider="umans", api_key="***")
+        acc.concurrency_threshold = 5
+        assert acc.concurrency_threshold == 5
+
+    def test_set_threshold_updates_value(self):
+        tracker = _make_tracker(concurrent=2, threshold=3)
+        tracker.set_threshold(5)
+        assert tracker._threshold == 5
+
+    def test_set_threshold_triggers_reevaluation_unsaturate(self):
+        """Lowering threshold should keep saturation if concurrent >= new threshold.
+        Raising threshold above concurrent should clear saturation."""
+        tracker = _make_tracker(concurrent=3, threshold=3)
+        assert tracker.is_saturated("umans")
+        # Raise threshold above current — should unsaturate
+        tracker.set_threshold(5)
+        assert not tracker.is_saturated("umans")
+
+    def test_set_threshold_triggers_reevaluation_saturate(self):
+        """Lowering threshold to or below concurrent should saturate."""
+        tracker = _make_tracker(concurrent=3, threshold=5)
+        assert not tracker.is_saturated("umans")
+        # Lower threshold to match concurrent — should saturate
+        tracker.set_threshold(3)
+        assert tracker.is_saturated("umans")
+
+    def test_set_threshold_same_value_no_change(self):
+        """Setting the same threshold should not log or change state."""
+        tracker = _make_tracker(concurrent=2, threshold=3)
+        tracker.set_threshold(3)
+        assert tracker._threshold == 3
+        assert not tracker.is_saturated("umans")
+
+    def test_status_reflects_new_threshold(self):
+        tracker = _make_tracker(concurrent=2, threshold=3)
+        tracker._clients = {"umans": _FakeClient("***")}
+        tracker.set_threshold(7)
+        status = tracker.status()
+        assert status["_meta"]["saturation_threshold"] == 7
