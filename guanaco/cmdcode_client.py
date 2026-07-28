@@ -736,15 +736,12 @@ class CmdCodeClient(BaseProvider):
                     yield "data: [DONE]\n\n"
                     yield f"__oct_metrics__:{json.dumps(metrics)}\n\n"
         except httpx.HTTPStatusError as e:
-            logger.error("Command Code HTTP error: %s", e)
-            yield self._make_openai_chunk(client_model, content=f"[HTTP Error: {e.response.status_code}]")
-            yield self._make_openai_chunk(client_model, finish_reason="error")
-            yield "data: [DONE]\n\n"
-            metrics = {
-                "eval_count": 0,
-                "prompt_eval_count": 0,
-                "reasoning_tokens": 0,
-                "elapsed_seconds": round(time.time() - start, 3),
-                "ttft_seconds": None,
-            }
-            yield f"__oct_metrics__:{json.dumps(metrics)}\n\n"
+            # Log the actual response body for debugging, then re-raise so the
+            # router's failover logic can catch it and try the next provider.
+            body_preview = ""
+            try:
+                body_preview = e.response.text[:500]
+            except Exception:
+                pass
+            logger.error("Command Code HTTP %d: %s — body: %s", e.response.status_code, e, body_preview)
+            raise

@@ -1579,8 +1579,8 @@ async def _stream_completion_openai(client, payload, model, analytics, start_tim
                         )
                         break  # Got a chunk, exit loop
                     except httpx.HTTPStatusError as e:
-                        is_429 = e.response.status_code == 429
-                        if is_429 and can_failover:
+                        _should_failover = e.response.status_code in (429, 400, 403, 500, 502, 503)
+                        if _should_failover and can_failover:
                             if current_account:
                                 account_pool.mark_429(current_account)
                             next_acc = account_pool.next_account_for_failover(
@@ -1614,7 +1614,7 @@ async def _stream_completion_openai(client, payload, model, analytics, start_tim
                                 payload["model"] = strip_provider_prefix(payload["model"])
                                 log.info("Cross-provider stream failover: %s → %s (model=%s)", _provider_name, _current_provider, payload["model"])
                             _provider_name = f"{_current_provider}:{current_account}" if current_account != _current_provider else _current_provider
-                            log.info("429 stream failover: trying account '%s'", current_account)
+                            log.info("Stream failover (HTTP %d): trying account '%s'", e.response.status_code, current_account)
                             continue
                         if limiter and limiter.should_retry_429(e):
                             if account_name and account_pool:
@@ -1715,11 +1715,12 @@ async def _stream_completion_openai(client, payload, model, analytics, start_tim
                             pass
             else:
                 # ── No timeout wrapping: original buffered behavior with account failover ──
+                empty_retries = 0
                 while True:
                     try:
                         chunks, stream_metrics = await _collect_stream_chunks(current_stream_client, payload, api_key=current_key)
                     except httpx.HTTPStatusError as e:
-                        if e.response.status_code == 429 and can_failover:
+                        if e.response.status_code in (429, 400, 403, 500, 502, 503) and can_failover:
                             if current_account:
                                 account_pool.mark_429(current_account)
                             next_acc = account_pool.next_account_for_failover(
@@ -1738,14 +1739,39 @@ async def _stream_completion_openai(client, payload, model, analytics, start_tim
                                 payload["model"] = strip_provider_prefix(payload["model"])
                                 log.info("Cross-provider stream failover (buffered): → %s (model=%s)", _current_provider, payload["model"])
                             _provider_name = f"{_current_provider}:{current_account}" if current_account != _current_provider else _current_provider
-                            log.info("429 stream failover (buffered): trying account '%s'", current_account)
+                            log.info("Stream failover (buffered, HTTP %d): trying account '%s'", e.response.status_code, current_account)
                             continue
                         raise
 
                     if not _is_empty_stream_buffer(chunks):
                         break
-                    log.warning("Empty streaming response from %s, retrying...", model)
-                    # Empty retry once, then accept whatever we got
+                    empty_retries += 1
+                    log.warning("Empty streaming response from %s (attempt %d/%d), retrying...", model, empty_retries, MAX_EMPTY_RETRIES + 1)
+                    if empty_retries <= MAX_EMPTY_RETRIES and can_failover:
+                        # Try failing over to the next provider/account before giving up
+                        if current_account:
+                            account_pool.mark_429(current_account)
+                        next_acc = account_pool.next_account_for_failover(
+                            current_account or "ollama",
+                            provider=_current_provider,
+                            model=payload.get("model"),
+                            provider_priority=provider_priority,
+                        )
+                        if next_acc is not None:
+                            current_key = next_acc.api_key
+                            current_account = next_acc.name
+                            if next_acc.provider != _current_provider:
+                                _current_provider = next_acc.provider
+                                current_stream_client = _swap_client_for_provider(client, _sub_clients, _current_provider)
+                                payload["model"] = strip_provider_prefix(payload["model"])
+                                log.info("Cross-provider stream failover (empty): → %s (model=%s)", _current_provider, payload["model"])
+                            _provider_name = f"{_current_provider}:{current_account}" if current_account != _current_provider else _current_provider
+                            log.info("Empty stream failover: trying account '%s'", current_account)
+                            continue
+                        # No failover target — retry same provider if we have retries left
+                        if empty_retries <= MAX_EMPTY_RETRIES:
+                            continue
+                    # Exhausted retries — accept whatever we got (may be empty)
                     break
 
                 for chunk in chunks:

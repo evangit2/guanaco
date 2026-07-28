@@ -46,7 +46,7 @@ async def _ollama_chat_with_primary_timeout(
             except Exception as e:
                 should_failover = (
                     isinstance(e, httpx.HTTPStatusError)
-                    and e.response.status_code == 429
+                    and e.response.status_code in (429, 400, 403, 500, 502, 503)
                     and account_pool is not None
                     and len(account_pool.accounts) > 1
                 )
