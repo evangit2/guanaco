@@ -35,7 +35,7 @@ async def _ollama_chat_with_primary_timeout(
     _current_provider = provider_for_model(payload.get("model", "")) or "ollama"
 
     async def _do_call():
-        """Execute the actual Ollama call with 429/timeout retry logic."""
+        """Execute the actual Ollama call with 429 retry logic."""
         nonlocal _current_provider
         current_key = api_key
         current_account = account_name
@@ -44,28 +44,15 @@ async def _ollama_chat_with_primary_timeout(
             try:
                 return await current_call_client.chat_completion(payload, api_key=current_key)
             except Exception as e:
-                is_429 = (
-                    isinstance(e, httpx.HTTPStatusError)
-                    and e.response.status_code == 429
-                )
-                is_timeout = isinstance(e, (httpx.ReadTimeout, httpx.ConnectTimeout, httpx.PoolTimeout))
-                is_auth_error = (
-                    isinstance(e, httpx.HTTPStatusError)
-                    and e.response.status_code in (401, 403)
-                )
                 should_failover = (
-                    (is_429 or is_timeout or is_auth_error)
+                    isinstance(e, httpx.HTTPStatusError)
+                    and e.response.status_code in (429, 400, 403, 500, 502, 503)
                     and account_pool is not None
                     and len(account_pool.accounts) > 1
                 )
                 if should_failover:
                     if current_account and account_pool:
-                        if is_429:
-                            account_pool.mark_429(current_account)
-                        else:
-                            # For timeouts, mark exhausted with a shorter TTL
-                            # so the provider recovers faster than a 429
-                            account_pool.mark_429(current_account)
+                        account_pool.mark_429(current_account)
                     next_acc = account_pool.next_account_for_failover(
                         current_account or "ollama",
                         provider=_current_provider,
@@ -83,8 +70,8 @@ async def _ollama_chat_with_primary_timeout(
                         if sub is not None:
                             current_call_client = sub
                         payload["model"] = strip_provider_prefix(payload["model"])
-                        log.info("Cross-provider failover (%s): → %s (model=%s)", "429" if is_429 else "timeout" if is_timeout else f"HTTP {e.response.status_code}", _current_provider, payload["model"])
-                    log.info("%s failover: trying account '%s'", "429" if is_429 else "timeout" if is_timeout else f"HTTP {e.response.status_code}", current_account)
+                        log.info("Cross-provider failover: → %s (model=%s)", _current_provider, payload["model"])
+                    log.info("429 failover: trying account '%s'", current_account)
                     continue
                 if limiter and limiter.should_retry_429(e):
                     await limiter.backoff_and_retry(0)
