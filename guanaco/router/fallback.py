@@ -51,7 +51,7 @@ async def _ollama_chat_with_primary_timeout(
                     and len(account_pool.accounts) > 1
                 )
                 if should_failover:
-                    if current_account and account_pool:
+                    if current_account and account_pool and isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 429:
                         account_pool.mark_429(current_account)
                     next_acc = account_pool.next_account_for_failover(
                         current_account or "ollama",

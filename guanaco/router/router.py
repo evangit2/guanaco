@@ -1581,7 +1581,7 @@ async def _stream_completion_openai(client, payload, model, analytics, start_tim
                     except httpx.HTTPStatusError as e:
                         _should_failover = e.response.status_code in (429, 400, 403, 500, 502, 503)
                         if _should_failover and can_failover:
-                            if current_account:
+                            if current_account and e.response.status_code == 429:
                                 account_pool.mark_429(current_account)
                             next_acc = account_pool.next_account_for_failover(
                                 current_account or "ollama",
@@ -1721,7 +1721,7 @@ async def _stream_completion_openai(client, payload, model, analytics, start_tim
                         chunks, stream_metrics = await _collect_stream_chunks(current_stream_client, payload, api_key=current_key)
                     except httpx.HTTPStatusError as e:
                         if e.response.status_code in (429, 400, 403, 500, 502, 503) and can_failover:
-                            if current_account:
+                            if current_account and e.response.status_code == 429:
                                 account_pool.mark_429(current_account)
                             next_acc = account_pool.next_account_for_failover(
                                 current_account or "ollama",
