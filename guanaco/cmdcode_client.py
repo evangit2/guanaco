@@ -463,8 +463,12 @@ class CmdCodeClient(BaseProvider):
                     args_str = func.get("arguments", "{}")
                     try:
                         args = json.loads(args_str)
-                    except json.JSONDecodeError:
+                    except (json.JSONDecodeError, TypeError):
                         args = {}
+
+                    # Guard: args could be a non-dict JSON value (str, list, int)
+                    if not isinstance(args, dict):
+                        args = {"value": args}
 
                     # Render as DSML invoke/parameter format
                     param_lines = []
