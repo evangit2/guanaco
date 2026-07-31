@@ -124,6 +124,17 @@ _DSML_NAME = _re.compile(r'<name>(.*?)</name>', _re.DOTALL)
 _DSML_PARAMS = _re.compile(r'<parameters>(.*?)</parameters>', _re.DOTALL)
 
 
+# Catch hallucinated non-DSML tool call tags that some models emit in text.
+# These are always formatting artifacts, never user-facing content.
+# Matches things like </aktool_calls>, <tool_call>, </tool_calls>, etc.
+_HALLUCINATED_TC_TAGS = _re.compile(r'</?[a-zA-Z_]*tool[a-zA-Z_]*call[s]?>', _re.IGNORECASE)
+
+
+def _strip_hallucinated_tags(text: str) -> str:
+    """Remove hallucinated tool call tags from text output."""
+    return _HALLUCINATED_TC_TAGS.sub('', text)
+
+
 def _contains_dsml(text: str) -> bool:
     """Check if text contains DSML tool call markers."""
     return bool(_DSML_TC_OPEN.search(text) or '<｜DSML｜' in text or '<|DSML|' in text)
@@ -956,6 +967,9 @@ class CmdCodeClient(BaseProvider):
         elapsed = time.time() - start
         full_content = "".join(content_parts)
 
+        # Strip hallucinated tool call tags from content (e.g. </aktool_calls>)
+        full_content = _strip_hallucinated_tags(full_content)
+
         # Use structured tool_calls from SSE events if available;
         # otherwise fall back to DSML parsing from text content
         if _tool_calls:
@@ -1060,6 +1074,10 @@ class CmdCodeClient(BaseProvider):
 
                         if etype == "text-delta":
                             text = event.get("text", "")
+                            if not text:
+                                continue
+                            # Strip hallucinated tool call tags (e.g. </aktool_calls>)
+                            text = _strip_hallucinated_tags(text)
                             if not text:
                                 continue
                             if not first_token_time:
