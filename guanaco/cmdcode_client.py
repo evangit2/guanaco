@@ -82,6 +82,170 @@ def _get_cli_version() -> str:
     # Use last known good version if available, otherwise the hardcoded fallback
     return _cli_version_cache or CMDCODE_CLI_VERSION_FALLBACK
 
+
+# ── DSML tool-call parsing ──
+# DeepSeek V4 models emit tool calls in a proprietary DSML (DeepSeek Markup
+# Language) format embedded in the text content stream when the backend doesn't
+# translate them into structured tool_calls.  We parse two variants:
+#
+#   1. invoke/parameter form:
+#       <｜DSML｜tool_calls>
+#       <｜DSML｜invoke name="bash">
+#       <｜DSML｜parameter name="command" string="true">ls -la</｜DSML｜parameter>
+#       </｜DSML｜invoke>
+#       </｜DSML｜tool_calls>
+#
+#   2. name/parameters form (simpler):
+#       <｜DSML｜tool_calls>
+#       <name>search</name>
+#       <parameters>{"query": "hello"}</parameters>
+#       </｜DSML｜tool_calls>
+#
+# The Unicode fullwidth pipe '｜' (U+FF5C) is the canonical delimiter, but
+# some backends emit ASCII '|' instead — we accept both.
+
+import re as _re
+
+# Match the opening tool_calls block in either Unicode or ASCII pipe form
+_DSML_TC_OPEN = _re.compile(r'<[｜|]DSML[｜|]tool_calls>')
+_DSML_TC_CLOSE = _re.compile(r'</[｜|]DSML[｜|]tool_calls>')
+
+# Match invoke open: <｜DSML｜invoke name="function_name">
+_DSML_INVOKE = _re.compile(r'<[｜|]DSML[｜|]invoke\s+name="([^"]+)">')
+
+# Match parameter: <｜DSML｜parameter name="key" string="true">value</｜DSML｜parameter>
+_DSML_PARAM = _re.compile(
+    r'<[｜|]DSML[｜|]parameter\s+name="([^"]+)"\s+string="([^"]*)">(.*?)</[｜|]DSML[｜|]parameter>',
+    _re.DOTALL,
+)
+
+# Match name/parameters form: <name>func</name> and <parameters>{...}</parameters>
+_DSML_NAME = _re.compile(r'<name>(.*?)</name>', _re.DOTALL)
+_DSML_PARAMS = _re.compile(r'<parameters>(.*?)</parameters>', _re.DOTALL)
+
+
+def _contains_dsml(text: str) -> bool:
+    """Check if text contains DSML tool call markers."""
+    return bool(_DSML_TC_OPEN.search(text) or '<｜DSML｜' in text or '<|DSML|' in text)
+
+
+def _parse_dsml_tool_calls(text: str) -> list[dict[str, Any]] | None:
+    """Parse DSML tool_calls blocks from text into OpenAI tool_calls format.
+
+    Returns a list of OpenAI-format tool_call dicts, or None if no DSML found.
+
+    Each dict looks like:
+        {
+            "id": "call_abc123",
+            "type": "function",
+            "function": {
+                "name": "bash",
+                "arguments": "{\"command\": \"ls -la\"}"
+            }
+        }
+    """
+    if not _contains_dsml(text):
+        return None
+
+    # Extract the content inside <｜DSML｜tool_calls>...</｜DSML｜tool_calls>
+    # Find all tool_calls blocks (there could be multiple)
+    tool_calls: list[dict[str, Any]] = []
+
+    # Find each tool_calls block
+    blocks = []
+    pos = 0
+    while True:
+        open_match = _DSML_TC_OPEN.search(text, pos)
+        if not open_match:
+            break
+        close_match = _DSML_TC_CLOSE.search(text, open_match.end())
+        if not close_match:
+            # Block not yet closed — incomplete, return None to wait for more
+            return None
+        blocks.append(text[open_match.end():close_match.start()])
+        pos = close_match.end()
+
+    for block in blocks:
+        # Try invoke/parameter form first
+        invokes = _DSML_INVOKE.findall(block)
+        if invokes:
+            # Split the block into individual invoke sections
+            invoke_blocks = _re.split(r'</[｜|]DSML[｜|]invoke>', block)
+            for invoke_block in invoke_blocks:
+                name_match = _DSML_INVOKE.search(invoke_block)
+                if not name_match:
+                    continue
+                func_name = name_match.group(1)
+                # Extract all parameters
+                params = {}
+                for p_match in _DSML_PARAM.finditer(invoke_block):
+                    p_name = p_match.group(1)
+                    p_is_string = p_match.group(2) == "true"
+                    p_value = p_match.group(3)
+                    if p_is_string:
+                        params[p_name] = p_value
+                    else:
+                        # Non-string: parse as JSON
+                        try:
+                            params[p_name] = json.loads(p_value)
+                        except json.JSONDecodeError:
+                            params[p_name] = p_value
+
+                tool_calls.append({
+                    "id": f"call_{uuid.uuid4().hex[:24]}",
+                    "type": "function",
+                    "function": {
+                        "name": func_name,
+                        "arguments": json.dumps(params, ensure_ascii=False),
+                    },
+                })
+        else:
+            # Try name/parameters form
+            name_match = _DSML_NAME.search(block)
+            params_match = _DSML_PARAMS.search(block)
+            if name_match:
+                func_name = name_match.group(1).strip()
+                args_str = "{}"
+                if params_match:
+                    raw_params = params_match.group(1).strip()
+                    # Validate it's parseable JSON
+                    try:
+                        parsed = json.loads(raw_params)
+                        args_str = json.dumps(parsed, ensure_ascii=False)
+                    except json.JSONDecodeError:
+                        args_str = raw_params
+
+                tool_calls.append({
+                    "id": f"call_{uuid.uuid4().hex[:24]}",
+                    "type": "function",
+                    "function": {
+                        "name": func_name,
+                        "arguments": args_str,
+                    },
+                })
+
+    return tool_calls if tool_calls else None
+
+
+def _strip_dsml_from_content(text: str) -> str:
+    """Remove DSML tool_calls blocks from content text."""
+    if not _contains_dsml(text):
+        return text
+    # Remove complete tool_calls blocks
+    result = text
+    while True:
+        open_match = _DSML_TC_OPEN.search(result)
+        if not open_match:
+            break
+        close_match = _DSML_TC_CLOSE.search(result, open_match.end())
+        if not close_match:
+            # Incomplete block — strip from the opening tag to end
+            result = result[:open_match.start()]
+            break
+        result = result[:open_match.start()] + result[close_match.end():]
+    return result.strip()
+
+
 # Static model list — Command Code Go plan offers 20+ models with ZDR support.
 CMDCODE_MODELS: dict[str, dict[str, Any]] = {
     "deepseek-v4-pro": {
@@ -256,20 +420,89 @@ class CmdCodeClient(BaseProvider):
         messages = openai_request.get("messages", [])
         model = _resolve_model(openai_request.get("model", "deepseek/deepseek-v4-flash"))
         max_tokens = openai_request.get("max_tokens", 64000)
+        tools = openai_request.get("tools", [])
 
         # Build system prompt from system messages
         system_parts = [m["content"] for m in messages if m.get("role") == "system"]
         system_text = "\n".join(system_parts) if system_parts else "You are a helpful assistant."
 
-        # Non-system messages
-        conv_messages = [
-            {"role": m["role"], "content": m["content"]}
-            for m in messages if m.get("role") != "system"
-        ]
+        # Non-system messages — convert tool role and assistant tool_calls
+        conv_messages: list[dict[str, Any]] = []
+        for m in messages:
+            if m.get("role") == "system":
+                continue
+            role = m.get("role", "user")
+
+            # Convert tool results (role=tool) to user messages with tool_result wrapper
+            if role == "tool":
+                tool_call_id = m.get("tool_call_id", "")
+                content = m.get("content", "")
+                conv_messages.append({
+                    "role": "user",
+                    "content": f"<tool_result>{content}</tool_result>",
+                })
+                continue
+
+            # Handle assistant messages with tool_calls
+            if role == "assistant" and m.get("tool_calls"):
+                tc_parts = []
+                for tc in m["tool_calls"]:
+                    func = tc.get("function", {})
+                    func_name = func.get("name", "")
+                    args_str = func.get("arguments", "{}")
+                    try:
+                        args = json.loads(args_str)
+                    except json.JSONDecodeError:
+                        args = {}
+
+                    # Render as DSML invoke/parameter format
+                    param_lines = []
+                    for k, v in args.items():
+                        is_str = isinstance(v, str)
+                        val = v if is_str else json.dumps(v, ensure_ascii=False)
+                        param_lines.append(
+                            f'<｜DSML｜parameter name="{k}" string="{"true" if is_str else "false"}">{val}</｜DSML｜parameter>'
+                        )
+                    params_xml = "\n".join(param_lines)
+                    tc_parts.append(
+                        f'<｜DSML｜invoke name="{func_name}">\n{params_xml}\n</｜DSML｜invoke>'
+                    )
+
+                tc_block = "<｜DSML｜tool_calls>\n" + "\n".join(tc_parts) + "\n</｜DSML｜tool_calls>"
+                content = m.get("content", "") or ""
+                conv_messages.append({
+                    "role": "assistant",
+                    "content": content + "\n\n" + tc_block if content else tc_block,
+                })
+                continue
+
+            # Normal message
+            content = m.get("content", "")
+            if isinstance(content, list):
+                # Handle content blocks (multimodal)
+                content = " ".join(
+                    block.get("text", "") for block in content
+                    if isinstance(block, dict) and block.get("type") == "text"
+                )
+            conv_messages.append({"role": role, "content": content or ""})
+
         if not conv_messages:
             conv_messages = [{"role": "user", "content": ""}]
 
         now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+        # Convert OpenAI tools to Command Code format
+        # CC uses Anthropic-style format: name, description, input_schema (not parameters)
+        cc_tools = []
+        for tool in tools:
+            if tool.get("type") == "function":
+                func = tool["function"]
+                cc_tools.append({
+                    "type": "function",
+                    "name": func.get("name", ""),
+                    "description": func.get("description", ""),
+                    "input_schema": func.get("parameters", {}),
+                })
 
         return {
             "model": model,
@@ -280,7 +513,7 @@ class CmdCodeClient(BaseProvider):
             "params": {
                 "model": model,
                 "messages": conv_messages,
-                "tools": [],
+                "tools": cc_tools,
                 "system": system_text,
                 "max_tokens": max_tokens,
                 "stream": True,
@@ -358,6 +591,7 @@ class CmdCodeClient(BaseProvider):
     @staticmethod
     def _make_openai_chunk(
         model: str, content: str = "", reasoning: str = "", finish_reason: str | None = None,
+        tool_calls: list[dict[str, Any]] | None = None,
     ) -> str:
         """Build an OpenAI-compatible streaming chunk (SSE format)."""
         delta: dict[str, Any] = {}
@@ -365,6 +599,8 @@ class CmdCodeClient(BaseProvider):
             delta["reasoning_content"] = reasoning
         if content:
             delta["content"] = content
+        if tool_calls:
+            delta["tool_calls"] = tool_calls
         if finish_reason:
             delta = {}
 
@@ -382,11 +618,13 @@ class CmdCodeClient(BaseProvider):
         return f"data: {json.dumps(chunk)}\n\n"
 
     @staticmethod
-    def _make_openai_response(model: str, content: str, reasoning: str, usage: dict, finish_reason: str) -> dict:
+    def _make_openai_response(model: str, content: str, reasoning: str, usage: dict, finish_reason: str, tool_calls: list[dict[str, Any]] | None = None) -> dict:
         """Build an OpenAI-compatible non-streaming response."""
         message: dict[str, Any] = {"role": "assistant", "content": content}
         if reasoning:
             message["reasoning_content"] = reasoning
+        if tool_calls:
+            message["tool_calls"] = tool_calls
 
         return {
             "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
@@ -615,6 +853,9 @@ class CmdCodeClient(BaseProvider):
         reasoning_parts: list[str] = []
         usage: dict = {}
         finish_reason = "stop"
+        # Tool call accumulation state
+        _tool_calls: list[dict[str, Any]] = []
+        _tc_arg_buffers: dict[str, str] = {}  # id → accumulated argument delta
 
         async with httpx.AsyncClient(timeout=self.timeout) as http_client:
             async with http_client.stream("POST", CMDCODE_GENERATE_URL, json=cc_body, headers=headers) as resp:
@@ -628,12 +869,56 @@ class CmdCodeClient(BaseProvider):
                         content_parts.append(event.get("text", ""))
                     elif etype == "reasoning-delta":
                         reasoning_parts.append(event.get("text", ""))
+                    elif etype == "tool-input-start":
+                        # Start of a tool call — create placeholder
+                        tc_id = event.get("id", f"call_{uuid.uuid4().hex[:24]}")
+                        tc_name = event.get("toolName", "")
+                        _tc_arg_buffers[tc_id] = ""
+                        _tool_calls.append({
+                            "id": tc_id,
+                            "type": "function",
+                            "function": {"name": tc_name, "arguments": ""},
+                        })
+                    elif etype == "tool-input-delta":
+                        # Accumulate argument fragments
+                        tc_id = event.get("id", "")
+                        delta = event.get("delta", "")
+                        if tc_id in _tc_arg_buffers:
+                            _tc_arg_buffers[tc_id] += delta
+                    elif etype == "tool-input-end":
+                        # Tool input complete — finalize arguments
+                        tc_id = event.get("id", "")
+                        if tc_id in _tc_arg_buffers:
+                            for tc in _tool_calls:
+                                if tc["id"] == tc_id:
+                                    tc["function"]["arguments"] = _tc_arg_buffers[tc_id]
+                                    break
+                    elif etype == "tool-call":
+                        # Complete tool call (may arrive after tool-input-end)
+                        tc_id = event.get("toolCallId", "")
+                        tc_name = event.get("toolName", "")
+                        tc_input = event.get("input", {})
+                        # Update or append
+                        found = False
+                        for tc in _tool_calls:
+                            if tc["id"] == tc_id:
+                                tc["function"]["name"] = tc_name
+                                tc["function"]["arguments"] = json.dumps(tc_input, ensure_ascii=False)
+                                found = True
+                                break
+                        if not found:
+                            _tool_calls.append({
+                                "id": tc_id,
+                                "type": "function",
+                                "function": {
+                                    "name": tc_name,
+                                    "arguments": json.dumps(tc_input, ensure_ascii=False),
+                                },
+                            })
                     elif etype == "finish-step":
-                        # New format: per-step usage with inputTokens/outputTokens
                         u = self._extract_usage(event)
                         if u:
                             usage = u
-                        # finish-step also carries finishReason sometimes
                         fr = event.get("finishReason")
                         if fr:
                             finish_reason = fr
@@ -651,12 +936,26 @@ class CmdCodeClient(BaseProvider):
                         )
 
         elapsed = time.time() - start
+        full_content = "".join(content_parts)
+
+        # Use structured tool_calls from SSE events if available;
+        # otherwise fall back to DSML parsing from text content
+        if _tool_calls:
+            parsed_tool_calls = _tool_calls
+            finish_reason = "tool_calls"
+        else:
+            parsed_tool_calls = _parse_dsml_tool_calls(full_content)
+            if parsed_tool_calls:
+                full_content = _strip_dsml_from_content(full_content)
+                finish_reason = "tool_calls"
+
         result = self._make_openai_response(
             model=client_model,
-            content="".join(content_parts),
+            content=full_content,
             reasoning="".join(reasoning_parts),
             usage=usage,
             finish_reason=finish_reason,
+            tool_calls=parsed_tool_calls,
         )
 
         u = result.get("usage", {})
@@ -694,6 +993,28 @@ class CmdCodeClient(BaseProvider):
         completion_tokens = 0
         start = time.time()
 
+        # DSML streaming state — buffer text and detect tool call blocks
+        _dsml_buffer = ""
+        _in_dsml = False
+        _tool_calls_emitted = False
+
+        # Structured tool call streaming state (from tool-input-* / tool-call events)
+        _tool_calls_list: list[dict[str, Any]] = []
+        _tc_arg_buffers: dict[str, str] = {}
+
+        # Markers for partial-match detection (handle split-across-deltas)
+        _DSML_OPEN_U = "<｜DSML｜tool_calls>"
+        _DSML_OPEN_A = "<|DSML|tool_calls>"
+
+        def _partial_dsml_open_at_end(text: str) -> int:
+            """If text ends with a prefix of a DSML open marker, return the start index."""
+            for marker in (_DSML_OPEN_U, _DSML_OPEN_A):
+                max_check = min(len(marker), len(text))
+                for length in range(max_check, 0, -1):
+                    if marker.startswith(text[-length:]):
+                        return len(text) - length
+            return -1
+
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as http_client:
                 async with http_client.stream("POST", CMDCODE_GENERATE_URL, json=cc_body, headers=headers) as resp:
@@ -707,11 +1028,64 @@ class CmdCodeClient(BaseProvider):
 
                         if etype == "text-delta":
                             text = event.get("text", "")
-                            if text:
-                                content_chars += len(text)
-                                if not first_token_time:
-                                    first_token_time = time.time()
-                                yield self._make_openai_chunk(client_model, content=text)
+                            if not text:
+                                continue
+                            if not first_token_time:
+                                first_token_time = time.time()
+                            content_chars += len(text)
+
+                            if _in_dsml:
+                                # Already inside a DSML block — buffer until close
+                                _dsml_buffer += text
+                                # Check if the block is now complete
+                                parsed = _parse_dsml_tool_calls(_dsml_buffer)
+                                if parsed is not None:
+                                    # Block complete — emit tool_calls chunk
+                                    yield self._make_openai_chunk(
+                                        client_model, tool_calls=parsed
+                                    )
+                                    _tool_calls_emitted = True
+                                    _dsml_buffer = ""
+                                    _in_dsml = False
+                                # If not complete yet, keep buffering silently
+                            else:
+                                # Not in DSML — check if this chunk starts one
+                                combined = _dsml_buffer + text
+                                if _DSML_OPEN_U in combined or _DSML_OPEN_A in combined:
+                                    # DSML block started — flush pre-DSML content
+                                    if _DSML_OPEN_U in combined:
+                                        marker = _DSML_OPEN_U
+                                    else:
+                                        marker = _DSML_OPEN_A
+                                    idx = combined.index(marker)
+                                    pre_dsml = combined[:idx]
+                                    if pre_dsml:
+                                        yield self._make_openai_chunk(client_model, content=pre_dsml)
+                                    _dsml_buffer = combined[idx:]
+                                    _in_dsml = True
+                                    # Check if already complete in this same chunk
+                                    parsed = _parse_dsml_tool_calls(_dsml_buffer)
+                                    if parsed is not None:
+                                        yield self._make_openai_chunk(
+                                            client_model, tool_calls=parsed
+                                        )
+                                        _tool_calls_emitted = True
+                                        _dsml_buffer = ""
+                                        _in_dsml = False
+                                else:
+                                    # No DSML marker — but the end of text might be
+                                    # a partial marker. Check and split if needed.
+                                    partial_idx = _partial_dsml_open_at_end(combined)
+                                    if partial_idx >= 0 and partial_idx < len(combined):
+                                        # Flush the safe part, buffer the partial marker
+                                        safe = combined[:partial_idx]
+                                        _dsml_buffer = combined[partial_idx:]
+                                        if safe:
+                                            yield self._make_openai_chunk(client_model, content=safe)
+                                    else:
+                                        # Completely safe — flush everything
+                                        _dsml_buffer = ""
+                                        yield self._make_openai_chunk(client_model, content=text)
 
                         elif etype == "reasoning-delta":
                             text = event.get("text", "")
@@ -720,6 +1094,63 @@ class CmdCodeClient(BaseProvider):
                                 if not first_token_time:
                                     first_token_time = time.time()
                                 yield self._make_openai_chunk(client_model, reasoning=text)
+
+                        elif etype == "tool-input-start":
+                            # Start of a structured tool call from the API
+                            tc_id = event.get("id", f"call_{uuid.uuid4().hex[:24]}")
+                            tc_name = event.get("toolName", "")
+                            _tc_arg_buffers[tc_id] = ""
+                            _tool_calls_list.append({
+                                "id": tc_id,
+                                "type": "function",
+                                "function": {"name": tc_name, "arguments": ""},
+                            })
+                            if not first_token_time:
+                                first_token_time = time.time()
+
+                        elif etype == "tool-input-delta":
+                            tc_id = event.get("id", "")
+                            delta = event.get("delta", "")
+                            if tc_id in _tc_arg_buffers:
+                                _tc_arg_buffers[tc_id] += delta
+
+                        elif etype == "tool-input-end":
+                            tc_id = event.get("id", "")
+                            if tc_id in _tc_arg_buffers:
+                                for tc in _tool_calls_list:
+                                    if tc["id"] == tc_id:
+                                        tc["function"]["arguments"] = _tc_arg_buffers[tc_id]
+                                        break
+
+                        elif etype == "tool-call":
+                            # Complete tool call event
+                            tc_id = event.get("toolCallId", "")
+                            tc_name = event.get("toolName", "")
+                            tc_input = event.get("input", {})
+                            args_str = json.dumps(tc_input, ensure_ascii=False)
+                            found = False
+                            for tc in _tool_calls_list:
+                                if tc["id"] == tc_id:
+                                    tc["function"]["name"] = tc_name
+                                    tc["function"]["arguments"] = args_str
+                                    found = True
+                                    break
+                            if not found:
+                                _tool_calls_list.append({
+                                    "id": tc_id,
+                                    "type": "function",
+                                    "function": {"name": tc_name, "arguments": args_str},
+                                })
+                            # Emit the tool call as an OpenAI chunk
+                            yield self._make_openai_chunk(
+                                client_model,
+                                tool_calls=[{
+                                    "id": tc_id,
+                                    "type": "function",
+                                    "function": {"name": tc_name, "arguments": args_str},
+                                }],
+                            )
+                            _tool_calls_emitted = True
 
                         elif etype == "finish-step":
                             # New format: per-step usage with inputTokens/outputTokens
@@ -734,6 +1165,13 @@ class CmdCodeClient(BaseProvider):
                             if u:
                                 prompt_tokens = u.get("promptTokens", prompt_tokens)
                                 completion_tokens = u.get("completionTokens", completion_tokens)
+                            # If we emitted tool_calls, override finish_reason
+                            if _tool_calls_emitted:
+                                finish_reason = "tool_calls"
+                            # Flush any remaining buffered content (incomplete DSML or trailing text)
+                            if _dsml_buffer and not _tool_calls_emitted:
+                                yield self._make_openai_chunk(client_model, content=_dsml_buffer)
+                                _dsml_buffer = ""
                             # Send final chunk with finish_reason
                             yield self._make_openai_chunk(client_model, finish_reason=finish_reason)
 
