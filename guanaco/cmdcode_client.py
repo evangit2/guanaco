@@ -857,9 +857,21 @@ class CmdCodeClient(BaseProvider):
         _tool_calls: list[dict[str, Any]] = []
         _tc_arg_buffers: dict[str, str] = {}  # id → accumulated argument delta
 
-        async with httpx.AsyncClient(timeout=self.timeout) as http_client:
-            async with http_client.stream("POST", CMDCODE_GENERATE_URL, json=cc_body, headers=headers) as resp:
-                resp.raise_for_status()
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as http_client:
+                async with http_client.stream("POST", CMDCODE_GENERATE_URL, json=cc_body, headers=headers) as resp:
+                    if resp.status_code != 200:
+                        body_preview = ""
+                        try:
+                            body_preview = (await resp.aread()).decode(errors="replace")[:500]
+                        except Exception:
+                            pass
+                        logger.error("CmdCode non-stream HTTP %d — body: %s", resp.status_code, body_preview)
+                        raise httpx.HTTPStatusError(
+                            f"Command Code HTTP {resp.status_code}: {body_preview}",
+                            request=resp.request,
+                            response=resp,
+                        )
                 async for line in resp.aiter_lines():
                     event = self._parse_cc_sse_line(line)
                     if event is None:
@@ -934,6 +946,11 @@ class CmdCodeClient(BaseProvider):
                             request=resp.request,
                             response=resp,
                         )
+        except httpx.HTTPStatusError:
+            raise
+        except Exception as e:
+            logger.error("CmdCode non-stream error: %s", e)
+            raise
 
         elapsed = time.time() - start
         full_content = "".join(content_parts)
@@ -1018,7 +1035,18 @@ class CmdCodeClient(BaseProvider):
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as http_client:
                 async with http_client.stream("POST", CMDCODE_GENERATE_URL, json=cc_body, headers=headers) as resp:
-                    resp.raise_for_status()
+                    if resp.status_code != 200:
+                        body_preview = ""
+                        try:
+                            body_preview = (await resp.aread()).decode(errors="replace")[:500]
+                        except Exception:
+                            pass
+                        logger.error("CmdCode stream HTTP %d — body: %s", resp.status_code, body_preview)
+                        raise httpx.HTTPStatusError(
+                            f"Command Code HTTP {resp.status_code}: {body_preview}",
+                            request=resp.request,
+                            response=resp,
+                        )
                     async for line in resp.aiter_lines():
                         event = self._parse_cc_sse_line(line)
                         if event is None:
