@@ -40,7 +40,47 @@ CMDCODE_GENERATE_URL = f"{CMDCODE_API_BASE}/alpha/generate"
 CMDCODE_USAGE_URL = f"{CMDCODE_API_BASE}/alpha/usage/summary"
 CMDCODE_CREDITS_URL = f"{CMDCODE_API_BASE}/alpha/billing/credits"
 CMDCODE_SUBSCRIPTION_URL = f"{CMDCODE_API_BASE}/alpha/billing/subscriptions"
-CMDCODE_CLI_VERSION = "0.44.1"
+
+# NPM registry endpoint for latest command-code CLI version
+CMDCODE_NPM_URL = "https://registry.npmjs.org/command-code/latest"
+
+# Fallback version used if the npm registry is unreachable on first load.
+# Updated automatically at runtime by _get_cli_version() with a 6-hour TTL.
+CMDCODE_CLI_VERSION_FALLBACK = "0.50.0"
+
+# Module-level cache for the dynamically fetched CLI version.
+_cli_version_cache: str | None = None
+_cli_version_fetched_at: float = 0.0
+_CLI_VERSION_TTL = 6 * 3600  # 6 hours
+
+
+def _get_cli_version() -> str:
+    """Return the latest Command Code CLI version, cached with a TTL.
+
+    Fetches from the npm registry on first call and every 6 hours thereafter.
+    If the fetch fails, falls back to the last known good version (or the
+    hardcoded fallback if no successful fetch has ever occurred).
+    """
+    global _cli_version_cache, _cli_version_fetched_at
+    now = time.time()
+    if _cli_version_cache and (now - _cli_version_fetched_at) < _CLI_VERSION_TTL:
+        return _cli_version_cache
+
+    # Try to fetch the latest version from npm registry (quick, non-blocking feel)
+    try:
+        resp = httpx.get(CMDCODE_NPM_URL, timeout=5.0)
+        resp.raise_for_status()
+        version = resp.json().get("version")
+        if version:
+            _cli_version_cache = version
+            _cli_version_fetched_at = now
+            logger.debug("CmdCode CLI version fetched from npm: %s", version)
+            return version
+    except Exception as e:
+        logger.debug("CmdCode CLI version fetch failed, using fallback: %s", e)
+
+    # Use last known good version if available, otherwise the hardcoded fallback
+    return _cli_version_cache or CMDCODE_CLI_VERSION_FALLBACK
 
 # Static model list — Command Code Go plan offers 20+ models with ZDR support.
 CMDCODE_MODELS: dict[str, dict[str, Any]] = {
@@ -200,7 +240,7 @@ class CmdCodeClient(BaseProvider):
         return {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.api_key}",
-            "x-command-code-version": CMDCODE_CLI_VERSION,
+            "x-command-code-version": _get_cli_version(),
             "x-cli-environment": "cli",
             "x-session-id": str(uuid.uuid4()),
             "x-project-slug": "command-code",
@@ -403,7 +443,7 @@ class CmdCodeClient(BaseProvider):
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {key}",
-            "x-command-code-version": CMDCODE_CLI_VERSION,
+            "x-command-code-version": _get_cli_version(),
             "x-cli-environment": "cli",
             "x-session-id": str(uuid.uuid4()),
             "x-project-slug": "command-code",
