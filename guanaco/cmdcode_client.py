@@ -238,6 +238,73 @@ def _parse_dsml_tool_calls(text: str) -> list[dict[str, Any]] | None:
     return tool_calls if tool_calls else None
 
 
+def _fuzzy_parse_dsml(text: str) -> list[dict[str, Any]] | None:
+    """Best-effort parse of malformed/incomplete DSML blocks.
+    
+    Used when the DSML buffer overflows without a clean close tag.
+    Tries to extract invoke names and parameters even with broken closing tags.
+    """
+    tool_calls: list[dict[str, Any]] = []
+    
+    # Find all invoke openings — even without proper closes
+    invoke_starts = list(_DSML_INVOKE.finditer(text))
+    if not invoke_starts:
+        return None
+    
+    # Split on invoke openings
+    for i, inv_match in enumerate(invoke_starts):
+        func_name = inv_match.group(1)
+        start = inv_match.end()
+        # Block ends at next invoke start, or end of text
+        end = invoke_starts[i + 1].start() if i + 1 < len(invoke_starts) else len(text)
+        block = text[start:end]
+        
+        # Extract parameters — match even without proper closing tags
+        params = {}
+        for p_match in _DSML_PARAM.finditer(block):
+            p_name = p_match.group(1)
+            p_is_string = p_match.group(2) == "true"
+            p_value = p_match.group(3)
+            if p_is_string:
+                params[p_name] = p_value
+            else:
+                try:
+                    params[p_name] = json.loads(p_value)
+                except (json.JSONDecodeError, ValueError):
+                    params[p_name] = p_value
+        
+        # Also try to catch parameters with broken closing tags
+        # Pattern: <｜DSML｜parameter name="key" string="true">value  (no close)
+        broken_param_re = _re.compile(
+            r'<[｜|]DSML[｜|]parameter\s+name="([^"]+)"\s+string="([^"]*)">([^<]*)',
+            _re.DOTALL,
+        )
+        for p_match in broken_param_re.finditer(block):
+            p_name = p_match.group(1)
+            p_is_string = p_match.group(2) == "true"
+            p_value = p_match.group(3).strip()
+            if p_name not in params:  # Don't overwrite properly parsed ones
+                if p_is_string:
+                    params[p_name] = p_value
+                else:
+                    try:
+                        params[p_name] = json.loads(p_value)
+                    except (json.JSONDecodeError, ValueError):
+                        params[p_name] = p_value
+        
+        if func_name:
+            tool_calls.append({
+                "id": f"call_{uuid.uuid4().hex[:24]}",
+                "type": "function",
+                "function": {
+                    "name": func_name,
+                    "arguments": json.dumps(params, ensure_ascii=False),
+                },
+            })
+    
+    return tool_calls if tool_calls else None
+
+
 def _strip_dsml_from_content(text: str) -> str:
     """Remove DSML tool_calls blocks from content text."""
     if not _contains_dsml(text):
@@ -1101,7 +1168,22 @@ class CmdCodeClient(BaseProvider):
                                     _tool_calls_emitted = True
                                     _dsml_buffer = ""
                                     _in_dsml = False
-                                # If not complete yet, keep buffering silently
+                                elif len(_dsml_buffer) > 8000:
+                                    # Buffer overflow — model emitted malformed/incomplete DSML.
+                                    # Try a fuzzy parse first; if that fails, flush as content.
+                                    logger.warning("DSML buffer overflow (%d chars) — attempting fuzzy parse", len(_dsml_buffer))
+                                    parsed = _fuzzy_parse_dsml(_dsml_buffer)
+                                    if parsed:
+                                        yield self._make_openai_chunk(client_model, chunk_id=_stream_id,
+                                            tool_calls=parsed
+                                        )
+                                        _tool_calls_emitted = True
+                                    else:
+                                        yield self._make_openai_chunk(client_model, chunk_id=_stream_id,
+                                            content=_dsml_buffer
+                                        )
+                                    _dsml_buffer = ""
+                                    _in_dsml = False
                             else:
                                 # Not in DSML — check if this chunk starts one
                                 combined = _dsml_buffer + text
