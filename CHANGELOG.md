@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.8.9] - 2026-07-31
+## [0.8.11] - 2026-07-31
 
 ### Fixed
 - **Streaming tool_calls missing `index` field.** The OpenAI SDK requires an `index` field on every `ChoiceDeltaToolCall` in streaming chunks. Guanaco was omitting it, causing the SDK to raise a `ValidationError` surfaced as `APIError: 'str' object has no attribute 'items'`. Added `"index"` to all streaming tool_calls delta entries (3 sites: `tool-input-start` append, `tool-call` append, and the yield).
