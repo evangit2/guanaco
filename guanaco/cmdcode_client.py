@@ -872,80 +872,80 @@ class CmdCodeClient(BaseProvider):
                             request=resp.request,
                             response=resp,
                         )
-                async for line in resp.aiter_lines():
-                    event = self._parse_cc_sse_line(line)
-                    if event is None:
-                        continue
-                    etype = event.get("type", "")
-                    if etype == "text-delta":
-                        content_parts.append(event.get("text", ""))
-                    elif etype == "reasoning-delta":
-                        reasoning_parts.append(event.get("text", ""))
-                    elif etype == "tool-input-start":
-                        # Start of a tool call — create placeholder
-                        tc_id = event.get("id", f"call_{uuid.uuid4().hex[:24]}")
-                        tc_name = event.get("toolName", "")
-                        _tc_arg_buffers[tc_id] = ""
-                        _tool_calls.append({
-                            "id": tc_id,
-                            "type": "function",
-                            "function": {"name": tc_name, "arguments": ""},
-                        })
-                    elif etype == "tool-input-delta":
-                        # Accumulate argument fragments
-                        tc_id = event.get("id", "")
-                        delta = event.get("delta", "")
-                        if tc_id in _tc_arg_buffers:
-                            _tc_arg_buffers[tc_id] += delta
-                    elif etype == "tool-input-end":
-                        # Tool input complete — finalize arguments
-                        tc_id = event.get("id", "")
-                        if tc_id in _tc_arg_buffers:
-                            for tc in _tool_calls:
-                                if tc["id"] == tc_id:
-                                    tc["function"]["arguments"] = _tc_arg_buffers[tc_id]
-                                    break
-                    elif etype == "tool-call":
-                        # Complete tool call (may arrive after tool-input-end)
-                        tc_id = event.get("toolCallId", "")
-                        tc_name = event.get("toolName", "")
-                        tc_input = event.get("input", {})
-                        # Update or append
-                        found = False
-                        for tc in _tool_calls:
-                            if tc["id"] == tc_id:
-                                tc["function"]["name"] = tc_name
-                                tc["function"]["arguments"] = json.dumps(tc_input, ensure_ascii=False)
-                                found = True
-                                break
-                        if not found:
+                    async for line in resp.aiter_lines():
+                        event = self._parse_cc_sse_line(line)
+                        if event is None:
+                            continue
+                        etype = event.get("type", "")
+                        if etype == "text-delta":
+                            content_parts.append(event.get("text", ""))
+                        elif etype == "reasoning-delta":
+                            reasoning_parts.append(event.get("text", ""))
+                        elif etype == "tool-input-start":
+                            # Start of a tool call — create placeholder
+                            tc_id = event.get("id", f"call_{uuid.uuid4().hex[:24]}")
+                            tc_name = event.get("toolName", "")
+                            _tc_arg_buffers[tc_id] = ""
                             _tool_calls.append({
                                 "id": tc_id,
                                 "type": "function",
-                                "function": {
-                                    "name": tc_name,
-                                    "arguments": json.dumps(tc_input, ensure_ascii=False),
-                                },
+                                "function": {"name": tc_name, "arguments": ""},
                             })
-                    elif etype == "finish-step":
-                        u = self._extract_usage(event)
-                        if u:
-                            usage = u
-                        fr = event.get("finishReason")
-                        if fr:
-                            finish_reason = fr
-                    elif etype == "finish":
-                        finish_reason = event.get("finishReason", "stop")
-                        u = self._extract_usage(event)
-                        if u:
-                            usage = u
-                    elif etype == "error":
-                        msg = event.get("error", {}).get("message", "unknown error")
-                        raise httpx.HTTPStatusError(
-                            f"Command Code error: {msg}",
-                            request=resp.request,
-                            response=resp,
-                        )
+                        elif etype == "tool-input-delta":
+                            # Accumulate argument fragments
+                            tc_id = event.get("id", "")
+                            delta = event.get("delta", "")
+                            if tc_id in _tc_arg_buffers:
+                                _tc_arg_buffers[tc_id] += delta
+                        elif etype == "tool-input-end":
+                            # Tool input complete — finalize arguments
+                            tc_id = event.get("id", "")
+                            if tc_id in _tc_arg_buffers:
+                                for tc in _tool_calls:
+                                    if tc["id"] == tc_id:
+                                        tc["function"]["arguments"] = _tc_arg_buffers[tc_id]
+                                        break
+                        elif etype == "tool-call":
+                            # Complete tool call (may arrive after tool-input-end)
+                            tc_id = event.get("toolCallId", "")
+                            tc_name = event.get("toolName", "")
+                            tc_input = event.get("input", {})
+                            # Update or append
+                            found = False
+                            for tc in _tool_calls:
+                                if tc["id"] == tc_id:
+                                    tc["function"]["name"] = tc_name
+                                    tc["function"]["arguments"] = json.dumps(tc_input, ensure_ascii=False)
+                                    found = True
+                                    break
+                            if not found:
+                                _tool_calls.append({
+                                    "id": tc_id,
+                                    "type": "function",
+                                    "function": {
+                                        "name": tc_name,
+                                        "arguments": json.dumps(tc_input, ensure_ascii=False),
+                                    },
+                                })
+                        elif etype == "finish-step":
+                            u = self._extract_usage(event)
+                            if u:
+                                usage = u
+                            fr = event.get("finishReason")
+                            if fr:
+                                finish_reason = fr
+                        elif etype == "finish":
+                            finish_reason = event.get("finishReason", "stop")
+                            u = self._extract_usage(event)
+                            if u:
+                                usage = u
+                        elif etype == "error":
+                            msg = event.get("error", {}).get("message", "unknown error")
+                            raise httpx.HTTPStatusError(
+                                f"Command Code error: {msg}",
+                                request=resp.request,
+                                response=resp,
+                            )
         except httpx.HTTPStatusError:
             raise
         except Exception as e:
