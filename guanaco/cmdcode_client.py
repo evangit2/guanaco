@@ -1152,6 +1152,7 @@ class CmdCodeClient(BaseProvider):
                             _tc_arg_buffers[tc_id] = ""
                             _tool_calls_list.append({
                                 "id": tc_id,
+                                "index": 0,
                                 "type": "function",
                                 "function": {"name": tc_name, "arguments": ""},
                             })
@@ -1188,12 +1189,15 @@ class CmdCodeClient(BaseProvider):
                             if not found:
                                 _tool_calls_list.append({
                                     "id": tc_id,
+                                    "index": len(_tool_calls_list),
                                     "type": "function",
                                     "function": {"name": tc_name, "arguments": args_str},
                                 })
                             # Emit the tool call as an OpenAI chunk
+                            _tc_idx = next((i for i, t in enumerate(_tool_calls_list) if t["id"] == tc_id), 0)
                             yield self._make_openai_chunk(client_model, chunk_id=_stream_id,
                                 tool_calls=[{
+                                    "index": _tc_idx,
                                     "id": tc_id,
                                     "type": "function",
                                     "function": {"name": tc_name, "arguments": args_str},
