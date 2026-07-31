@@ -153,10 +153,10 @@ class BaseProvider(ABC):
 
     @staticmethod
     def _build_usage_chunk(model: str, prompt_tokens: int, completion_tokens: int,
-                           reasoning_tokens: int = 0) -> str:
+                           reasoning_tokens: int = 0, chunk_id: str | None = None) -> str:
         """Build a final SSE usage chunk for OpenAI streaming compliance."""
         chunk = {
-            "id": "chatcmpl-final",
+            "id": chunk_id or "chatcmpl-final",
             "object": "chat.completion.chunk",
             "created": int(time.time()),
             "model": model,

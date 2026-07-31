@@ -592,6 +592,7 @@ class CmdCodeClient(BaseProvider):
     def _make_openai_chunk(
         model: str, content: str = "", reasoning: str = "", finish_reason: str | None = None,
         tool_calls: list[dict[str, Any]] | None = None,
+        chunk_id: str | None = None,
     ) -> str:
         """Build an OpenAI-compatible streaming chunk (SSE format)."""
         delta: dict[str, Any] = {}
@@ -605,7 +606,7 @@ class CmdCodeClient(BaseProvider):
             delta = {}
 
         chunk = {
-            "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
+            "id": chunk_id or f"chatcmpl-{uuid.uuid4().hex[:24]}",
             "object": "chat.completion.chunk",
             "created": int(time.time()),
             "model": model,
@@ -1010,6 +1011,9 @@ class CmdCodeClient(BaseProvider):
         completion_tokens = 0
         start = time.time()
 
+        # Single consistent ID for all chunks in this stream
+        _stream_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
+
         # DSML streaming state — buffer text and detect tool call blocks
         _dsml_buffer = ""
         _in_dsml = False
@@ -1069,8 +1073,8 @@ class CmdCodeClient(BaseProvider):
                                 parsed = _parse_dsml_tool_calls(_dsml_buffer)
                                 if parsed is not None:
                                     # Block complete — emit tool_calls chunk
-                                    yield self._make_openai_chunk(
-                                        client_model, tool_calls=parsed
+                                    yield self._make_openai_chunk(client_model, chunk_id=_stream_id,
+                                        tool_calls=parsed
                                     )
                                     _tool_calls_emitted = True
                                     _dsml_buffer = ""
@@ -1088,14 +1092,14 @@ class CmdCodeClient(BaseProvider):
                                     idx = combined.index(marker)
                                     pre_dsml = combined[:idx]
                                     if pre_dsml:
-                                        yield self._make_openai_chunk(client_model, content=pre_dsml)
+                                        yield self._make_openai_chunk(client_model, chunk_id=_stream_id, content=pre_dsml)
                                     _dsml_buffer = combined[idx:]
                                     _in_dsml = True
                                     # Check if already complete in this same chunk
                                     parsed = _parse_dsml_tool_calls(_dsml_buffer)
                                     if parsed is not None:
-                                        yield self._make_openai_chunk(
-                                            client_model, tool_calls=parsed
+                                        yield self._make_openai_chunk(client_model, chunk_id=_stream_id,
+                                            tool_calls=parsed
                                         )
                                         _tool_calls_emitted = True
                                         _dsml_buffer = ""
@@ -1109,11 +1113,11 @@ class CmdCodeClient(BaseProvider):
                                         safe = combined[:partial_idx]
                                         _dsml_buffer = combined[partial_idx:]
                                         if safe:
-                                            yield self._make_openai_chunk(client_model, content=safe)
+                                            yield self._make_openai_chunk(client_model, chunk_id=_stream_id, content=safe)
                                     else:
                                         # Completely safe — flush everything
                                         _dsml_buffer = ""
-                                        yield self._make_openai_chunk(client_model, content=text)
+                                        yield self._make_openai_chunk(client_model, chunk_id=_stream_id, content=text)
 
                         elif etype == "reasoning-delta":
                             text = event.get("text", "")
@@ -1121,7 +1125,7 @@ class CmdCodeClient(BaseProvider):
                                 reasoning_chars += len(text)
                                 if not first_token_time:
                                     first_token_time = time.time()
-                                yield self._make_openai_chunk(client_model, reasoning=text)
+                                yield self._make_openai_chunk(client_model, chunk_id=_stream_id, reasoning=text)
 
                         elif etype == "tool-input-start":
                             # Start of a structured tool call from the API
@@ -1170,8 +1174,7 @@ class CmdCodeClient(BaseProvider):
                                     "function": {"name": tc_name, "arguments": args_str},
                                 })
                             # Emit the tool call as an OpenAI chunk
-                            yield self._make_openai_chunk(
-                                client_model,
+                            yield self._make_openai_chunk(client_model, chunk_id=_stream_id,
                                 tool_calls=[{
                                     "id": tc_id,
                                     "type": "function",
@@ -1198,17 +1201,17 @@ class CmdCodeClient(BaseProvider):
                                 finish_reason = "tool_calls"
                             # Flush any remaining buffered content (incomplete DSML or trailing text)
                             if _dsml_buffer and not _tool_calls_emitted:
-                                yield self._make_openai_chunk(client_model, content=_dsml_buffer)
+                                yield self._make_openai_chunk(client_model, chunk_id=_stream_id, content=_dsml_buffer)
                                 _dsml_buffer = ""
                             # Send final chunk with finish_reason
-                            yield self._make_openai_chunk(client_model, finish_reason=finish_reason)
+                            yield self._make_openai_chunk(client_model, chunk_id=_stream_id, finish_reason=finish_reason)
 
                         elif etype == "error":
                             msg = event.get("error", {}).get("message", "unknown error")
                             logger.error("Command Code stream error: %s", msg)
                             # Send error as content then stop
-                            yield self._make_openai_chunk(client_model, content=f"[Error: {msg}]")
-                            yield self._make_openai_chunk(client_model, finish_reason="error")
+                            yield self._make_openai_chunk(client_model, chunk_id=_stream_id, content=f"[Error: {msg}]")
+                            yield self._make_openai_chunk(client_model, chunk_id=_stream_id, finish_reason="error")
 
                     # Compute metrics
                     estimated_content_tokens = max(1, content_chars // 4) if content_chars else 0
@@ -1238,6 +1241,7 @@ class CmdCodeClient(BaseProvider):
                         metrics.get("prompt_eval_count", 0),
                         metrics.get("eval_count", 0),
                         metrics.get("reasoning_tokens", 0),
+                        chunk_id=_stream_id,
                     )
                     yield "data: [DONE]\n\n"
                     yield f"__oct_metrics__:{json.dumps(metrics)}\n\n"
