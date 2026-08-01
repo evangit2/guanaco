@@ -722,10 +722,14 @@ class AnalyticsLogger:
         else:
             # Select everything EXCEPT the heavy text columns
             query = (
-                "SELECT id, ts, type, model, provider, prompt_tokens, completion_tokens, "
-                "total_tokens, tps, prompt_tps, ttft_seconds, duration_ms, error, "
-                "request_id, fallback_for, input_text IS NOT NULL as has_input, "
-                "output_text IS NOT NULL as has_output "
+                "SELECT id, ts, type, model, provider, endpoint, prompt_tokens, "
+                "completion_tokens, total_tokens, tps, prompt_tps, ttft_seconds, "
+                "total_duration_seconds, load_duration_seconds, error, request_id, "
+                "fallback_for, extra, source_ip, source_port, user_agent, "
+                "input_text IS NOT NULL as has_input, "
+                "output_text IS NOT NULL as has_output, "
+                "fallback_reason, account_name, usage_multiplier, "
+                "prompt_cache_hit_tokens, prompt_cache_miss_tokens, estimated_cost "
                 "FROM request_log WHERE type='llm'"
             )
         params = []
