@@ -1051,6 +1051,15 @@ class CmdCodeClient(BaseProvider):
             if parsed_tool_calls:
                 full_content = _strip_dsml_from_content(full_content)
                 finish_reason = "tool_calls"
+            elif _contains_dsml(full_content):
+                # Incomplete DSML block (no close tag) — try fuzzy parse,
+                # then strip any DSML tags so they don't leak as content.
+                parsed_tool_calls = _fuzzy_parse_dsml(full_content)
+                if parsed_tool_calls:
+                    full_content = _strip_dsml_from_content(full_content)
+                    finish_reason = "tool_calls"
+                else:
+                    full_content = _strip_dsml_from_content(full_content)
 
         result = self._make_openai_response(
             model=client_model,
@@ -1309,7 +1318,26 @@ class CmdCodeClient(BaseProvider):
                                 finish_reason = "tool_calls"
                             # Flush any remaining buffered content (incomplete DSML or trailing text)
                             if _dsml_buffer and not _tool_calls_emitted:
-                                yield self._make_openai_chunk(client_model, chunk_id=_stream_id, content=_dsml_buffer)
+                                # Try fuzzy parse first — the model may have emitted
+                                # an incomplete DSML block (no close tag) before the
+                                # stream ended.  This extracts any valid tool calls
+                                # and prevents raw DSML tags from leaking as content.
+                                if _contains_dsml(_dsml_buffer):
+                                    logger.warning("Incomplete DSML at stream finish (%d chars) — fuzzy parsing", len(_dsml_buffer))
+                                    parsed = _fuzzy_parse_dsml(_dsml_buffer)
+                                    if parsed:
+                                        yield self._make_openai_chunk(client_model, chunk_id=_stream_id,
+                                            tool_calls=parsed)
+                                        _tool_calls_emitted = True
+                                        finish_reason = "tool_calls"
+                                    else:
+                                        # Fuzzy parse found nothing — strip DSML tags
+                                        # and emit only the cleaned text (if any)
+                                        cleaned = _strip_dsml_from_content(_dsml_buffer)
+                                        if cleaned:
+                                            yield self._make_openai_chunk(client_model, chunk_id=_stream_id, content=cleaned)
+                                else:
+                                    yield self._make_openai_chunk(client_model, chunk_id=_stream_id, content=_dsml_buffer)
                                 _dsml_buffer = ""
                             # Send final chunk with finish_reason
                             yield self._make_openai_chunk(client_model, chunk_id=_stream_id, finish_reason=finish_reason)
