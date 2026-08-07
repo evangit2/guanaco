@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- **Incomplete DSML blocks leak raw tags as content.** When a model started emitting a DSML tool call block (`<｜DSML｜tool_calls>...`) but the stream finished before the closing tag, the raw DSML tags were flushed directly to the user as text content. This happened because the `finish` event handler flushed the DSML buffer as content without attempting a fuzzy parse. Now: (1) streaming `finish` event fuzzy-parses any remaining DSML buffer before flushing, emitting extracted tool calls or stripped text; (2) non-streaming path also fuzzy-parses and strips incomplete DSML blocks instead of leaving them in `full_content`.
+
+---
+
+## [0.8.11] - 2026-07-31
+
+### Fixed
+- **Streaming tool_calls missing `index` field.** The OpenAI SDK requires an `index` field on every `ChoiceDeltaToolCall` in streaming chunks. Guanaco was omitting it, causing the SDK to raise a `ValidationError` surfaced as `APIError: 'str' object has no attribute 'items'`. Added `"index"` to all streaming tool_calls delta entries (3 sites: `tool-input-start` append, `tool-call` append, and the yield).
+- **Non-dict tool call arguments crash in DSML conversion.** When a model's previous tool call had arguments that were a raw JSON string (e.g. `"2+2"` instead of `{"expr": "2+2"}`), `json.loads()` returned a string and `args.items()` crashed with `AttributeError: 'str' object has no attribute 'items'`. Now wraps non-dict args in `{"value": args}` before iterating.
+- **DSML buffer overflow and tag leakage.** When the model emitted malformed DSML with broken closing tags (e.g. `</peparameter>` instead of `</｜DSML｜parameter>`), the parser never matched the close tag and the buffer grew indefinitely. The model would then retry the path character-by-character, producing massive DSML tag leakage into chat. Added an 8000-char buffer overflow guard with `_fuzzy_parse_dsml()` fallback that extracts invoke names and parameters even with broken closing tags.
+- **Hallucinated tool call tags in text output.** Some models emit non-DSML tool call tags (e.g. `</aktool_calls>`, `</tool_calls>`) in text. These are now stripped via `_HALLUCINATED_TC_TAGS` regex.
+- **Inconsistent stream chunk IDs.** All chunks in a single streaming response now share a consistent `chunk_id`, preventing SDK accumulation errors.
+
+---
+
 ## [0.7.4] - 2026-07-16
 
 ### Added

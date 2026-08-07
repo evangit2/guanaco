@@ -172,6 +172,13 @@ class AnalyticsLogger:
             conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_log_request_id ON request_log(request_id)
             """)
+            # Meta table for cached values (e.g. content size)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS _meta (
+                    key TEXT PRIMARY KEY,
+                    value TEXT
+                )
+            """)
 
     def log_llm(
         self,
@@ -708,7 +715,23 @@ class AnalyticsLogger:
             errors_only: Filter to only failed requests (error IS NOT NULL)
             include_content: Include input_text/output_text in results
         """
-        query = "SELECT * FROM request_log WHERE type='llm'"
+        # Avoid SELECT * when content not requested — reading input_text/output_text
+        # from disk is extremely expensive on large DBs (5+ GB of text).
+        if include_content:
+            query = "SELECT * FROM request_log WHERE type='llm'"
+        else:
+            # Select everything EXCEPT the heavy text columns
+            query = (
+                "SELECT id, ts, type, model, provider, endpoint, prompt_tokens, "
+                "completion_tokens, total_tokens, tps, prompt_tps, ttft_seconds, "
+                "total_duration_seconds, load_duration_seconds, error, request_id, "
+                "fallback_for, extra, source_ip, source_port, user_agent, "
+                "input_text IS NOT NULL as has_input, "
+                "output_text IS NOT NULL as has_output, "
+                "fallback_reason, account_name, usage_multiplier, "
+                "prompt_cache_hit_tokens, prompt_cache_miss_tokens, estimated_cost "
+                "FROM request_log WHERE type='llm'"
+            )
         params = []
         
         if model_filter:
@@ -734,9 +757,15 @@ class AnalyticsLogger:
             for row in rows:
                 d = dict(row)
                 # Add has_content flag for badge rendering without needing full text
-                has_input = bool(d.get("input_text"))
-                has_output = bool(d.get("output_text"))
-                d["has_content"] = has_input or has_output
+                # Use the IS NOT NULL aliases from the optimized query when available
+                if "has_input" in d and "has_output" in d:
+                    d["has_content"] = bool(d["has_input"]) or bool(d["has_output"])
+                    d.pop("has_input", None)
+                    d.pop("has_output", None)
+                else:
+                    has_input = bool(d.get("input_text"))
+                    has_output = bool(d.get("output_text"))
+                    d["has_content"] = has_input or has_output
                 # Don't include content unless requested (can be large)
                 if not include_content:
                     d.pop("input_text", None)
@@ -774,10 +803,37 @@ class AnalyticsLogger:
                 "SELECT MAX(ts) FROM request_log WHERE type='llm'"
             ).fetchone()[0]
             
-            # Storage size estimate
-            content_size = conn.execute(
-                "SELECT COALESCE(SUM(LENGTH(input_text) + LENGTH(output_text)), 0) FROM request_log WHERE input_text IS NOT NULL OR output_text IS NOT NULL"
-            ).fetchone()[0]
+            # Storage size estimate — cached with TTL to avoid scanning 5+ GB
+            # of text data on every dashboard load.
+            cache_key = "_content_size_cache"
+            cache_ts_key = "_content_size_cache_ts"
+            cached = conn.execute(
+                "SELECT value FROM _meta WHERE key = ?", (cache_key,)
+            ).fetchone()
+            cached_ts = conn.execute(
+                "SELECT value FROM _meta WHERE key = ?", (cache_ts_key,)
+            ).fetchone()
+            
+            import time as _time
+            now = _time.time()
+            if cached and cached_ts and (now - float(cached_ts[0])) < 300:
+                # Cache fresh (5 min TTL)
+                content_size = int(cached[0])
+            else:
+                # Recompute — this is slow on large DBs
+                content_size = conn.execute(
+                    "SELECT COALESCE(SUM(LENGTH(input_text) + LENGTH(output_text)), 0) FROM request_log WHERE input_text IS NOT NULL OR output_text IS NOT NULL"
+                ).fetchone()[0]
+                # Persist to meta table
+                conn.execute(
+                    "INSERT OR REPLACE INTO _meta (key, value) VALUES (?, ?)",
+                    (cache_key, str(content_size))
+                )
+                conn.execute(
+                    "INSERT OR REPLACE INTO _meta (key, value) VALUES (?, ?)",
+                    (cache_ts_key, str(now))
+                )
+                conn.commit()
             
             # Error count
             error_count = conn.execute(

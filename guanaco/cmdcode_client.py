@@ -124,6 +124,17 @@ _DSML_NAME = _re.compile(r'<name>(.*?)</name>', _re.DOTALL)
 _DSML_PARAMS = _re.compile(r'<parameters>(.*?)</parameters>', _re.DOTALL)
 
 
+# Catch hallucinated non-DSML tool call tags that some models emit in text.
+# These are always formatting artifacts, never user-facing content.
+# Matches things like </aktool_calls>, <tool_call>, </tool_calls>, etc.
+_HALLUCINATED_TC_TAGS = _re.compile(r'</?[a-zA-Z_]*tool[a-zA-Z_]*call[s]?>', _re.IGNORECASE)
+
+
+def _strip_hallucinated_tags(text: str) -> str:
+    """Remove hallucinated tool call tags from text output."""
+    return _HALLUCINATED_TC_TAGS.sub('', text)
+
+
 def _contains_dsml(text: str) -> bool:
     """Check if text contains DSML tool call markers."""
     return bool(_DSML_TC_OPEN.search(text) or '<｜DSML｜' in text or '<|DSML|' in text)
@@ -224,6 +235,73 @@ def _parse_dsml_tool_calls(text: str) -> list[dict[str, Any]] | None:
                     },
                 })
 
+    return tool_calls if tool_calls else None
+
+
+def _fuzzy_parse_dsml(text: str) -> list[dict[str, Any]] | None:
+    """Best-effort parse of malformed/incomplete DSML blocks.
+    
+    Used when the DSML buffer overflows without a clean close tag.
+    Tries to extract invoke names and parameters even with broken closing tags.
+    """
+    tool_calls: list[dict[str, Any]] = []
+    
+    # Find all invoke openings — even without proper closes
+    invoke_starts = list(_DSML_INVOKE.finditer(text))
+    if not invoke_starts:
+        return None
+    
+    # Split on invoke openings
+    for i, inv_match in enumerate(invoke_starts):
+        func_name = inv_match.group(1)
+        start = inv_match.end()
+        # Block ends at next invoke start, or end of text
+        end = invoke_starts[i + 1].start() if i + 1 < len(invoke_starts) else len(text)
+        block = text[start:end]
+        
+        # Extract parameters — match even without proper closing tags
+        params = {}
+        for p_match in _DSML_PARAM.finditer(block):
+            p_name = p_match.group(1)
+            p_is_string = p_match.group(2) == "true"
+            p_value = p_match.group(3)
+            if p_is_string:
+                params[p_name] = p_value
+            else:
+                try:
+                    params[p_name] = json.loads(p_value)
+                except (json.JSONDecodeError, ValueError):
+                    params[p_name] = p_value
+        
+        # Also try to catch parameters with broken closing tags
+        # Pattern: <｜DSML｜parameter name="key" string="true">value  (no close)
+        broken_param_re = _re.compile(
+            r'<[｜|]DSML[｜|]parameter\s+name="([^"]+)"\s+string="([^"]*)">([^<]*)',
+            _re.DOTALL,
+        )
+        for p_match in broken_param_re.finditer(block):
+            p_name = p_match.group(1)
+            p_is_string = p_match.group(2) == "true"
+            p_value = p_match.group(3).strip()
+            if p_name not in params:  # Don't overwrite properly parsed ones
+                if p_is_string:
+                    params[p_name] = p_value
+                else:
+                    try:
+                        params[p_name] = json.loads(p_value)
+                    except (json.JSONDecodeError, ValueError):
+                        params[p_name] = p_value
+        
+        if func_name:
+            tool_calls.append({
+                "id": f"call_{uuid.uuid4().hex[:24]}",
+                "type": "function",
+                "function": {
+                    "name": func_name,
+                    "arguments": json.dumps(params, ensure_ascii=False),
+                },
+            })
+    
     return tool_calls if tool_calls else None
 
 
@@ -452,8 +530,12 @@ class CmdCodeClient(BaseProvider):
                     args_str = func.get("arguments", "{}")
                     try:
                         args = json.loads(args_str)
-                    except json.JSONDecodeError:
+                    except (json.JSONDecodeError, TypeError):
                         args = {}
+
+                    # Guard: args could be a non-dict JSON value (str, list, int)
+                    if not isinstance(args, dict):
+                        args = {"value": args}
 
                     # Render as DSML invoke/parameter format
                     param_lines = []
@@ -592,6 +674,7 @@ class CmdCodeClient(BaseProvider):
     def _make_openai_chunk(
         model: str, content: str = "", reasoning: str = "", finish_reason: str | None = None,
         tool_calls: list[dict[str, Any]] | None = None,
+        chunk_id: str | None = None,
     ) -> str:
         """Build an OpenAI-compatible streaming chunk (SSE format)."""
         delta: dict[str, Any] = {}
@@ -605,7 +688,7 @@ class CmdCodeClient(BaseProvider):
             delta = {}
 
         chunk = {
-            "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
+            "id": chunk_id or f"chatcmpl-{uuid.uuid4().hex[:24]}",
             "object": "chat.completion.chunk",
             "created": int(time.time()),
             "model": model,
@@ -872,80 +955,80 @@ class CmdCodeClient(BaseProvider):
                             request=resp.request,
                             response=resp,
                         )
-                async for line in resp.aiter_lines():
-                    event = self._parse_cc_sse_line(line)
-                    if event is None:
-                        continue
-                    etype = event.get("type", "")
-                    if etype == "text-delta":
-                        content_parts.append(event.get("text", ""))
-                    elif etype == "reasoning-delta":
-                        reasoning_parts.append(event.get("text", ""))
-                    elif etype == "tool-input-start":
-                        # Start of a tool call — create placeholder
-                        tc_id = event.get("id", f"call_{uuid.uuid4().hex[:24]}")
-                        tc_name = event.get("toolName", "")
-                        _tc_arg_buffers[tc_id] = ""
-                        _tool_calls.append({
-                            "id": tc_id,
-                            "type": "function",
-                            "function": {"name": tc_name, "arguments": ""},
-                        })
-                    elif etype == "tool-input-delta":
-                        # Accumulate argument fragments
-                        tc_id = event.get("id", "")
-                        delta = event.get("delta", "")
-                        if tc_id in _tc_arg_buffers:
-                            _tc_arg_buffers[tc_id] += delta
-                    elif etype == "tool-input-end":
-                        # Tool input complete — finalize arguments
-                        tc_id = event.get("id", "")
-                        if tc_id in _tc_arg_buffers:
-                            for tc in _tool_calls:
-                                if tc["id"] == tc_id:
-                                    tc["function"]["arguments"] = _tc_arg_buffers[tc_id]
-                                    break
-                    elif etype == "tool-call":
-                        # Complete tool call (may arrive after tool-input-end)
-                        tc_id = event.get("toolCallId", "")
-                        tc_name = event.get("toolName", "")
-                        tc_input = event.get("input", {})
-                        # Update or append
-                        found = False
-                        for tc in _tool_calls:
-                            if tc["id"] == tc_id:
-                                tc["function"]["name"] = tc_name
-                                tc["function"]["arguments"] = json.dumps(tc_input, ensure_ascii=False)
-                                found = True
-                                break
-                        if not found:
+                    async for line in resp.aiter_lines():
+                        event = self._parse_cc_sse_line(line)
+                        if event is None:
+                            continue
+                        etype = event.get("type", "")
+                        if etype == "text-delta":
+                            content_parts.append(event.get("text", ""))
+                        elif etype == "reasoning-delta":
+                            reasoning_parts.append(event.get("text", ""))
+                        elif etype == "tool-input-start":
+                            # Start of a tool call — create placeholder
+                            tc_id = event.get("id", f"call_{uuid.uuid4().hex[:24]}")
+                            tc_name = event.get("toolName", "")
+                            _tc_arg_buffers[tc_id] = ""
                             _tool_calls.append({
                                 "id": tc_id,
                                 "type": "function",
-                                "function": {
-                                    "name": tc_name,
-                                    "arguments": json.dumps(tc_input, ensure_ascii=False),
-                                },
+                                "function": {"name": tc_name, "arguments": ""},
                             })
-                    elif etype == "finish-step":
-                        u = self._extract_usage(event)
-                        if u:
-                            usage = u
-                        fr = event.get("finishReason")
-                        if fr:
-                            finish_reason = fr
-                    elif etype == "finish":
-                        finish_reason = event.get("finishReason", "stop")
-                        u = self._extract_usage(event)
-                        if u:
-                            usage = u
-                    elif etype == "error":
-                        msg = event.get("error", {}).get("message", "unknown error")
-                        raise httpx.HTTPStatusError(
-                            f"Command Code error: {msg}",
-                            request=resp.request,
-                            response=resp,
-                        )
+                        elif etype == "tool-input-delta":
+                            # Accumulate argument fragments
+                            tc_id = event.get("id", "")
+                            delta = event.get("delta", "")
+                            if tc_id in _tc_arg_buffers:
+                                _tc_arg_buffers[tc_id] += delta
+                        elif etype == "tool-input-end":
+                            # Tool input complete — finalize arguments
+                            tc_id = event.get("id", "")
+                            if tc_id in _tc_arg_buffers:
+                                for tc in _tool_calls:
+                                    if tc["id"] == tc_id:
+                                        tc["function"]["arguments"] = _tc_arg_buffers[tc_id]
+                                        break
+                        elif etype == "tool-call":
+                            # Complete tool call (may arrive after tool-input-end)
+                            tc_id = event.get("toolCallId", "")
+                            tc_name = event.get("toolName", "")
+                            tc_input = event.get("input", {})
+                            # Update or append
+                            found = False
+                            for tc in _tool_calls:
+                                if tc["id"] == tc_id:
+                                    tc["function"]["name"] = tc_name
+                                    tc["function"]["arguments"] = json.dumps(tc_input, ensure_ascii=False)
+                                    found = True
+                                    break
+                            if not found:
+                                _tool_calls.append({
+                                    "id": tc_id,
+                                    "type": "function",
+                                    "function": {
+                                        "name": tc_name,
+                                        "arguments": json.dumps(tc_input, ensure_ascii=False),
+                                    },
+                                })
+                        elif etype == "finish-step":
+                            u = self._extract_usage(event)
+                            if u:
+                                usage = u
+                            fr = event.get("finishReason")
+                            if fr:
+                                finish_reason = fr
+                        elif etype == "finish":
+                            finish_reason = event.get("finishReason", "stop")
+                            u = self._extract_usage(event)
+                            if u:
+                                usage = u
+                        elif etype == "error":
+                            msg = event.get("error", {}).get("message", "unknown error")
+                            raise httpx.HTTPStatusError(
+                                f"Command Code error: {msg}",
+                                request=resp.request,
+                                response=resp,
+                            )
         except httpx.HTTPStatusError:
             raise
         except Exception as e:
@@ -954,6 +1037,9 @@ class CmdCodeClient(BaseProvider):
 
         elapsed = time.time() - start
         full_content = "".join(content_parts)
+
+        # Strip hallucinated tool call tags from content (e.g. </aktool_calls>)
+        full_content = _strip_hallucinated_tags(full_content)
 
         # Use structured tool_calls from SSE events if available;
         # otherwise fall back to DSML parsing from text content
@@ -965,6 +1051,15 @@ class CmdCodeClient(BaseProvider):
             if parsed_tool_calls:
                 full_content = _strip_dsml_from_content(full_content)
                 finish_reason = "tool_calls"
+            elif _contains_dsml(full_content):
+                # Incomplete DSML block (no close tag) — try fuzzy parse,
+                # then strip any DSML tags so they don't leak as content.
+                parsed_tool_calls = _fuzzy_parse_dsml(full_content)
+                if parsed_tool_calls:
+                    full_content = _strip_dsml_from_content(full_content)
+                    finish_reason = "tool_calls"
+                else:
+                    full_content = _strip_dsml_from_content(full_content)
 
         result = self._make_openai_response(
             model=client_model,
@@ -1009,6 +1104,9 @@ class CmdCodeClient(BaseProvider):
         prompt_tokens = 0
         completion_tokens = 0
         start = time.time()
+
+        # Single consistent ID for all chunks in this stream
+        _stream_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
 
         # DSML streaming state — buffer text and detect tool call blocks
         _dsml_buffer = ""
@@ -1058,6 +1156,10 @@ class CmdCodeClient(BaseProvider):
                             text = event.get("text", "")
                             if not text:
                                 continue
+                            # Strip hallucinated tool call tags (e.g. </aktool_calls>)
+                            text = _strip_hallucinated_tags(text)
+                            if not text:
+                                continue
                             if not first_token_time:
                                 first_token_time = time.time()
                             content_chars += len(text)
@@ -1069,13 +1171,28 @@ class CmdCodeClient(BaseProvider):
                                 parsed = _parse_dsml_tool_calls(_dsml_buffer)
                                 if parsed is not None:
                                     # Block complete — emit tool_calls chunk
-                                    yield self._make_openai_chunk(
-                                        client_model, tool_calls=parsed
+                                    yield self._make_openai_chunk(client_model, chunk_id=_stream_id,
+                                        tool_calls=parsed
                                     )
                                     _tool_calls_emitted = True
                                     _dsml_buffer = ""
                                     _in_dsml = False
-                                # If not complete yet, keep buffering silently
+                                elif len(_dsml_buffer) > 8000:
+                                    # Buffer overflow — model emitted malformed/incomplete DSML.
+                                    # Try a fuzzy parse first; if that fails, flush as content.
+                                    logger.warning("DSML buffer overflow (%d chars) — attempting fuzzy parse", len(_dsml_buffer))
+                                    parsed = _fuzzy_parse_dsml(_dsml_buffer)
+                                    if parsed:
+                                        yield self._make_openai_chunk(client_model, chunk_id=_stream_id,
+                                            tool_calls=parsed
+                                        )
+                                        _tool_calls_emitted = True
+                                    else:
+                                        yield self._make_openai_chunk(client_model, chunk_id=_stream_id,
+                                            content=_dsml_buffer
+                                        )
+                                    _dsml_buffer = ""
+                                    _in_dsml = False
                             else:
                                 # Not in DSML — check if this chunk starts one
                                 combined = _dsml_buffer + text
@@ -1088,14 +1205,14 @@ class CmdCodeClient(BaseProvider):
                                     idx = combined.index(marker)
                                     pre_dsml = combined[:idx]
                                     if pre_dsml:
-                                        yield self._make_openai_chunk(client_model, content=pre_dsml)
+                                        yield self._make_openai_chunk(client_model, chunk_id=_stream_id, content=pre_dsml)
                                     _dsml_buffer = combined[idx:]
                                     _in_dsml = True
                                     # Check if already complete in this same chunk
                                     parsed = _parse_dsml_tool_calls(_dsml_buffer)
                                     if parsed is not None:
-                                        yield self._make_openai_chunk(
-                                            client_model, tool_calls=parsed
+                                        yield self._make_openai_chunk(client_model, chunk_id=_stream_id,
+                                            tool_calls=parsed
                                         )
                                         _tool_calls_emitted = True
                                         _dsml_buffer = ""
@@ -1109,11 +1226,11 @@ class CmdCodeClient(BaseProvider):
                                         safe = combined[:partial_idx]
                                         _dsml_buffer = combined[partial_idx:]
                                         if safe:
-                                            yield self._make_openai_chunk(client_model, content=safe)
+                                            yield self._make_openai_chunk(client_model, chunk_id=_stream_id, content=safe)
                                     else:
                                         # Completely safe — flush everything
                                         _dsml_buffer = ""
-                                        yield self._make_openai_chunk(client_model, content=text)
+                                        yield self._make_openai_chunk(client_model, chunk_id=_stream_id, content=text)
 
                         elif etype == "reasoning-delta":
                             text = event.get("text", "")
@@ -1121,7 +1238,7 @@ class CmdCodeClient(BaseProvider):
                                 reasoning_chars += len(text)
                                 if not first_token_time:
                                     first_token_time = time.time()
-                                yield self._make_openai_chunk(client_model, reasoning=text)
+                                yield self._make_openai_chunk(client_model, chunk_id=_stream_id, reasoning=text)
 
                         elif etype == "tool-input-start":
                             # Start of a structured tool call from the API
@@ -1130,6 +1247,7 @@ class CmdCodeClient(BaseProvider):
                             _tc_arg_buffers[tc_id] = ""
                             _tool_calls_list.append({
                                 "id": tc_id,
+                                "index": 0,
                                 "type": "function",
                                 "function": {"name": tc_name, "arguments": ""},
                             })
@@ -1166,13 +1284,15 @@ class CmdCodeClient(BaseProvider):
                             if not found:
                                 _tool_calls_list.append({
                                     "id": tc_id,
+                                    "index": len(_tool_calls_list),
                                     "type": "function",
                                     "function": {"name": tc_name, "arguments": args_str},
                                 })
                             # Emit the tool call as an OpenAI chunk
-                            yield self._make_openai_chunk(
-                                client_model,
+                            _tc_idx = next((i for i, t in enumerate(_tool_calls_list) if t["id"] == tc_id), 0)
+                            yield self._make_openai_chunk(client_model, chunk_id=_stream_id,
                                 tool_calls=[{
+                                    "index": _tc_idx,
                                     "id": tc_id,
                                     "type": "function",
                                     "function": {"name": tc_name, "arguments": args_str},
@@ -1198,17 +1318,36 @@ class CmdCodeClient(BaseProvider):
                                 finish_reason = "tool_calls"
                             # Flush any remaining buffered content (incomplete DSML or trailing text)
                             if _dsml_buffer and not _tool_calls_emitted:
-                                yield self._make_openai_chunk(client_model, content=_dsml_buffer)
+                                # Try fuzzy parse first — the model may have emitted
+                                # an incomplete DSML block (no close tag) before the
+                                # stream ended.  This extracts any valid tool calls
+                                # and prevents raw DSML tags from leaking as content.
+                                if _contains_dsml(_dsml_buffer):
+                                    logger.warning("Incomplete DSML at stream finish (%d chars) — fuzzy parsing", len(_dsml_buffer))
+                                    parsed = _fuzzy_parse_dsml(_dsml_buffer)
+                                    if parsed:
+                                        yield self._make_openai_chunk(client_model, chunk_id=_stream_id,
+                                            tool_calls=parsed)
+                                        _tool_calls_emitted = True
+                                        finish_reason = "tool_calls"
+                                    else:
+                                        # Fuzzy parse found nothing — strip DSML tags
+                                        # and emit only the cleaned text (if any)
+                                        cleaned = _strip_dsml_from_content(_dsml_buffer)
+                                        if cleaned:
+                                            yield self._make_openai_chunk(client_model, chunk_id=_stream_id, content=cleaned)
+                                else:
+                                    yield self._make_openai_chunk(client_model, chunk_id=_stream_id, content=_dsml_buffer)
                                 _dsml_buffer = ""
                             # Send final chunk with finish_reason
-                            yield self._make_openai_chunk(client_model, finish_reason=finish_reason)
+                            yield self._make_openai_chunk(client_model, chunk_id=_stream_id, finish_reason=finish_reason)
 
                         elif etype == "error":
                             msg = event.get("error", {}).get("message", "unknown error")
                             logger.error("Command Code stream error: %s", msg)
                             # Send error as content then stop
-                            yield self._make_openai_chunk(client_model, content=f"[Error: {msg}]")
-                            yield self._make_openai_chunk(client_model, finish_reason="error")
+                            yield self._make_openai_chunk(client_model, chunk_id=_stream_id, content=f"[Error: {msg}]")
+                            yield self._make_openai_chunk(client_model, chunk_id=_stream_id, finish_reason="error")
 
                     # Compute metrics
                     estimated_content_tokens = max(1, content_chars // 4) if content_chars else 0
@@ -1238,6 +1377,7 @@ class CmdCodeClient(BaseProvider):
                         metrics.get("prompt_eval_count", 0),
                         metrics.get("eval_count", 0),
                         metrics.get("reasoning_tokens", 0),
+                        chunk_id=_stream_id,
                     )
                     yield "data: [DONE]\n\n"
                     yield f"__oct_metrics__:{json.dumps(metrics)}\n\n"
