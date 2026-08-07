@@ -143,8 +143,20 @@ _DSML_ANY_TAG = _re.compile(rf'</?{_DSML_PIPE}DSML{_DSML_PIPE}\w+[^>]*>')
 # Detect bare DSML tag fragments where the model omitted the <｜DSML｜ prefix.
 # These appear alongside proper DSML closing tags in malformed output.
 # Examples: 'invoke name="terminal">'  or  'parameter name="cmd" string="true">'
-_BARE_INVOKE = _re.compile(r'invoke\s+name="[^"]*">')
-_BARE_PARAMETER = _re.compile(r'parameter\s+name="[^"]*"\s+string="[^"]*">')
+# Match the FULL element: opening fragment + value + closing tag (if present).
+_BARE_INVOKE = _re.compile(
+    r'invoke\s+name="[^"]*">.*?(?=</?[｜|]+DSML[｜|]+(?:invoke|parameter|tool_calls)|\Z)',
+    _re.DOTALL,
+)
+_BARE_PARAMETER = _re.compile(
+    r'parameter\s+name="[^"]*"\s+string="[^"]*">.*?(?=</?[｜|]+DSML[｜|]+(?:invoke|parameter|tool_calls)|\Z)',
+    _re.DOTALL,
+)
+
+# Catch <dsml_ignore>...</dsml_ignore> blocks — a non-pipe DSML-adjacent format
+# some models emit for commentary around tool calls.
+_DSML_IGNORE_BLOCK = _re.compile(r'<dsml_ignore>.*?</dsml_ignore>', _re.DOTALL | _re.IGNORECASE)
+_DSML_IGNORE_TAG = _re.compile(r'</?dsml_ignore\s*>', _re.IGNORECASE)
 
 
 # Catch hallucinated non-DSML tool call tags that some models emit in text.
@@ -164,6 +176,8 @@ def _contains_dsml(text: str) -> bool:
         _DSML_ANY_TAG.search(text)
         or _BARE_INVOKE.search(text)
         or _BARE_PARAMETER.search(text)
+        or _DSML_IGNORE_BLOCK.search(text)
+        or _DSML_IGNORE_TAG.search(text)
         or '<｜DSML｜' in text
         or '<|DSML|' in text
     )
@@ -345,11 +359,14 @@ def _strip_dsml_from_content(text: str) -> str:
     - Solo invoke/parameter tags without tool_calls wrapper
     - Bare tag fragments where model omitted <｜DSML｜ prefix
       (e.g. 'invoke name="terminal">' without the DSML prefix)
+    - <dsml_ignore>...</dsml_ignore> commentary blocks
+    - Stray '>' characters left from partially stripped tags
     """
     if not _contains_dsml(text):
         return text
-    # First remove complete tool_calls blocks
-    result = text
+    # First remove <dsml_ignore>...</dsml_ignore> blocks
+    result = _DSML_IGNORE_BLOCK.sub('', text)
+    # Remove complete tool_calls blocks
     while True:
         open_match = _DSML_TC_OPEN.search(result)
         if not open_match:
@@ -363,10 +380,14 @@ def _strip_dsml_from_content(text: str) -> str:
     # Strip any remaining stray DSML tags (closing tags, solo invokes, etc.)
     result = _DSML_ANY_TAG.sub('', result)
     # Strip bare DSML tag fragments where the model omitted the <｜DSML｜ prefix.
-    # These look like: invoke name="terminal">  or  parameter name="x" string="true">
-    # Only strip when we know DSML was present (we already checked _contains_dsml).
+    # These match the full element: opening fragment + value + closing tag.
     result = _BARE_INVOKE.sub('', result)
     result = _BARE_PARAMETER.sub('', result)
+    # Strip stray <dsml_ignore> tags (in case block regex didn't match)
+    result = _DSML_IGNORE_TAG.sub('', result)
+    # Clean up stray '>' characters on their own line (leftover from partial tag stripping)
+    result = _re.sub(r'\n>\s*\n', '\n', result)
+    result = _re.sub(r'^>\s*\n', '', result)
     return result.strip()
 
 
@@ -1296,6 +1317,11 @@ class CmdCodeClient(BaseProvider):
                                         # might have slipped through (closing tags, etc.)
                                         if _contains_dsml(text):
                                             text = _strip_dsml_from_content(text)
+                                        # Suppress stray '>' on its own line —
+                                        # leftover from a stripped DSML tag.
+                                        # Only matches a line that is just '>' + whitespace.
+                                        if text.strip() == '>':
+                                            text = ''
                                         if text:
                                             yield self._make_openai_chunk(client_model, chunk_id=_stream_id, content=text)
 
