@@ -235,7 +235,7 @@ def _parse_dsml_tool_calls(text: str) -> list[dict[str, Any]] | None:
                 for p_match in _DSML_PARAM.finditer(invoke_block):
                     p_name = p_match.group(1)
                     p_is_string = p_match.group(2) == "true"
-                    p_value = p_match.group(3)
+                    p_value = _strip_dsml_from_value(p_match.group(3))
                     if p_is_string:
                         params[p_name] = p_value
                     else:
@@ -307,7 +307,7 @@ def _fuzzy_parse_dsml(text: str) -> list[dict[str, Any]] | None:
         for p_match in _DSML_PARAM.finditer(block):
             p_name = p_match.group(1)
             p_is_string = p_match.group(2) == "true"
-            p_value = p_match.group(3)
+            p_value = _strip_dsml_from_value(p_match.group(3))
             if p_is_string:
                 params[p_name] = p_value
             else:
@@ -325,7 +325,7 @@ def _fuzzy_parse_dsml(text: str) -> list[dict[str, Any]] | None:
         for p_match in broken_param_re.finditer(block):
             p_name = p_match.group(1)
             p_is_string = p_match.group(2) == "true"
-            p_value = p_match.group(3).strip()
+            p_value = _strip_dsml_from_value(p_match.group(3).strip())
             if p_name not in params:  # Don't overwrite properly parsed ones
                 if p_is_string:
                     params[p_name] = p_value
@@ -389,6 +389,27 @@ def _strip_dsml_from_content(text: str) -> str:
     result = _re.sub(r'\n>\s*\n', '\n', result)
     result = _re.sub(r'^>\s*\n', '', result)
     return result.strip()
+
+
+def _strip_dsml_from_value(value: str) -> str:
+    """Strip any residual DSML tags from a parsed parameter value.
+
+    Even after the DSML parser extracts parameter values, closing tags like
+    </｜DSML｜parameter> can remain appended to the value (especially in
+    streaming/fuzzy parse paths).  This removes any DSML tags or fragments
+    that leaked into the value.
+    """
+    if not value:
+        return value
+    # Remove any remaining DSML tags (opening, closing, self-closing)
+    result = _DSML_ANY_TAG.sub('', value)
+    # Remove bare closing fragments like '/｜DSML｜parameter>'
+    result = _re.sub(rf'/?{_DSML_PIPE}DSML{_DSML_PIPE}\w+[^>]*>', '', result)
+    # Remove bare parameter/invoke closing fragments without DSML prefix
+    result = _re.sub(r'</?\w+\s+name="[^"]*"\s*(?:string="[^"]*"\s*)?>', '', result)
+    # Clean up stray '>' at end of value (leftover from a stripped closing tag)
+    result = _re.sub(r'>\s*$', '', result)
+    return result
 
 
 # Static model list — Command Code Go plan offers 20+ models with ZDR support.
