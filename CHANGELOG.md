@@ -11,6 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - **Incomplete DSML blocks leak raw tags as content.** When a model started emitting a DSML tool call block (`<｜DSML｜tool_calls>...`) but the stream finished before the closing tag, the raw DSML tags were flushed directly to the user as text content. This happened because the `finish` event handler flushed the DSML buffer as content without attempting a fuzzy parse. Now: (1) streaming `finish` event fuzzy-parses any remaining DSML buffer before flushing, emitting extracted tool calls or stripped text; (2) non-streaming path also fuzzy-parses and strips incomplete DSML blocks instead of leaving them in `full_content`.
+- **DSML tag leakage with multiple malformation modes.** Several additional DSML parsing failures caused raw tags to leak into user-visible text:
+  - **Double-pipe DSML tags** (`</｜｜DSML｜｜tool_calls>`) — regexes used `[｜|]` (single char) which didn't match `｜｜`. Now uses `[｜|]+`.
+  - **Solo DSML invoke without `tool_calls` wrapper** — model emits `<｜DSML｜invoke>` directly. Streaming code only entered DSML mode on `<｜DSML｜tool_calls>`, so these leaked as content. Now detects solo invoke tags too.
+  - **Bare DSML fragments** — model omits `<｜DSML｜` prefix on opening tags (`invoke name="terminal">`) but includes it on closing tags (`</｜DSML｜parameter>`). Added `_BARE_INVOKE`/`_BARE_PARAMETER` regexes to detect and strip these.
+  - **Closing-tag-only detection** — `_contains_dsml` didn't match closing tags like `</｜DSML｜parameter>` because the `<` was followed by `/`. Now uses `_DSML_ANY_TAG` which matches both opening and closing tags.
+  - **Buffer overflow flush** — when DSML buffer exceeded 8000 chars and fuzzy parse failed, raw buffer was flushed as content. Now strips DSML tags before flushing.
+  - **Safety net in streaming** — text-delta handler now strips any stray DSML tags before emitting content, even when not in DSML mode.
 
 ---
 

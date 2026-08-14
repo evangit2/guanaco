@@ -106,22 +106,57 @@ def _get_cli_version() -> str:
 
 import re as _re
 
-# Match the opening tool_calls block in either Unicode or ASCII pipe form
-_DSML_TC_OPEN = _re.compile(r'<[｜|]DSML[｜|]tool_calls>')
-_DSML_TC_CLOSE = _re.compile(r'</[｜|]DSML[｜|]tool_calls>')
+# DSML delimiters can be:
+#   ｜  = U+FF5C fullwidth pipe (canonical)
+#   |  = U+007C ASCII pipe
+#   ｜｜ = double fullwidth pipes (some models emit these)
+#   ||  = double ASCII pipes
+# We use [｜|]+ to match one or more of either char.
+_DSML_PIPE = r'[｜|]+'
+
+# Match the opening tool_calls block
+_DSML_TC_OPEN = _re.compile(rf'<{_DSML_PIPE}DSML{_DSML_PIPE}tool_calls>')
+# Match the closing tool_calls block (may have </ or just ] prefix)
+_DSML_TC_CLOSE = _re.compile(rf'</?{_DSML_PIPE}DSML{_DSML_PIPE}tool_calls>')
 
 # Match invoke open: <｜DSML｜invoke name="function_name">
-_DSML_INVOKE = _re.compile(r'<[｜|]DSML[｜|]invoke\s+name="([^"]+)">')
+_DSML_INVOKE = _re.compile(rf'<{_DSML_PIPE}DSML{_DSML_PIPE}invoke\s+name="([^"]+)">')
+
+# Match invoke close: </｜DSML｜invoke>
+_DSML_INVOKE_CLOSE = _re.compile(rf'</?{_DSML_PIPE}DSML{_DSML_PIPE}invoke>')
 
 # Match parameter: <｜DSML｜parameter name="key" string="true">value</｜DSML｜parameter>
 _DSML_PARAM = _re.compile(
-    r'<[｜|]DSML[｜|]parameter\s+name="([^"]+)"\s+string="([^"]*)">(.*?)</[｜|]DSML[｜|]parameter>',
+    rf'<{_DSML_PIPE}DSML{_DSML_PIPE}parameter\s+name="([^"]+)"\s+string="([^"]*)">(.*?)</?{_DSML_PIPE}DSML{_DSML_PIPE}parameter>',
     _re.DOTALL,
 )
 
 # Match name/parameters form: <name>func</name> and <parameters>{...}</parameters>
 _DSML_NAME = _re.compile(r'<name>(.*?)</name>', _re.DOTALL)
 _DSML_PARAMS = _re.compile(r'<parameters>(.*?)</parameters>', _re.DOTALL)
+
+# Match ANY DSML tag (opening or closing), including double-pipe variants
+# and tags with attributes (e.g. <｜DSML｜invoke name="terminal">).
+# Used for _contains_dsml and _strip_dsml_from_content.
+_DSML_ANY_TAG = _re.compile(rf'</?{_DSML_PIPE}DSML{_DSML_PIPE}\w+[^>]*>')
+
+# Detect bare DSML tag fragments where the model omitted the <｜DSML｜ prefix.
+# These appear alongside proper DSML closing tags in malformed output.
+# Examples: 'invoke name="terminal">'  or  'parameter name="cmd" string="true">'
+# Match the FULL element: opening fragment + value + closing tag (if present).
+_BARE_INVOKE = _re.compile(
+    r'invoke\s+name="[^"]*">.*?(?=</?[｜|]+DSML[｜|]+(?:invoke|parameter|tool_calls)|\Z)',
+    _re.DOTALL,
+)
+_BARE_PARAMETER = _re.compile(
+    r'parameter\s+name="[^"]*"\s+string="[^"]*">.*?(?=</?[｜|]+DSML[｜|]+(?:invoke|parameter|tool_calls)|\Z)',
+    _re.DOTALL,
+)
+
+# Catch <dsml_ignore>...</dsml_ignore> blocks — a non-pipe DSML-adjacent format
+# some models emit for commentary around tool calls.
+_DSML_IGNORE_BLOCK = _re.compile(r'<dsml_ignore>.*?</dsml_ignore>', _re.DOTALL | _re.IGNORECASE)
+_DSML_IGNORE_TAG = _re.compile(r'</?dsml_ignore\s*>', _re.IGNORECASE)
 
 
 # Catch hallucinated non-DSML tool call tags that some models emit in text.
@@ -136,8 +171,16 @@ def _strip_hallucinated_tags(text: str) -> str:
 
 
 def _contains_dsml(text: str) -> bool:
-    """Check if text contains DSML tool call markers."""
-    return bool(_DSML_TC_OPEN.search(text) or '<｜DSML｜' in text or '<|DSML|' in text)
+    """Check if text contains any DSML tool call markers (opening or closing)."""
+    return bool(
+        _DSML_ANY_TAG.search(text)
+        or _BARE_INVOKE.search(text)
+        or _BARE_PARAMETER.search(text)
+        or _DSML_IGNORE_BLOCK.search(text)
+        or _DSML_IGNORE_TAG.search(text)
+        or '<｜DSML｜' in text
+        or '<|DSML|' in text
+    )
 
 
 def _parse_dsml_tool_calls(text: str) -> list[dict[str, Any]] | None:
@@ -192,7 +235,7 @@ def _parse_dsml_tool_calls(text: str) -> list[dict[str, Any]] | None:
                 for p_match in _DSML_PARAM.finditer(invoke_block):
                     p_name = p_match.group(1)
                     p_is_string = p_match.group(2) == "true"
-                    p_value = p_match.group(3)
+                    p_value = _strip_dsml_from_value(p_match.group(3))
                     if p_is_string:
                         params[p_name] = p_value
                     else:
@@ -264,7 +307,7 @@ def _fuzzy_parse_dsml(text: str) -> list[dict[str, Any]] | None:
         for p_match in _DSML_PARAM.finditer(block):
             p_name = p_match.group(1)
             p_is_string = p_match.group(2) == "true"
-            p_value = p_match.group(3)
+            p_value = _strip_dsml_from_value(p_match.group(3))
             if p_is_string:
                 params[p_name] = p_value
             else:
@@ -276,13 +319,13 @@ def _fuzzy_parse_dsml(text: str) -> list[dict[str, Any]] | None:
         # Also try to catch parameters with broken closing tags
         # Pattern: <｜DSML｜parameter name="key" string="true">value  (no close)
         broken_param_re = _re.compile(
-            r'<[｜|]DSML[｜|]parameter\s+name="([^"]+)"\s+string="([^"]*)">([^<]*)',
+            rf'<{_DSML_PIPE}DSML{_DSML_PIPE}parameter\s+name="([^"]+)"\s+string="([^"]*)">([^<]*)',
             _re.DOTALL,
         )
         for p_match in broken_param_re.finditer(block):
             p_name = p_match.group(1)
             p_is_string = p_match.group(2) == "true"
-            p_value = p_match.group(3).strip()
+            p_value = _strip_dsml_from_value(p_match.group(3).strip())
             if p_name not in params:  # Don't overwrite properly parsed ones
                 if p_is_string:
                     params[p_name] = p_value
@@ -306,11 +349,24 @@ def _fuzzy_parse_dsml(text: str) -> list[dict[str, Any]] | None:
 
 
 def _strip_dsml_from_content(text: str) -> str:
-    """Remove DSML tool_calls blocks from content text."""
+    """Remove all DSML tags and blocks from content text.
+    
+    Handles:
+    - Complete <｜DSML｜tool_calls>...</｜DSML｜tool_calls> blocks
+    - Incomplete blocks (open but no close)
+    - Stray closing tags (e.g. </｜DSML｜parameter>)
+    - Double-pipe variants (</｜｜DSML｜｜tool_calls>)
+    - Solo invoke/parameter tags without tool_calls wrapper
+    - Bare tag fragments where model omitted <｜DSML｜ prefix
+      (e.g. 'invoke name="terminal">' without the DSML prefix)
+    - <dsml_ignore>...</dsml_ignore> commentary blocks
+    - Stray '>' characters left from partially stripped tags
+    """
     if not _contains_dsml(text):
         return text
+    # First remove <dsml_ignore>...</dsml_ignore> blocks
+    result = _DSML_IGNORE_BLOCK.sub('', text)
     # Remove complete tool_calls blocks
-    result = text
     while True:
         open_match = _DSML_TC_OPEN.search(result)
         if not open_match:
@@ -321,7 +377,39 @@ def _strip_dsml_from_content(text: str) -> str:
             result = result[:open_match.start()]
             break
         result = result[:open_match.start()] + result[close_match.end():]
+    # Strip any remaining stray DSML tags (closing tags, solo invokes, etc.)
+    result = _DSML_ANY_TAG.sub('', result)
+    # Strip bare DSML tag fragments where the model omitted the <｜DSML｜ prefix.
+    # These match the full element: opening fragment + value + closing tag.
+    result = _BARE_INVOKE.sub('', result)
+    result = _BARE_PARAMETER.sub('', result)
+    # Strip stray <dsml_ignore> tags (in case block regex didn't match)
+    result = _DSML_IGNORE_TAG.sub('', result)
+    # Clean up stray '>' characters on their own line (leftover from partial tag stripping)
+    result = _re.sub(r'\n>\s*\n', '\n', result)
+    result = _re.sub(r'^>\s*\n', '', result)
     return result.strip()
+
+
+def _strip_dsml_from_value(value: str) -> str:
+    """Strip any residual DSML tags from a parsed parameter value.
+
+    Even after the DSML parser extracts parameter values, closing tags like
+    </｜DSML｜parameter> can remain appended to the value (especially in
+    streaming/fuzzy parse paths).  This removes any DSML tags or fragments
+    that leaked into the value.
+    """
+    if not value:
+        return value
+    # Remove any remaining DSML tags (opening, closing, self-closing)
+    result = _DSML_ANY_TAG.sub('', value)
+    # Remove bare closing fragments like '/｜DSML｜parameter>'
+    result = _re.sub(rf'/?{_DSML_PIPE}DSML{_DSML_PIPE}\w+[^>]*>', '', result)
+    # Remove bare parameter/invoke closing fragments without DSML prefix
+    result = _re.sub(r'</?\w+\s+name="[^"]*"\s*(?:string="[^"]*"\s*)?>', '', result)
+    # Clean up stray '>' at end of value (leftover from a stripped closing tag)
+    result = _re.sub(r'>\s*$', '', result)
+    return result
 
 
 # Static model list — Command Code Go plan offers 20+ models with ZDR support.
@@ -1120,15 +1208,35 @@ class CmdCodeClient(BaseProvider):
         # Markers for partial-match detection (handle split-across-deltas)
         _DSML_OPEN_U = "<｜DSML｜tool_calls>"
         _DSML_OPEN_A = "<|DSML|tool_calls>"
+        # Also detect partial solo invoke markers
+        _DSML_INVOKE_U = "<｜DSML｜invoke"
+        _DSML_INVOKE_A = "<|DSML|invoke"
 
         def _partial_dsml_open_at_end(text: str) -> int:
             """If text ends with a prefix of a DSML open marker, return the start index."""
-            for marker in (_DSML_OPEN_U, _DSML_OPEN_A):
+            for marker in (_DSML_OPEN_U, _DSML_OPEN_A, _DSML_INVOKE_U, _DSML_INVOKE_A):
                 max_check = min(len(marker), len(text))
                 for length in range(max_check, 0, -1):
                     if marker.startswith(text[-length:]):
                         return len(text) - length
             return -1
+
+        def _check_dsml_enter(combined: str) -> int | None:
+            """Check if combined text contains a DSML entry point.
+            
+            Returns the index where the DSML block starts, or None.
+            Detects both <｜DSML｜tool_calls> wrapper and solo <｜DSML｜invoke>.
+            """
+            # Check for tool_calls wrapper
+            for marker in (_DSML_OPEN_U, _DSML_OPEN_A):
+                idx = combined.find(marker)
+                if idx >= 0:
+                    return idx
+            # Check for solo invoke (no tool_calls wrapper)
+            m = _DSML_INVOKE.search(combined)
+            if m:
+                return m.start()
+            return None
 
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as http_client:
@@ -1179,7 +1287,7 @@ class CmdCodeClient(BaseProvider):
                                     _in_dsml = False
                                 elif len(_dsml_buffer) > 8000:
                                     # Buffer overflow — model emitted malformed/incomplete DSML.
-                                    # Try a fuzzy parse first; if that fails, flush as content.
+                                    # Try a fuzzy parse first; if that fails, flush as stripped content.
                                     logger.warning("DSML buffer overflow (%d chars) — attempting fuzzy parse", len(_dsml_buffer))
                                     parsed = _fuzzy_parse_dsml(_dsml_buffer)
                                     if parsed:
@@ -1188,25 +1296,21 @@ class CmdCodeClient(BaseProvider):
                                         )
                                         _tool_calls_emitted = True
                                     else:
-                                        yield self._make_openai_chunk(client_model, chunk_id=_stream_id,
-                                            content=_dsml_buffer
-                                        )
+                                        cleaned = _strip_dsml_from_content(_dsml_buffer)
+                                        if cleaned:
+                                            yield self._make_openai_chunk(client_model, chunk_id=_stream_id, content=cleaned)
                                     _dsml_buffer = ""
                                     _in_dsml = False
                             else:
                                 # Not in DSML — check if this chunk starts one
                                 combined = _dsml_buffer + text
-                                if _DSML_OPEN_U in combined or _DSML_OPEN_A in combined:
+                                dsml_idx = _check_dsml_enter(combined)
+                                if dsml_idx is not None:
                                     # DSML block started — flush pre-DSML content
-                                    if _DSML_OPEN_U in combined:
-                                        marker = _DSML_OPEN_U
-                                    else:
-                                        marker = _DSML_OPEN_A
-                                    idx = combined.index(marker)
-                                    pre_dsml = combined[:idx]
+                                    pre_dsml = combined[:dsml_idx]
                                     if pre_dsml:
                                         yield self._make_openai_chunk(client_model, chunk_id=_stream_id, content=pre_dsml)
-                                    _dsml_buffer = combined[idx:]
+                                    _dsml_buffer = combined[dsml_idx:]
                                     _in_dsml = True
                                     # Check if already complete in this same chunk
                                     parsed = _parse_dsml_tool_calls(_dsml_buffer)
@@ -1230,7 +1334,17 @@ class CmdCodeClient(BaseProvider):
                                     else:
                                         # Completely safe — flush everything
                                         _dsml_buffer = ""
-                                        yield self._make_openai_chunk(client_model, chunk_id=_stream_id, content=text)
+                                        # Safety net: strip any stray DSML tags that
+                                        # might have slipped through (closing tags, etc.)
+                                        if _contains_dsml(text):
+                                            text = _strip_dsml_from_content(text)
+                                        # Suppress stray '>' on its own line —
+                                        # leftover from a stripped DSML tag.
+                                        # Only matches a line that is just '>' + whitespace.
+                                        if text.strip() == '>':
+                                            text = ''
+                                        if text:
+                                            yield self._make_openai_chunk(client_model, chunk_id=_stream_id, content=text)
 
                         elif etype == "reasoning-delta":
                             text = event.get("text", "")
