@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.8.15] - 2026-08-14
+
+### Added
+- **Load all available Cline Pass models.** Cline expanded the ClinePass subscription with two new models not yet listed in the `/users/me/plan` `features.included` text: `glm-5.3` (zai, reasoning) and `qwen3.8-max` (reasoning). Both are confirmed routable via the `cline-pass/` prefix (200 + real completions). Previously the plan-text-only discovery only served the 11 older models, so the new ones never appeared in `/v1/models`. Now:
+  - `glm-5.3` and `qwen3.8-max` added to `CLINE_MODELS`, `CLINE_MODEL_TYPES`, and `_DISPLAY_NAME_TO_ID` so they surface once the plan text catches up.
+  - `list_models()` unions plan-discovered models with the static list, so known models are always served even when Cline's plan text lags.
+  - Both added to `KNOWN_CLINE_MODELS` for routing.
+
+---
+
 ## [Unreleased]
 
 ### Fixed
