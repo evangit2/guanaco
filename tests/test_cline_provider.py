@@ -123,15 +123,17 @@ class TestClinePassClient:
         assert caps["usage_multiplier"] == 0.0
 
     def test_static_models_count(self):
-        """Cline Pass offers 11 models (10 original + kimi-k3)."""
+        """Cline Pass offers 13 models (11 plan + glm-5.3 + qwen3.8-max)."""
         client = ClinePassClient(api_key="sk_test")
         models = client._static_models()
-        assert len(models) == 11
+        assert len(models) == 13
         model_ids = [m["id"] for m in models]
         assert "glm-5.2" in model_ids
+        assert "glm-5.3" in model_ids
         assert "kimi-k2.7-code" in model_ids
         assert "minimax-m3" in model_ids
         assert "deepseek-v4-flash" in model_ids
+        assert "qwen3.8-max" in model_ids
 
     def test_parse_plan_models(self):
         """_parse_plan_models extracts model IDs from plan features.included."""
@@ -156,6 +158,16 @@ class TestClinePassClient:
         assert "deepseek-v4-pro" in result
         assert "deepseek-v4-flash" in result
         assert len(result) == 11
+
+    def test_parse_plan_models_new_models(self):
+        """Newer display names (GLM 5.3, Qwen3.8 Max) parse to their slugs."""
+        included = [
+            "Includes Qwen3.8 Max, GLM 5.3, and Kimi K3",
+        ]
+        result = _parse_plan_models(included)
+        assert "qwen3.8-max" in result
+        assert "glm-5.3" in result
+        assert "kimi-k3" in result
 
     def test_parse_plan_models_empty(self):
         """_parse_plan_models returns empty list when no model string found."""

@@ -59,10 +59,10 @@ KNOWN_UMANS_MODELS = {
 
 # Known Cline Pass model names that should default to the Cline provider.
 KNOWN_CLINE_MODELS = {
-    "glm-5.2", "kimi-k3", "kimi-k2.7-code", "kimi-k2.6",
+    "glm-5.3", "glm-5.2", "kimi-k3", "kimi-k2.7-code", "kimi-k2.6",
     "deepseek-v4-pro", "deepseek-v4-flash",
     "mimo-v2.5", "mimo-v2.5-pro",
-    "minimax-m3", "qwen3.7-max", "qwen3.7-plus",
+    "minimax-m3", "qwen3.8-max", "qwen3.7-max", "qwen3.7-plus",
 }
 
 # Known Command Code Go model names that should default to the cmdcode provider.

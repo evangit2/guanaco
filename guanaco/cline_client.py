@@ -32,6 +32,10 @@ CLINE_PLAN_URL = f"{CLINE_BASE}/users/me/plan"
 # The plan endpoint is checked at startup to auto-discover new models;
 # any model found there that isn't in this dict gets sensible defaults.
 CLINE_MODELS: dict[str, dict[str, Any]] = {
+    "glm-5.3": {
+        "family": "glm", "supports_vision": False, "supports_tools": True,
+        "supports_thinking": True, "usage_multiplier": 0.0,
+    },
     "glm-5.2": {
         "family": "glm", "supports_vision": False, "supports_tools": True,
         "supports_thinking": True, "usage_multiplier": 0.0,
@@ -68,6 +72,10 @@ CLINE_MODELS: dict[str, dict[str, Any]] = {
         "family": "minimax", "supports_vision": False, "supports_tools": True,
         "supports_thinking": False, "usage_multiplier": 0.0,
     },
+    "qwen3.8-max": {
+        "family": "qwen", "supports_vision": False, "supports_tools": True,
+        "supports_thinking": True, "usage_multiplier": 0.0,
+    },
     "qwen3.7-max": {
         "family": "qwen", "supports_vision": False, "supports_tools": True,
         "supports_thinking": False, "usage_multiplier": 0.0,
@@ -82,6 +90,7 @@ CLINE_MODELS: dict[str, dict[str, Any]] = {
 # Cline's gateway requires the format: modelType/model (e.g. "zai/glm-5.2").
 # Each model belongs to a specific provider type. Discovered via API testing.
 CLINE_MODEL_TYPES: dict[str, str] = {
+    "glm-5.3": "zai",
     "glm-5.2": "zai",
     "kimi-k3": "moonshotai",
     "kimi-k2.7-code": "moonshotai",
@@ -91,6 +100,7 @@ CLINE_MODEL_TYPES: dict[str, str] = {
     "mimo-v2.5": "xiaomi",
     "mimo-v2.5-pro": "xiaomi",
     "minimax-m3": "minimax",
+    "qwen3.8-max": "qwen",
     "qwen3.7-max": "qwen",
     "qwen3.7-plus": "qwen",
 }
@@ -102,12 +112,14 @@ CLINE_MODEL_TYPES: dict[str, str] = {
 # We parse this into model IDs for auto-discovery.
 _DISPLAY_NAME_TO_ID: dict[str, str] = {
     "kimi k3": "kimi-k3",
+    "glm 5.3": "glm-5.3",
     "glm 5.2": "glm-5.2",
     "kimi k2.6": "kimi-k2.6",
     "kimi k2.7 code": "kimi-k2.7-code",
     "mimo v2.5": "mimo-v2.5",
     "mimo v2.5 pro": "mimo-v2.5-pro",
     "minimax m3": "minimax-m3",
+    "qwen3.8 max": "qwen3.8-max",
     "qwen3.7 plus": "qwen3.7-plus",
     "qwen3.7 max": "qwen3.7-max",
     "deepseek v4 pro": "deepseek-v4-pro",
@@ -252,6 +264,15 @@ class ClinePassClient(BaseProvider):
                     discovered_ids = _parse_plan_models(included)
                     if discovered_ids:
                         logger.info("Cline: discovered %d models from plan endpoint", len(discovered_ids))
+                        # Union with the static list: the plan's "included"
+                        # text can lag behind the models actually on the
+                        # subscription (e.g. glm-5.3, qwen3.8-max were added
+                        # but not listed). Keep known static models so they
+                        # are always served even when the plan text is stale.
+                        seen = set(discovered_ids)
+                        for mid in CLINE_MODELS:
+                            if mid not in seen:
+                                discovered_ids.append(mid)
                         models = self._build_models_from_ids(discovered_ids)
 
             # 3. Fallback to static list
